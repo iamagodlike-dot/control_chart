@@ -199,6 +199,13 @@ textarea { width: 100%; min-height: 50px; }
   padding: 2px 7px; border-radius: 999px; color: var(--badge-color);
   background: color-mix(in srgb, var(--badge-color) 16%, white);
 }
+.job-item-head-actions { flex-shrink: 0; display: flex; align-items: center; gap: 5px; }
+.job-item-finish {
+  width: 18px; height: 18px; padding: 0; line-height: 1; flex-shrink: 0;
+  border-radius: 50%; border: 1px solid var(--color-border); color: var(--color-success, #5B7F3A);
+  background: transparent; font-size: 11px; font-weight: 700; display: flex; align-items: center; justify-content: center;
+}
+.job-item-finish:hover { background: var(--color-success, #5B7F3A); border-color: var(--color-success, #5B7F3A); color: #fff; }
 .job-item-order { font-weight: 400; color: var(--color-text-muted); font-family: var(--font-body); }
 .job-item-sub { font-size: 11px; color: var(--color-text-muted); margin-top: 2px; }
 .job-item-storage { font-size: 11px; color: var(--color-warning); margin-top: 2px; }
@@ -214,6 +221,22 @@ textarea { width: 100%; min-height: 50px; }
 }
 .job-item-add-stage:hover { background: var(--color-primary-light); border-color: var(--color-primary); color: var(--color-primary-dark); }
 .job-empty { padding: 16px; text-align: center; color: var(--color-text-muted); font-size: 13px; }
+
+.history-panel { max-width: 760px; }
+.history-panel .job-search { width: 100%; margin: 10px 0 16px; }
+.history-list { display: flex; flex-direction: column; gap: 10px; }
+.history-item { padding: 12px 14px; border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface-alt); }
+.history-item-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.history-item-restore {
+  flex-shrink: 0; font-size: 11px; padding: 4px 10px; border-radius: 999px;
+  border: 1px solid var(--color-primary); color: var(--color-primary-dark); background: transparent;
+}
+.history-item-restore:hover { background: var(--color-primary-light); }
+.history-item-date { font-size: 11px; color: var(--color-text-muted); margin-top: 4px; }
+.history-item-stages { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.history-stage-chip {
+  font-size: 11px; padding: 2px 8px; border-radius: 999px; background: var(--color-surface); border: 1px solid var(--color-border); color: var(--color-text-muted);
+}
 .gantt { flex: 1; min-width: 0; }
 
 .row-mode-toggle { display: flex; border: 1px solid var(--color-border); border-radius: 999px; overflow: hidden; }

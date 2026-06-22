@@ -211,6 +211,16 @@ export default function Gantt({ onCreateJob }) {
     await api.stages.update(id, patch);
   }
 
+  async function finalizeJob(jobId, overall) {
+    if (overall !== 'done') {
+      if (!window.confirm('Не все этапы завершены. Всё равно завершить заказ и убрать его в историю?')) return;
+    }
+    if (selectedJobId === jobId) setSelectedJobId(null);
+    await api.jobs.archive(jobId);
+    showToast('Заказ завершён и перемещён в историю');
+    load();
+  }
+
   async function patchJob(jobId, patch) {
     setStages((prev) => prev.map((s) => (s.job_id === jobId ? { ...s, ...patch } : s)));
     await api.jobs.update(jobId, patch);
@@ -375,7 +385,16 @@ export default function Gantt({ onCreateJob }) {
             >
               <div className="job-item-head">
                 <div className="job-item-title">{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
-                <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
+                <div className="job-item-head-actions">
+                  <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
+                  <button
+                    className="job-item-finish"
+                    title="Завершить и убрать в историю"
+                    onClick={(e) => { e.stopPropagation(); finalizeJob(j.job_id, overall); }}
+                  >
+                    ✓
+                  </button>
+                </div>
               </div>
               <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
               {j.storage_location && <div className="job-item-storage">📦 {j.storage_location}</div>}

@@ -2,12 +2,14 @@ import { useState } from 'react';
 import Gantt from './components/Gantt';
 import PostsMasters from './components/PostsMasters';
 import JobForm from './components/JobForm';
+import History from './components/History';
 import Logo from './components/Logo';
 import './App.css';
 
 const TABS = [
   { id: 'gantt', label: 'График', icon: '📅' },
   { id: 'job', label: 'Новый заказ', icon: '➕' },
+  { id: 'history', label: 'История', icon: '🗄️' },
   { id: 'config', label: 'Посты и мастера', icon: '⚙️' },
 ];
 
@@ -37,6 +39,7 @@ function App() {
       <main className="app-main">
         {tab === 'gantt' && <Gantt key={ganttKey} onCreateJob={() => setTab('job')} />}
         {tab === 'job' && <JobForm onCreated={() => { setGanttKey((k) => k + 1); setTab('gantt'); }} />}
+        {tab === 'history' && <History />}
         {tab === 'config' && <PostsMasters />}
       </main>
     </div>

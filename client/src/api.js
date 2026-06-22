@@ -108,6 +108,12 @@ export const api = {
       await batch.commit();
       return { ok: true };
     },
+    async archive(id) {
+      return api.jobs.update(id, { archived: true, archived_at: Date.now() });
+    },
+    async unarchive(id) {
+      return api.jobs.update(id, { archived: false, archived_at: null });
+    },
   },
 
   stages: {
@@ -146,6 +152,7 @@ export const api = {
     const mastersById = new Map(mastersSnap.docs.map((d) => [d.id, d.data()]));
     const stages = stagesSnap.docs
       .map(withId)
+      .filter((s) => !jobsById.get(s.job_id)?.archived)
       .map((s) => {
         const job = jobsById.get(s.job_id) || {};
         const master = s.master_id ? mastersById.get(s.master_id) : null;
@@ -162,5 +169,28 @@ export const api = {
       })
       .sort((a, b) => (a.start_at > b.start_at ? 1 : -1));
     return { posts, stages };
+  },
+
+  async history() {
+    const [jobsSnap, stagesSnap, postsSnap] = await Promise.all([
+      getDocs(query(jobsCol, where('archived', '==', true))),
+      getDocs(stagesCol),
+      getDocs(query(postsCol, orderBy('sort_order'))),
+    ]);
+    const posts = postsSnap.docs.map(withId);
+    const postsById = new Map(posts.map((p) => [p.id, p]));
+    const stagesByJob = new Map();
+    for (const s of stagesSnap.docs.map(withId)) {
+      if (!stagesByJob.has(s.job_id)) stagesByJob.set(s.job_id, []);
+      stagesByJob.get(s.job_id).push(s);
+    }
+    const jobs = jobsSnap.docs.map(withId).map((job) => ({
+      ...job,
+      stages: (stagesByJob.get(job.id) || [])
+        .sort((a, b) => (a.sequence - b.sequence) || (a.start_at > b.start_at ? 1 : -1))
+        .map((s) => ({ ...s, post_name: postsById.get(s.post_id)?.name })),
+    }));
+    jobs.sort((a, b) => (b.archived_at || 0) - (a.archived_at || 0));
+    return jobs;
   },
 };
