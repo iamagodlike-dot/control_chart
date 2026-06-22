@@ -369,3 +369,41 @@ textarea { width: 100%; min-height: 50px; }
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px;
   padding: 28px 16px; color: var(--color-text-muted); text-align: center; font-size: 13px;
 }
+
+/* Responsive */
+@media (max-width: 1100px) {
+  .gantt-row-label { width: 170px; min-width: 170px; }
+  .job-sidebar { width: 220px; min-width: 220px; }
+}
+
+@media (max-width: 900px) {
+  .app-header { flex-wrap: wrap; gap: 10px; padding: 10px 16px; }
+  .tabs { order: 3; width: 100%; overflow-x: auto; justify-content: flex-start; }
+  .app-main { padding: 14px; }
+
+  .gantt-layout { flex-direction: column; height: auto; }
+  .job-sidebar {
+    width: 100%; min-width: 0; flex-direction: row; flex-wrap: wrap;
+    align-items: center; padding: 10px; gap: 8px;
+  }
+  .job-search { order: 1; flex: 1 1 160px; min-width: 140px; margin: 0; }
+  .job-sidebar-new { order: 2; margin: 0; flex-shrink: 0; white-space: nowrap; }
+  .job-list { order: 3; flex: 1 1 100%; flex-direction: row; overflow-x: auto; overflow-y: hidden; padding: 4px 2px; }
+  .job-item { min-width: 230px; flex-shrink: 0; }
+  .gantt { flex: none; height: 72vh; }
+  .panel-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 640px) {
+  .app-brand-subtitle { display: none; }
+  .app-brand-title { font-size: 14px; }
+  .app-main { padding: 10px; }
+  .job-form-grid { grid-template-columns: 1fr; }
+  .modal { width: calc(100vw - 32px); max-height: 86vh; overflow-y: auto; }
+  .gantt-row-label { width: 100px; min-width: 100px; font-size: 12px; padding: 8px; }
+  .gantt-toolbar { gap: 6px; padding: 8px; }
+  .gantt-toolbar > strong { font-size: 12px; }
+  .legend { display: none; }
+  .history-panel { max-width: 100%; }
+  .stage-table { display: block; overflow-x: auto; white-space: nowrap; }
+}
