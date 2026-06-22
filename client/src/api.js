@@ -9,6 +9,7 @@ const mastersCol = collection(db, 'masters');
 const jobsCol = collection(db, 'jobs');
 const stagesCol = collection(db, 'stages');
 const settingsCol = collection(db, 'settings');
+const queueCol = collection(db, 'queue');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -203,6 +204,25 @@ export const api = {
     async updateCompany(data) {
       await setDoc(doc(settingsCol, 'company'), stripUndefined(data), { merge: true });
       return api.settings.getCompany();
+    },
+  },
+
+  queue: {
+    async list() {
+      const snap = await getDocs(query(queueCol, orderBy('created_at', 'desc')));
+      return snap.docs.map(withId);
+    },
+    async create(data) {
+      const ref = await addDoc(queueCol, stripUndefined({ ...data, created_at: Date.now() }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(queueCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(queueCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(queueCol, id));
+      return { ok: true };
     },
   },
 };

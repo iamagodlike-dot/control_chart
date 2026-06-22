@@ -351,6 +351,24 @@ textarea { width: 100%; min-height: 50px; }
   border-radius: 999px; font-size: 13px; font-weight: 700;
 }
 
+/* Queue */
+.queue-panel { max-width: 880px; margin: 0 auto; }
+.queue-form { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 18px; }
+.queue-form input, .queue-form textarea { width: 100%; }
+.queue-form .job-form-full, .queue-form button { grid-column: 1 / -1; }
+.queue-list { display: flex; flex-direction: column; gap: 10px; }
+.queue-item {
+  display: flex; align-items: center; gap: 14px; padding: 12px 14px;
+  border-radius: 12px; border: 1px solid var(--color-border); background: var(--color-surface-alt);
+}
+.queue-item-pos {
+  flex-shrink: 0; width: 32px; height: 32px; border-radius: 50%; background: var(--color-primary);
+  color: #FAF7F1; font-weight: 800; font-size: 13px; display: flex; align-items: center; justify-content: center;
+}
+.queue-item-body { flex: 1; min-width: 0; }
+.queue-item-notes { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; }
+.queue-item-actions { flex-shrink: 0; display: flex; align-items: center; gap: 6px; }
+
 /* Route preview mini-gantt */
 .route-preview { margin-top: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
 .route-preview-empty { padding: 16px; text-align: center; color: var(--color-text-muted); font-size: 13px; }
@@ -439,6 +457,8 @@ textarea { width: 100%; min-height: 50px; }
   .app-brand-title { font-size: 14px; }
   .app-main { padding: 10px; }
   .job-form-grid { grid-template-columns: 1fr; }
+  .queue-form { grid-template-columns: 1fr; }
+  .queue-item { flex-wrap: wrap; }
   .modal { width: calc(100vw - 32px); max-height: 86vh; overflow-y: auto; }
   .gantt-row-label { width: 100px; min-width: 100px; font-size: 12px; padding: 8px; }
   .gantt-toolbar { gap: 6px; padding: 8px; }

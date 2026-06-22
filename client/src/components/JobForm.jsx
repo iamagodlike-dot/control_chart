@@ -21,11 +21,13 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart.isBefore(bEnd) && bStart.isBefore(aEnd);
 }
 
-export default function JobForm({ onCreated }) {
+const EMPTY_JOB = { car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', storage_location: '', deadline: '', notes: '' };
+
+export default function JobForm({ onCreated, initial, queueId }) {
   const [posts, setPosts] = useState([]);
   const [masters, setMasters] = useState([]);
   const [existingStages, setExistingStages] = useState([]);
-  const [job, setJob] = useState({ car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', storage_location: '', deadline: '', notes: '' });
+  const [job, setJob] = useState({ ...EMPTY_JOB, ...initial });
   const [stages, setStages] = useState([]);
 
   useEffect(() => {
@@ -67,7 +69,8 @@ export default function JobForm({ onCreated }) {
       })),
     };
     await api.jobs.create(payload);
-    setJob({ car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', storage_location: '', deadline: '', notes: '' });
+    if (queueId) await api.queue.remove(queueId);
+    setJob({ ...EMPTY_JOB });
     setStages([emptyStage(posts, masters)]);
     onCreated && onCreated();
     alert('Заказ создан и добавлен в график');
