@@ -5,6 +5,7 @@ import JobForm from './components/JobForm';
 import History from './components/History';
 import Queue from './components/Queue';
 import Logo from './components/Logo';
+import AuthGate from './components/AuthGate';
 import './App.css';
 
 const TABS = [
@@ -35,39 +36,47 @@ function App() {
   }
 
   return (
-    <div className="app">
-      <header className="app-header">
-        <div className="app-brand">
-          <Logo size={38} />
-          <div className="app-brand-text">
-            <span className="app-brand-title">Авто Академия</span>
-            <span className="app-brand-subtitle">Кузовной ремонт — диспетчерская</span>
-          </div>
-        </div>
-        <nav className="tabs">
-          {TABS.map((t) => (
-            <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
-              <span className="tab-icon">{t.icon}</span>{t.label}
-            </button>
-          ))}
-        </nav>
-      </header>
+    <AuthGate>
+      {({ user, signOut }) => (
+        <div className="app">
+          <header className="app-header">
+            <div className="app-brand">
+              <Logo size={38} />
+              <div className="app-brand-text">
+                <span className="app-brand-title">Авто Академия</span>
+                <span className="app-brand-subtitle">Кузовной ремонт — диспетчерская</span>
+              </div>
+            </div>
+            <nav className="tabs">
+              {TABS.map((t) => (
+                <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
+                  <span className="tab-icon">{t.icon}</span>{t.label}
+                </button>
+              ))}
+            </nav>
+            <div className="app-user">
+              <span className="app-user-email">{user.email}</span>
+              <button onClick={signOut}>Выйти</button>
+            </div>
+          </header>
 
-      <main className="app-main">
-        {tab === 'gantt' && <Gantt key={ganttKey} onCreateJob={() => { setJobDraft(null); setTab('job'); }} />}
-        {tab === 'job' && (
-          <JobForm
-            key={jobDraft?.queueId || 'new'}
-            initial={jobDraft?.initial}
-            queueId={jobDraft?.queueId}
-            onCreated={() => { setJobDraft(null); setGanttKey((k) => k + 1); setTab('gantt'); }}
-          />
-        )}
-        {tab === 'queue' && <Queue onStart={startFromQueue} />}
-        {tab === 'history' && <History />}
-        {tab === 'config' && <PostsMasters />}
-      </main>
-    </div>
+          <main className="app-main">
+            {tab === 'gantt' && <Gantt key={ganttKey} onCreateJob={() => { setJobDraft(null); setTab('job'); }} />}
+            {tab === 'job' && (
+              <JobForm
+                key={jobDraft?.queueId || 'new'}
+                initial={jobDraft?.initial}
+                queueId={jobDraft?.queueId}
+                onCreated={() => { setJobDraft(null); setGanttKey((k) => k + 1); setTab('gantt'); }}
+              />
+            )}
+            {tab === 'queue' && <Queue onStart={startFromQueue} />}
+            {tab === 'history' && <History />}
+            {tab === 'config' && <PostsMasters />}
+          </main>
+        </div>
+      )}
+    </AuthGate>
   );
 }
 
