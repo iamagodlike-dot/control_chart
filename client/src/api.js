@@ -1,5 +1,5 @@
 import {
-  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc,
+  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, setDoc,
   query, orderBy, where, writeBatch,
 } from 'firebase/firestore';
 import { db } from './firebase';
@@ -8,6 +8,7 @@ const postsCol = collection(db, 'posts');
 const mastersCol = collection(db, 'masters');
 const jobsCol = collection(db, 'jobs');
 const stagesCol = collection(db, 'stages');
+const settingsCol = collection(db, 'settings');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -192,5 +193,16 @@ export const api = {
     }));
     jobs.sort((a, b) => (b.archived_at || 0) - (a.archived_at || 0));
     return jobs;
+  },
+
+  settings: {
+    async getCompany() {
+      const snap = await getDoc(doc(settingsCol, 'company'));
+      return snap.exists() ? snap.data() : {};
+    },
+    async updateCompany(data) {
+      await setDoc(doc(settingsCol, 'company'), stripUndefined(data), { merge: true });
+      return api.settings.getCompany();
+    },
   },
 };

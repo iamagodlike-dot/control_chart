@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import CompanySettings from './CompanySettings';
 
 const ICON_RULES = [
   [/рихт/i, '🔨'],
@@ -140,6 +141,8 @@ export default function PostsMasters() {
           <button className="primary" onClick={addMaster}>Добавить мастера</button>
         </div>
       </div>
+
+      <CompanySettings />
     </div>
   );
 }

@@ -5,6 +5,7 @@ service cloud.firestore {
     match /masters/{id} { allow read, write: if true; }
     match /jobs/{id} { allow read, write: if true; }
     match /stages/{id} { allow read, write: if true; }
+    match /settings/{id} { allow read, write: if true; }
     match /{document=**} { allow read, write: if false; }
   }
 }

@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
+import DocumentsModal from './DocumentsModal';
 
 const ZOOM_LEVELS = [8, 12, 20, 32, 48]; // px per hour
 const DEFAULT_ZOOM_INDEX = 2;
@@ -114,6 +115,12 @@ export default function Gantt({ onCreateJob }) {
   }
   const scrollRef = useRef(null);
   const [loading, setLoading] = useState(true);
+  const [docsJob, setDocsJob] = useState(null);
+  const [company, setCompany] = useState({});
+
+  async function openDocs(jobId) {
+    setDocsJob(await api.jobs.get(jobId));
+  }
 
   const load = async () => {
     const [g, m] = await Promise.all([api.gantt(), api.masters.list()]);
@@ -122,6 +129,8 @@ export default function Gantt({ onCreateJob }) {
     setMasters(m);
     setLoading(false);
   };
+
+  useEffect(() => { api.settings.getCompany().then(setCompany); }, []);
 
   useEffect(() => { load(); }, []);
   useEffect(() => {
@@ -388,6 +397,13 @@ export default function Gantt({ onCreateJob }) {
                 <div className="job-item-head-actions">
                   <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
                   <button
+                    className="job-item-docs"
+                    title="Документы: заказ-наряд, акты"
+                    onClick={(e) => { e.stopPropagation(); openDocs(j.job_id); }}
+                  >
+                    📄
+                  </button>
+                  <button
                     className="job-item-finish"
                     title="Завершить и убрать в историю"
                     onClick={(e) => { e.stopPropagation(); finalizeJob(j.job_id, overall); }}
@@ -589,6 +605,15 @@ export default function Gantt({ onCreateJob }) {
             const created = await addNextStage(selectedStage);
             setSelectedStage(created);
           }}
+        />
+      )}
+
+      {docsJob && (
+        <DocumentsModal
+          job={docsJob}
+          company={company}
+          onClose={() => setDocsJob(null)}
+          onJobUpdated={async () => setDocsJob(await api.jobs.get(docsJob.id))}
         />
       )}
     </div>

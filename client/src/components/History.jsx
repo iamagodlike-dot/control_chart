@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
+import DocumentsModal from './DocumentsModal';
 
 const STATUS_LABELS = {
   planned: 'Запланировано',
@@ -13,6 +14,8 @@ export default function History() {
   const [jobs, setJobs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [company, setCompany] = useState({});
+  const [docsJob, setDocsJob] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -20,7 +23,14 @@ export default function History() {
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => {
+    load();
+    api.settings.getCompany().then(setCompany);
+  }, []);
+
+  async function openDocs(jobId) {
+    setDocsJob(await api.jobs.get(jobId));
+  }
 
   async function restore(id) {
     await api.jobs.unarchive(id);
@@ -58,7 +68,10 @@ export default function History() {
           <div className="history-item" key={j.id}>
             <div className="history-item-head">
               <div className="job-item-title">{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
-              <button className="history-item-restore" onClick={() => restore(j.id)}>↺ Вернуть в работу</button>
+              <div className="history-item-actions">
+                <button className="job-item-docs" title="Документы: заказ-наряд, акты" onClick={() => openDocs(j.id)}>📄</button>
+                <button className="history-item-restore" onClick={() => restore(j.id)}>↺ Вернуть в работу</button>
+              </div>
             </div>
             <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
             {j.archived_at && <div className="history-item-date">Завершён {dayjs(j.archived_at).format('DD.MM.YYYY HH:mm')}</div>}
@@ -72,6 +85,15 @@ export default function History() {
           </div>
         ))}
       </div>
+
+      {docsJob && (
+        <DocumentsModal
+          job={docsJob}
+          company={company}
+          onClose={() => setDocsJob(null)}
+          onJobUpdated={async () => setDocsJob(await api.jobs.get(docsJob.id))}
+        />
+      )}
     </div>
   );
 }
