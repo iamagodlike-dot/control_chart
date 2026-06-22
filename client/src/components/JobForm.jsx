@@ -109,7 +109,7 @@ export default function JobForm({ onCreated }) {
             <tr key={i}>
               <td>{i + 1}</td>
               <td>
-                <select value={s.post_id} onChange={(e) => updateStage(i, { post_id: Number(e.target.value) })}>
+                <select value={s.post_id} onChange={(e) => updateStage(i, { post_id: e.target.value })}>
                   {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                 </select>
               </td>

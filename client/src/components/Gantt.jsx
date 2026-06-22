@@ -306,7 +306,7 @@ export default function Gantt({ onCreateJob }) {
   function onDropToRow(e, rowId) {
     if (rowMode === 'job' || dragLocked) return;
     e.preventDefault();
-    const stageId = Number(e.dataTransfer.getData('stageId'));
+    const stageId = e.dataTransfer.getData('stageId');
     if (!stageId) return;
     if (rowMode === 'post') {
       patchStage(stageId, { post_id: rowId });
@@ -604,12 +604,12 @@ function StageEditor({ stage, posts, masters, onClose, onSaved, onDeleted, onAdd
           <input type="datetime-local" value={jobForm.deadline} onChange={(e) => setJobForm({ ...jobForm, deadline: e.target.value })} />
         </label>
         <label>Пост
-          <select value={form.post_id} onChange={(e) => setForm({ ...form, post_id: Number(e.target.value) })}>
+          <select value={form.post_id} onChange={(e) => setForm({ ...form, post_id: e.target.value })}>
             {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
         <label>Мастер
-          <select value={form.master_id} onChange={(e) => setForm({ ...form, master_id: e.target.value ? Number(e.target.value) : '' })}>
+          <select value={form.master_id} onChange={(e) => setForm({ ...form, master_id: e.target.value || '' })}>
             <option value="">— не назначен —</option>
             {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
           </select>

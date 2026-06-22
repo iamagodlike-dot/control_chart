@@ -1,38 +1,166 @@
-const BASE = 'http://localhost:4000/api';
+import {
+  collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc,
+  query, orderBy, where, writeBatch,
+} from 'firebase/firestore';
+import { db } from './firebase';
 
-async function request(path, options = {}) {
-  const res = await fetch(`${BASE}${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  if (!res.ok) throw new Error(`${res.status} ${res.statusText}`);
-  return res.json();
+const postsCol = collection(db, 'posts');
+const mastersCol = collection(db, 'masters');
+const jobsCol = collection(db, 'jobs');
+const stagesCol = collection(db, 'stages');
+
+function withId(snap) {
+  return { id: snap.id, ...snap.data() };
+}
+
+function stripUndefined(obj) {
+  const out = {};
+  for (const k in obj) if (obj[k] !== undefined) out[k] = obj[k];
+  return out;
+}
+
+async function stagesForJob(jobId) {
+  const snap = await getDocs(query(stagesCol, where('job_id', '==', jobId)));
+  return snap.docs.map(withId).sort((a, b) => (a.sequence - b.sequence) || (a.start_at > b.start_at ? 1 : -1));
 }
 
 export const api = {
   posts: {
-    list: () => request('/posts'),
-    create: (data) => request('/posts', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id, data) => request(`/posts/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id) => request(`/posts/${id}`, { method: 'DELETE' }),
+    async list() {
+      const snap = await getDocs(query(postsCol, orderBy('sort_order')));
+      return snap.docs.map(withId);
+    },
+    async create(data) {
+      const ref = await addDoc(postsCol, stripUndefined({ sort_order: 0, ...data }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(postsCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(postsCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(postsCol, id));
+      return { ok: true };
+    },
   },
+
   masters: {
-    list: () => request('/masters'),
-    create: (data) => request('/masters', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id, data) => request(`/masters/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id) => request(`/masters/${id}`, { method: 'DELETE' }),
+    async list() {
+      const snap = await getDocs(mastersCol);
+      return snap.docs.map(withId);
+    },
+    async create(data) {
+      const ref = await addDoc(mastersCol, stripUndefined(data));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(mastersCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(mastersCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(mastersCol, id));
+      return { ok: true };
+    },
   },
+
   jobs: {
-    list: () => request('/jobs'),
-    get: (id) => request(`/jobs/${id}`),
-    create: (data) => request('/jobs', { method: 'POST', body: JSON.stringify(data) }),
-    update: (id, data) => request(`/jobs/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id) => request(`/jobs/${id}`, { method: 'DELETE' }),
+    async list() {
+      const snap = await getDocs(query(jobsCol, orderBy('created_at', 'desc')));
+      const jobs = snap.docs.map(withId);
+      for (const job of jobs) job.stages = await stagesForJob(job.id);
+      return jobs;
+    },
+    async get(id) {
+      const snap = await getDoc(doc(jobsCol, id));
+      if (!snap.exists()) return null;
+      const job = withId(snap);
+      job.stages = await stagesForJob(job.id);
+      return job;
+    },
+    async create(data) {
+      const { stages = [], ...jobFields } = data;
+      const jobRef = await addDoc(jobsCol, stripUndefined({ ...jobFields, created_at: Date.now() }));
+      await Promise.all(stages.map((s, i) => addDoc(stagesCol, stripUndefined({
+        job_id: jobRef.id,
+        post_id: s.post_id,
+        master_id: s.master_id ?? null,
+        sequence: s.sequence ?? i,
+        title: s.title || null,
+        start_at: s.start_at,
+        end_at: s.end_at,
+        status: s.status || 'planned',
+      }))));
+      const job = withId(await getDoc(jobRef));
+      job.stages = await stagesForJob(job.id);
+      return job;
+    },
+    async update(id, data) {
+      await updateDoc(doc(jobsCol, id), stripUndefined(data));
+      const job = withId(await getDoc(doc(jobsCol, id)));
+      job.stages = await stagesForJob(id);
+      return job;
+    },
+    async remove(id) {
+      const snap = await getDocs(query(stagesCol, where('job_id', '==', id)));
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      batch.delete(doc(jobsCol, id));
+      await batch.commit();
+      return { ok: true };
+    },
   },
+
   stages: {
-    create: (jobId, data) => request(`/jobs/${jobId}/stages`, { method: 'POST', body: JSON.stringify(data) }),
-    update: (id, data) => request(`/stages/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    remove: (id) => request(`/stages/${id}`, { method: 'DELETE' }),
+    async create(jobId, data) {
+      const ref = await addDoc(stagesCol, stripUndefined({
+        job_id: jobId,
+        post_id: data.post_id,
+        master_id: data.master_id ?? null,
+        sequence: data.sequence ?? 0,
+        title: data.title || null,
+        start_at: data.start_at,
+        end_at: data.end_at,
+        status: data.status || 'planned',
+      }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(stagesCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(stagesCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(stagesCol, id));
+      return { ok: true };
+    },
   },
-  gantt: () => request('/gantt'),
+
+  async gantt() {
+    const [postsSnap, stagesSnap, jobsSnap, mastersSnap] = await Promise.all([
+      getDocs(query(postsCol, orderBy('sort_order'))),
+      getDocs(stagesCol),
+      getDocs(jobsCol),
+      getDocs(mastersCol),
+    ]);
+    const posts = postsSnap.docs.map(withId);
+    const jobsById = new Map(jobsSnap.docs.map((d) => [d.id, d.data()]));
+    const mastersById = new Map(mastersSnap.docs.map((d) => [d.id, d.data()]));
+    const stages = stagesSnap.docs
+      .map(withId)
+      .map((s) => {
+        const job = jobsById.get(s.job_id) || {};
+        const master = s.master_id ? mastersById.get(s.master_id) : null;
+        return {
+          ...s,
+          car_model: job.car_model,
+          plate_number: job.plate_number,
+          client_name: job.client_name,
+          order_number: job.order_number,
+          storage_location: job.storage_location,
+          deadline: job.deadline,
+          master_name: master ? master.name : null,
+        };
+      })
+      .sort((a, b) => (a.start_at > b.start_at ? 1 : -1));
+    return { posts, stages };
+  },
 };
