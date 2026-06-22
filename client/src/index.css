@@ -1,0 +1,14 @@
+:root {
+  font: 14px/1.45 'Manrope', system-ui, 'Segoe UI', Roboto, sans-serif;
+  color-scheme: light;
+}
+
+body {
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
