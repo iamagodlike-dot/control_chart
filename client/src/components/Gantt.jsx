@@ -426,6 +426,7 @@ export default function Gantt({ onCreateJob }) {
           })}
           {filteredJobs.length === 0 && <div className="job-empty">Ничего не найдено</div>}
         </div>
+        <button className="job-sidebar-new" onClick={onCreateJob}>+ Новый заказ</button>
       </aside>
 
       <div className="gantt">

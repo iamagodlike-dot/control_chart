@@ -8,7 +8,6 @@ import './App.css';
 
 const TABS = [
   { id: 'gantt', label: 'График', icon: '📅' },
-  { id: 'job', label: 'Новый заказ', icon: '➕' },
   { id: 'history', label: 'История', icon: '🗄️' },
   { id: 'config', label: 'Посты и мастера', icon: '⚙️' },
 ];
