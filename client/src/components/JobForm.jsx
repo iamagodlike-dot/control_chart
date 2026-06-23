@@ -21,13 +21,13 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart.isBefore(bEnd) && bStart.isBefore(aEnd);
 }
 
-const EMPTY_JOB = { car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', storage_location: '', deadline: '', notes: '' };
+const EMPTY_JOB = { car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', storage_location: '', expected_at: '', deadline: '', notes: '' };
 
-export default function JobForm({ onCreated, initial, queueId }) {
+export default function JobForm({ onCreated }) {
   const [posts, setPosts] = useState([]);
   const [masters, setMasters] = useState([]);
   const [existingStages, setExistingStages] = useState([]);
-  const [job, setJob] = useState({ ...EMPTY_JOB, ...initial });
+  const [job, setJob] = useState({ ...EMPTY_JOB });
   const [stages, setStages] = useState([]);
 
   useEffect(() => {
@@ -36,7 +36,6 @@ export default function JobForm({ onCreated, initial, queueId }) {
       setPosts(p);
       setMasters(m);
       setExistingStages(g.stages);
-      setStages([emptyStage(p, m)]);
     })();
   }, []);
 
@@ -56,9 +55,9 @@ export default function JobForm({ onCreated, initial, queueId }) {
 
   async function submit() {
     if (!job.car_model.trim()) return alert('Укажите марку/модель автомобиля');
-    if (stages.length === 0) return alert('Добавьте хотя бы один этап');
     const payload = {
       ...job,
+      expected_at: job.expected_at ? dayjs(job.expected_at).toISOString() : null,
       deadline: job.deadline ? dayjs(job.deadline).toISOString() : null,
       stages: stages.map((s, i) => ({
         ...s,
@@ -69,16 +68,16 @@ export default function JobForm({ onCreated, initial, queueId }) {
       })),
     };
     await api.jobs.create(payload);
-    if (queueId) await api.queue.remove(queueId);
     setJob({ ...EMPTY_JOB });
-    setStages([emptyStage(posts, masters)]);
+    setStages([]);
     onCreated && onCreated();
-    alert('Заказ создан и добавлен в график');
+    alert(stages.length > 0 ? 'Автомобиль добавлен и поставлен в график' : 'Автомобиль добавлен — ждём заезда, маршрут можно запланировать позже');
   }
 
   return (
     <div className="panel job-form-panel">
-      <h3>Новый автомобиль / заказ</h3>
+      <h3>Добавить автомобиль</h3>
+      <p className="panel-hint">Заведите данные сразу — и заезд, и дедлайн, и маршрут (если уже известен). Машина появится в общем списке.</p>
       <div className="job-form-grid">
         <input placeholder="Марка и модель *" value={job.car_model} onChange={(e) => setJob({ ...job, car_model: e.target.value })} />
         <input placeholder="Гос. номер" value={job.plate_number} onChange={(e) => setJob({ ...job, plate_number: e.target.value })} />
@@ -86,6 +85,10 @@ export default function JobForm({ onCreated, initial, queueId }) {
         <input placeholder="Место на складе (стеллаж, бокс)" value={job.storage_location} onChange={(e) => setJob({ ...job, storage_location: e.target.value })} />
         <input placeholder="Клиент" value={job.client_name} onChange={(e) => setJob({ ...job, client_name: e.target.value })} />
         <input placeholder="Телефон" value={job.client_phone} onChange={(e) => setJob({ ...job, client_phone: e.target.value })} />
+        <label className="job-form-field">
+          <span>Дата заезда (если ещё не приехала)</span>
+          <input type="datetime-local" value={job.expected_at} onChange={(e) => setJob({ ...job, expected_at: e.target.value })} />
+        </label>
         <label className="job-form-field">
           <span>Дедлайн (выдать клиенту до)</span>
           <input type="datetime-local" value={job.deadline} onChange={(e) => setJob({ ...job, deadline: e.target.value })} />
@@ -100,8 +103,9 @@ export default function JobForm({ onCreated, initial, queueId }) {
           : null;
       })()}
 
-      <h4>Маршрут по постам</h4>
-      <table className="stage-table">
+      <h4>Маршрут по постам <span className="panel-hint-inline">(необязательно — можно запланировать позже, когда машина приедет)</span></h4>
+      {stages.length === 0 && <div className="job-empty">Маршрут не задан — машина встанет в общий список как ожидаемая</div>}
+      {stages.length > 0 && <table className="stage-table">
         <thead>
           <tr>
             <th>#</th><th>Пост</th><th>Мастер</th><th>Начало</th><th>Конец</th><th></th>
@@ -128,14 +132,18 @@ export default function JobForm({ onCreated, initial, queueId }) {
             </tr>
           ))}
         </tbody>
-      </table>
+      </table>}
       <div className="inline-form">
         <button onClick={addStage}>+ Добавить этап</button>
-        <button className="primary" onClick={submit}>Создать заказ</button>
+        <button className="primary" onClick={submit}>{stages.length > 0 ? 'Сохранить машину и маршрут' : 'Добавить машину (без маршрута)'}</button>
       </div>
 
-      <h4>Где это встанет в графике</h4>
-      <RoutePreview posts={posts} draftStages={stages} existingStages={existingStages} deadline={job.deadline} />
+      {stages.length > 0 && (
+        <>
+          <h4>Где это встанет в графике</h4>
+          <RoutePreview posts={posts} draftStages={stages} existingStages={existingStages} deadline={job.deadline} />
+        </>
+      )}
     </div>
   );
 }

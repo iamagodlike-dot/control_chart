@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
 import DocumentsModal from './DocumentsModal';
+import CarDetailModal from './CarDetailModal';
 
 const ZOOM_LEVELS = [8, 12, 20, 32, 48]; // px per hour
 const DEFAULT_ZOOM_INDEX = 2;
@@ -11,18 +12,20 @@ const WORKING_HOURS_PER_DAY = 12; // used only for load % capacity, not for layo
 const LABEL_WIDTH = 220;
 const UNASSIGNED = 'unassigned';
 
-const STATUS_COLORS = {
+export const STATUS_COLORS = {
   planned: '#9C9182',
   in_progress: '#3E6E8E',
   done: '#5B7F3A',
   delayed: '#B5482B',
+  queued: '#A8671F',
 };
 
-const STATUS_LABELS = {
+export const STATUS_LABELS = {
   planned: 'Запланировано',
   in_progress: 'В работе',
   done: 'Готово',
   delayed: 'Задержка',
+  queued: 'Ожидается',
 };
 
 function dateToX(date, rangeStart, hourWidth) {
@@ -40,14 +43,15 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart.isBefore(bEnd) && bStart.isBefore(aEnd);
 }
 
-function effectiveStatus(stage, now) {
+export function effectiveStatus(stage, now) {
   if (stage.status === 'done') return 'done';
   if (dayjs(stage.end_at).isBefore(now)) return 'delayed';
   return stage.status;
 }
 
 // worst-first: a job is as urgent as its most urgent stage
-function jobOverallStatus(job, now) {
+export function jobOverallStatus(job, now) {
+  if (!job.stages || job.stages.length === 0) return 'queued';
   const statuses = job.stages.map((s) => effectiveStatus(s, now));
   if (statuses.includes('delayed')) return 'delayed';
   if (statuses.includes('in_progress')) return 'in_progress';
@@ -56,8 +60,8 @@ function jobOverallStatus(job, now) {
 }
 
 // 'missed' = deadline already passed and not all stages done; 'at-risk' = last stage finishes after deadline; 'ok' = on track
-function deadlineState(job, now) {
-  if (!job.deadline) return null;
+export function deadlineState(job, now) {
+  if (!job.deadline || !job.stages || job.stages.length === 0) return null;
   const deadline = dayjs(job.deadline);
   const allDone = job.stages.every((s) => s.status === 'done');
   if (allDone) return null;
@@ -91,6 +95,7 @@ function computeLanes(rowStages) {
 export default function Gantt({ onCreateJob }) {
   const [posts, setPosts] = useState([]);
   const [stages, setStages] = useState([]);
+  const [jobs, setJobs] = useState([]);
   const [masters, setMasters] = useState([]);
   const [rangeStart, setRangeStart] = useState(dayjs().startOf('day'));
   const [days, setDays] = useState(7);
@@ -116,16 +121,24 @@ export default function Gantt({ onCreateJob }) {
   const scrollRef = useRef(null);
   const [loading, setLoading] = useState(true);
   const [docsJob, setDocsJob] = useState(null);
+  const [detailJob, setDetailJob] = useState(null);
   const [company, setCompany] = useState({});
 
   async function openDocs(jobId) {
     setDocsJob(await api.jobs.get(jobId));
   }
 
+  async function refreshDetailJob(jobId) {
+    const fresh = await api.jobs.get(jobId);
+    setDetailJob(fresh);
+    return fresh;
+  }
+
   const load = async () => {
     const [g, m] = await Promise.all([api.gantt(), api.masters.list()]);
     setPosts(g.posts);
     setStages(g.stages);
+    setJobs(g.jobs);
     setMasters(m);
     setLoading(false);
   };
@@ -143,32 +156,13 @@ export default function Gantt({ onCreateJob }) {
     [rangeStart, days]
   );
 
-  const jobs = useMemo(() => {
-    const map = new Map();
-    for (const s of stages) {
-      if (!map.has(s.job_id)) {
-        map.set(s.job_id, {
-          job_id: s.job_id,
-          car_model: s.car_model,
-          plate_number: s.plate_number,
-          client_name: s.client_name,
-          order_number: s.order_number,
-          storage_location: s.storage_location,
-          deadline: s.deadline,
-          stages: [],
-        });
-      }
-      map.get(s.job_id).stages.push(s);
-    }
-    const list = Array.from(map.values());
-    for (const j of list) j.stages.sort((a, b) => a.sequence - b.sequence || dayjs(a.start_at).diff(dayjs(b.start_at)));
-    list.sort((a, b) => dayjs(a.stages[0].start_at).diff(dayjs(b.stages[0].start_at)));
-    return list;
-  }, [stages]);
-
   const rows = useMemo(() => {
     if (rowMode === 'post') return posts;
-    if (rowMode === 'job') return jobs.map((j) => ({ id: j.job_id, name: `${j.car_model}${j.plate_number ? ` (${j.plate_number})` : ''}` }));
+    if (rowMode === 'job') {
+      return jobs
+        .filter((j) => j.stages.length > 0)
+        .map((j) => ({ id: j.job_id, name: `${j.car_model}${j.plate_number ? ` (${j.plate_number})` : ''}` }));
+    }
     return [...masters, { id: UNASSIGNED, name: 'Без мастера' }];
   }, [rowMode, posts, masters, jobs]);
 
@@ -232,6 +226,7 @@ export default function Gantt({ onCreateJob }) {
 
   async function patchJob(jobId, patch) {
     setStages((prev) => prev.map((s) => (s.job_id === jobId ? { ...s, ...patch } : s)));
+    setJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, ...patch } : j)));
     await api.jobs.update(jobId, patch);
   }
 
@@ -252,6 +247,7 @@ export default function Gantt({ onCreateJob }) {
     const g = await api.gantt();
     setPosts(g.posts);
     setStages(g.stages);
+    setJobs(g.jobs);
     return g.stages.find((s) => s.id === newStage.id) || null;
   }
 
@@ -334,14 +330,6 @@ export default function Gantt({ onCreateJob }) {
     }
   }
 
-  function focusJob(job) {
-    setSelectedJobId((prev) => (prev === job.job_id ? null : job.job_id));
-    const earliest = dayjs(job.stages[0].start_at);
-    if (earliest.isBefore(rangeStart) || earliest.isAfter(rangeStart.add(days - 1, 'day'))) {
-      setRangeStart(earliest.startOf('day'));
-    }
-  }
-
   const totalWidth = days * dayWidth;
   const showNowLine = !now.isBefore(rangeStart) && now.isBefore(rangeStart.add(days, 'day'));
   const nowX = showNowLine ? dateToX(now, rangeStart, hourWidth) : null;
@@ -384,11 +372,12 @@ export default function Gantt({ onCreateJob }) {
           {filteredJobs.map((j) => {
             const dlState = deadlineState(j, now);
             const overall = jobOverallStatus(j, now);
+            const isQueued = j.stages.length === 0;
             return (
             <div
               key={j.job_id}
-              className={`job-item${selectedJobId === j.job_id ? ' active' : ''}${hoveredJobId === j.job_id ? ' hovered' : ''}`}
-              onClick={() => focusJob(j)}
+              className={`job-item${isQueued ? ' is-queued' : ''}${hoveredJobId === j.job_id ? ' hovered' : ''}`}
+              onClick={() => setDetailJob(j)}
               onMouseEnter={() => setHoveredJobId(j.job_id)}
               onMouseLeave={() => setHoveredJobId(null)}
             >
@@ -403,17 +392,22 @@ export default function Gantt({ onCreateJob }) {
                   >
                     📄
                   </button>
-                  <button
-                    className="job-item-finish"
-                    title="Завершить и убрать в историю"
-                    onClick={(e) => { e.stopPropagation(); finalizeJob(j.job_id, overall); }}
-                  >
-                    ✓
-                  </button>
+                  {!isQueued && (
+                    <button
+                      className="job-item-finish"
+                      title="Завершить и убрать в историю"
+                      onClick={(e) => { e.stopPropagation(); finalizeJob(j.job_id, overall); }}
+                    >
+                      ✓
+                    </button>
+                  )}
                 </div>
               </div>
               <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
               {j.storage_location && <div className="job-item-storage">📦 {j.storage_location}</div>}
+              {isQueued && j.expected_at && (
+                <div className="job-item-deadline">🕒 заедет {dayjs(j.expected_at).format('DD.MM HH:mm')}</div>
+              )}
               {j.deadline && (
                 <div className={`job-item-deadline${dlState ? ` is-${dlState}` : ''}`}>
                   ⏰ до {dayjs(j.deadline).format('DD.MM HH:mm')}
@@ -421,28 +415,32 @@ export default function Gantt({ onCreateJob }) {
                   {dlState === 'at-risk' && ' — под угрозой'}
                 </div>
               )}
-              <div className="job-item-route">
-                {j.stages.map((s) => (
-                  <span key={s.id} className="job-route-dot" style={{ background: STATUS_COLORS[effectiveStatus(s, now)] }} title={posts.find((p) => p.id === s.post_id)?.name} />
-                ))}
-                <button
-                  className="job-item-add-stage"
-                  title="Добавить следующий этап маршрута"
-                  onClick={async (e) => {
-                    e.stopPropagation();
-                    const created = await addNextStage(j.stages[0]);
-                    setSelectedStage(created);
-                  }}
-                >
-                  +
-                </button>
-              </div>
+              {isQueued ? (
+                <div className="job-item-queued-hint">Маршрут ещё не запланирован — нажмите карточку</div>
+              ) : (
+                <div className="job-item-route">
+                  {j.stages.map((s) => (
+                    <span key={s.id} className="job-route-dot" style={{ background: STATUS_COLORS[effectiveStatus(s, now)] }} title={posts.find((p) => p.id === s.post_id)?.name} />
+                  ))}
+                  <button
+                    className="job-item-add-stage"
+                    title="Добавить следующий этап маршрута"
+                    onClick={async (e) => {
+                      e.stopPropagation();
+                      const created = await addNextStage(j.stages[0]);
+                      setSelectedStage(created);
+                    }}
+                  >
+                    +
+                  </button>
+                </div>
+              )}
             </div>
             );
           })}
           {filteredJobs.length === 0 && <div className="job-empty">Ничего не найдено</div>}
         </div>
-        <button className="job-sidebar-new" onClick={onCreateJob}>+ Новый заказ</button>
+        <button className="job-sidebar-new" onClick={onCreateJob}>+ Добавить автомобиль</button>
       </aside>
 
       <div className="gantt">
@@ -614,6 +612,35 @@ export default function Gantt({ onCreateJob }) {
           company={company}
           onClose={() => setDocsJob(null)}
           onJobUpdated={async () => setDocsJob(await api.jobs.get(docsJob.id))}
+        />
+      )}
+
+      {detailJob && (
+        <CarDetailModal
+          job={detailJob}
+          posts={posts}
+          masters={masters}
+          now={now}
+          onClose={() => setDetailJob(null)}
+          onOpenDocs={() => { openDocs(detailJob.job_id); setDetailJob(null); }}
+          onFinalize={() => { finalizeJob(detailJob.job_id, jobOverallStatus(detailJob, now)); setDetailJob(null); }}
+          onRemove={async () => {
+            if (!window.confirm('Удалить эту машину без возможности восстановить?')) return;
+            await api.jobs.remove(detailJob.job_id);
+            setDetailJob(null);
+            load();
+          }}
+          onEditStage={(stage) => { setSelectedStage(stage); setDetailJob(null); }}
+          onUpdateJob={async (patch) => {
+            await api.jobs.update(detailJob.job_id, patch);
+            await refreshDetailJob(detailJob.job_id);
+            load();
+          }}
+          onAddStage={async (stageData) => {
+            await api.stages.create(detailJob.job_id, stageData);
+            await refreshDetailJob(detailJob.job_id);
+            load();
+          }}
         />
       )}
     </div>

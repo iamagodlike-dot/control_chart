@@ -9,7 +9,6 @@ const mastersCol = collection(db, 'masters');
 const jobsCol = collection(db, 'jobs');
 const stagesCol = collection(db, 'stages');
 const settingsCol = collection(db, 'settings');
-const queueCol = collection(db, 'queue');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -152,8 +151,14 @@ export const api = {
     const posts = postsSnap.docs.map(withId);
     const jobsById = new Map(jobsSnap.docs.map((d) => [d.id, d.data()]));
     const mastersById = new Map(mastersSnap.docs.map((d) => [d.id, d.data()]));
-    const stages = stagesSnap.docs
-      .map(withId)
+    const allStages = stagesSnap.docs.map(withId);
+    const stagesByJob = new Map();
+    for (const s of allStages) {
+      if (!stagesByJob.has(s.job_id)) stagesByJob.set(s.job_id, []);
+      stagesByJob.get(s.job_id).push(s);
+    }
+
+    const stages = allStages
       .filter((s) => !jobsById.get(s.job_id)?.archived)
       .map((s) => {
         const job = jobsById.get(s.job_id) || {};
@@ -170,7 +175,23 @@ export const api = {
         };
       })
       .sort((a, b) => (a.start_at > b.start_at ? 1 : -1));
-    return { posts, stages };
+
+    // Full job list (including jobs with no stages yet, i.e. queued cars), for the sidebar.
+    const jobs = jobsSnap.docs
+      .map(withId)
+      .filter((j) => !j.archived)
+      .map((j) => ({
+        ...j,
+        job_id: j.id,
+        stages: (stagesByJob.get(j.id) || []).sort((a, b) => (a.sequence - b.sequence) || (a.start_at > b.start_at ? 1 : -1)),
+      }))
+      .sort((a, b) => {
+        const aTime = a.stages[0]?.start_at || a.expected_at || '';
+        const bTime = b.stages[0]?.start_at || b.expected_at || '';
+        return aTime > bTime ? 1 : -1;
+      });
+
+    return { posts, stages, jobs };
   },
 
   async history() {
@@ -204,25 +225,6 @@ export const api = {
     async updateCompany(data) {
       await setDoc(doc(settingsCol, 'company'), stripUndefined(data), { merge: true });
       return api.settings.getCompany();
-    },
-  },
-
-  queue: {
-    async list() {
-      const snap = await getDocs(query(queueCol, orderBy('created_at', 'desc')));
-      return snap.docs.map(withId);
-    },
-    async create(data) {
-      const ref = await addDoc(queueCol, stripUndefined({ ...data, created_at: Date.now() }));
-      return withId(await getDoc(ref));
-    },
-    async update(id, data) {
-      await updateDoc(doc(queueCol, id), stripUndefined(data));
-      return withId(await getDoc(doc(queueCol, id)));
-    },
-    async remove(id) {
-      await deleteDoc(doc(queueCol, id));
-      return { ok: true };
     },
   },
 };
