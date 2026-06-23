@@ -340,6 +340,14 @@ textarea { width: 100%; min-height: 50px; }
 .doc-modal-body textarea { width: 100%; min-height: 50px; }
 .doc-fields-row { display: flex; gap: 10px; flex-wrap: wrap; }
 .doc-fields-row input { flex: 1; min-width: 120px; }
+.audatex-upload { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.audatex-upload-btn {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer;
+  padding: 8px 16px; border-radius: 999px; border: 1px dashed var(--color-primary);
+  color: var(--color-primary-dark); background: var(--color-primary-light); font-weight: 700; font-size: 13px;
+}
+.audatex-upload-btn:hover { background: #EAD3A3; }
+.audatex-upload-btn.is-busy { opacity: .6; cursor: default; }
 .doc-field-label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--color-text-muted); flex: 1; min-width: 140px; }
 .doc-total { text-align: right; font-weight: 800; font-size: 15px; margin-top: 4px; }
 .doc-summary ul { margin: 6px 0; padding-left: 18px; font-size: 13px; }

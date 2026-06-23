@@ -21,9 +21,20 @@ function lineTotal(item) {
   return (Number(item.qty) || 0) * (Number(item.price) || 0);
 }
 
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result).split(',')[1]);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+}
+
 export default function DocumentsModal({ job, company, onClose, onJobUpdated }) {
   const [docType, setDocType] = useState('order');
   const [saving, setSaving] = useState(false);
+  const [extracting, setExtracting] = useState(false);
+  const [extractError, setExtractError] = useState('');
   const [form, setForm] = useState({
     vin: job.vin || '',
     year: job.year || '',
@@ -64,6 +75,39 @@ export default function DocumentsModal({ job, company, onClose, onJobUpdated }) 
     patch({ parts: form.parts.filter((p) => p.id !== id) });
   }
 
+  async function handleAudatexUpload(e) {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    setExtracting(true);
+    setExtractError('');
+    try {
+      const pdfBase64 = await fileToBase64(file);
+      const res = await fetch('/api/extract-audatex', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ pdfBase64 }),
+      });
+      if (!res.ok) throw new Error('request failed');
+      const data = await res.json();
+      patch({
+        vin: form.vin || data.vin || '',
+        services: [
+          ...form.services,
+          ...(data.services || []).map((s) => ({ id: uid(), name: s.name || '', executor: '', qty: s.qty ?? 1, price: s.price ?? '' })),
+        ],
+        parts: [
+          ...form.parts,
+          ...(data.parts || []).map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: p.qty ?? 1, unit: p.unit || 'шт.', price: p.price ?? '' })),
+        ],
+      });
+    } catch {
+      setExtractError('Не удалось распознать документ. Проверьте файл и попробуйте ещё раз.');
+    } finally {
+      setExtracting(false);
+    }
+  }
+
   async function save() {
     setSaving(true);
     await api.jobs.update(job.id, form);
@@ -101,6 +145,14 @@ export default function DocumentsModal({ job, company, onClose, onJobUpdated }) 
                 <input placeholder="Пробег, км" value={form.mileage} onChange={(e) => patch({ mileage: e.target.value })} />
               </div>
               <textarea placeholder="Причина обращения" value={form.reason} onChange={(e) => patch({ reason: e.target.value })} />
+
+              <div className="audatex-upload">
+                <label className={`audatex-upload-btn${extracting ? ' is-busy' : ''}`}>
+                  {extracting ? 'Распознаём…' : '📎 Распознать смету Audatex (PDF)'}
+                  <input type="file" accept="application/pdf" onChange={handleAudatexUpload} disabled={extracting} hidden />
+                </label>
+                {extractError && <span className="login-error">{extractError}</span>}
+              </div>
 
               <h4>Работы</h4>
               <table className="items-table">
