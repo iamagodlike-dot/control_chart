@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { api } from '../api';
 import { generateOrderPdf, generateActPdf, generateHandoverPdf } from '../pdf';
+import { parseAudatexPdf } from '../audatexParse';
 
 const DOC_TYPES = [
   { id: 'order', label: 'Заказ-наряд' },
@@ -19,15 +20,6 @@ function money(v) {
 
 function lineTotal(item) {
   return (Number(item.qty) || 0) * (Number(item.price) || 0);
-}
-
-function fileToBase64(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result).split(',')[1]);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
 }
 
 export default function DocumentsModal({ job, company, onClose, onJobUpdated }) {
@@ -82,27 +74,23 @@ export default function DocumentsModal({ job, company, onClose, onJobUpdated }) 
     setExtracting(true);
     setExtractError('');
     try {
-      const pdfBase64 = await fileToBase64(file);
-      const res = await fetch('/api/extract-audatex', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pdfBase64 }),
-      });
-      if (!res.ok) throw new Error('request failed');
-      const data = await res.json();
+      const data = await parseAudatexPdf(file);
+      if (!data.services.length && !data.parts.length) {
+        setExtractError('Не нашли таблицы работ/запчастей в этом PDF — добавьте позиции вручную.');
+        return;
+      }
       patch({
-        vin: form.vin || data.vin || '',
         services: [
           ...form.services,
-          ...(data.services || []).map((s) => ({ id: uid(), name: s.name || '', executor: '', qty: s.qty ?? 1, price: s.price ?? '' })),
+          ...data.services.map((s) => ({ id: uid(), name: s.name || '', executor: '', qty: s.qty ?? 1, price: s.price ?? '' })),
         ],
         parts: [
           ...form.parts,
-          ...(data.parts || []).map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: p.qty ?? 1, unit: p.unit || 'шт.', price: p.price ?? '' })),
+          ...data.parts.map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: p.qty ?? 1, unit: p.unit || 'шт.', price: p.price ?? '' })),
         ],
       });
     } catch {
-      setExtractError('Не удалось распознать документ. Проверьте файл и попробуйте ещё раз.');
+      setExtractError('Не удалось прочитать файл. Проверьте, что это PDF из Audatex.');
     } finally {
       setExtracting(false);
     }
