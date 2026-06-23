@@ -224,12 +224,6 @@ export default function Gantt({ onCreateJob }) {
     load();
   }
 
-  async function patchJob(jobId, patch) {
-    setStages((prev) => prev.map((s) => (s.job_id === jobId ? { ...s, ...patch } : s)));
-    setJobs((prev) => prev.map((j) => (j.job_id === jobId ? { ...j, ...patch } : j)));
-    await api.jobs.update(jobId, patch);
-  }
-
   async function addNextStage(fromStage) {
     const jobStages = stages.filter((s) => s.job_id === fromStage.job_id);
     const last = jobStages.reduce((max, s) => (s.sequence > max.sequence ? s : max), jobStages[0]);
@@ -593,15 +587,19 @@ export default function Gantt({ onCreateJob }) {
           posts={posts}
           masters={masters}
           onClose={() => setSelectedStage(null)}
-          onSaved={(patch, jobPatch) => {
+          onSaved={(patch) => {
             patchStage(selectedStage.id, patch);
-            if (jobPatch) patchJob(selectedStage.job_id, jobPatch);
             setSelectedStage(null);
           }}
           onDeleted={async () => { await api.stages.remove(selectedStage.id); setSelectedStage(null); load(); }}
           onAddNext={async () => {
             const created = await addNextStage(selectedStage);
             setSelectedStage(created);
+          }}
+          onOpenCar={async () => {
+            const job = await api.jobs.get(selectedStage.job_id);
+            setSelectedStage(null);
+            setDetailJob(job);
           }}
         />
       )}
@@ -647,7 +645,7 @@ export default function Gantt({ onCreateJob }) {
   );
 }
 
-function StageEditor({ stage, posts, masters, onClose, onSaved, onDeleted, onAddNext }) {
+function StageEditor({ stage, posts, masters, onClose, onSaved, onDeleted, onAddNext, onOpenCar }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({
     post_id: stage.post_id,
@@ -656,47 +654,40 @@ function StageEditor({ stage, posts, masters, onClose, onSaved, onDeleted, onAdd
     start_at: dayjs(stage.start_at).format('YYYY-MM-DDTHH:mm'),
     end_at: dayjs(stage.end_at).format('YYYY-MM-DDTHH:mm'),
   });
-  const [jobForm, setJobForm] = useState({
-    order_number: stage.order_number || '',
-    storage_location: stage.storage_location || '',
-    deadline: stage.deadline ? dayjs(stage.deadline).format('YYYY-MM-DDTHH:mm') : '',
-  });
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>{stage.car_model} {stage.plate_number ? `(${stage.plate_number})` : ''}</h3>
-        <label>№ заказ-наряда
-          <input value={jobForm.order_number} onChange={(e) => setJobForm({ ...jobForm, order_number: e.target.value })} placeholder="напр. 0001234" />
-        </label>
-        <label>Место на складе
-          <input value={jobForm.storage_location} onChange={(e) => setJobForm({ ...jobForm, storage_location: e.target.value })} placeholder="напр. стеллаж А-3" />
-        </label>
-        <label>Дедлайн (выдать клиенту до)
-          <input type="datetime-local" value={jobForm.deadline} onChange={(e) => setJobForm({ ...jobForm, deadline: e.target.value })} />
-        </label>
-        <label>Пост
-          <select value={form.post_id} onChange={(e) => setForm({ ...form, post_id: e.target.value })}>
-            {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </label>
-        <label>Мастер
-          <select value={form.master_id} onChange={(e) => setForm({ ...form, master_id: e.target.value || '' })}>
-            <option value="">— не назначен —</option>
-            {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-          </select>
-        </label>
-        <label>Статус
-          <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-            {Object.entries(STATUS_LABELS).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-          </select>
-        </label>
-        <label>Начало
-          <input type="datetime-local" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} />
-        </label>
-        <label>Конец
-          <input type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} />
-        </label>
+      <div className="modal stage-editor" onClick={(e) => e.stopPropagation()}>
+        <div className="stage-editor-header">
+          <h3>{stage.car_model} {stage.plate_number ? `(${stage.plate_number})` : ''}</h3>
+          <button className="stage-editor-car-link" onClick={onOpenCar}>Карточка машины →</button>
+        </div>
+
+        <div className="stage-editor-grid">
+          <label>Пост
+            <select value={form.post_id} onChange={(e) => setForm({ ...form, post_id: e.target.value })}>
+              {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+            </select>
+          </label>
+          <label>Мастер
+            <select value={form.master_id} onChange={(e) => setForm({ ...form, master_id: e.target.value || '' })}>
+              <option value="">— не назначен —</option>
+              {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+            </select>
+          </label>
+          <label>Статус
+            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
+              {Object.entries(STATUS_LABELS).filter(([k]) => k !== 'queued').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </label>
+          <label>Начало
+            <input type="datetime-local" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} />
+          </label>
+          <label>Конец
+            <input type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} />
+          </label>
+        </div>
+
         <button
           className="add-next-stage"
           disabled={adding}
@@ -718,10 +709,6 @@ function StageEditor({ stage, posts, masters, onClose, onSaved, onDeleted, onAdd
               status: form.status,
               start_at: dayjs(form.start_at).toISOString(),
               end_at: dayjs(form.end_at).toISOString(),
-            }, {
-              order_number: jobForm.order_number,
-              storage_location: jobForm.storage_location,
-              deadline: jobForm.deadline ? dayjs(jobForm.deadline).toISOString() : '',
             })}>Сохранить</button>
           </div>
         </div>
