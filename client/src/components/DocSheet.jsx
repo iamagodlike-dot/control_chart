@@ -8,6 +8,20 @@ function KV({ k, v }) {
   return <div className="zn-kv"><span className="zn-k">{k}</span><span className="zn-v">{v || '—'}</span></div>;
 }
 
+// Payer / insurance rows shared by every document's customer card.
+function InsuranceRows({ ins }) {
+  const i = ins || {};
+  if (i.payment_type === 'legal') return <KV k="Оплата" v="Юридическое лицо" />;
+  if (i.payment_type !== 'insurance') return null;
+  return (
+    <>
+      <KV k="Оплата" v={`Страховая${i.insurer_name ? ` — ${i.insurer_name}` : ''}`} />
+      {i.claim_number && <KV k="№ убытка" v={i.claim_number} />}
+      {i.policy_number && <KV k="№ полиса" v={i.policy_number} />}
+    </>
+  );
+}
+
 function money2(v) {
   return `${(Number(v) || 0).toLocaleString('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} ₽`;
 }
@@ -149,7 +163,7 @@ function ActSheet({ snapshot }) {
         {snapshot.order_ref && <div className="zn-mrow"><span>К заказ-наряду №:</span><b>{snapshot.order_ref}</b></div>}
       </>} />
       <div className="zn-title"><h1>АКТ ВЫПОЛНЕННЫХ РАБОТ</h1><div className="zn-num">№ {snapshot.doc_number || '—'}</div></div>
-      <div className="zn-info"><CustomerCard cust={snapshot.customer || {}} /><VehicleCard veh={snapshot.vehicle || {}} /></div>
+      <div className="zn-info"><CustomerCard cust={snapshot.customer || {}} rows={<InsuranceRows ins={snapshot.insurance} />} /><VehicleCard veh={snapshot.vehicle || {}} /></div>
       <WorksTable services={snapshot.services || []} totals={t} />
       <PartsTable parts={snapshot.parts || []} totals={t} />
       <div className="zn-bottom">
@@ -178,7 +192,7 @@ function HandoverSheet({ snapshot }) {
     <div className="zn-sheet">
       <DocHeader c={c} meta={<div className="zn-mrow"><span>Дата составления:</span><b>{formatDocDate(snapshot.doc_date)}</b></div>} />
       <div className="zn-title"><h1>АКТ ПРИЁМА-ПЕРЕДАЧИ ТРАНСПОРТНОГО СРЕДСТВА</h1><div className="zn-num">№ {snapshot.doc_number || '—'}</div></div>
-      <div className="zn-info"><CustomerCard cust={snapshot.customer || {}} /><VehicleCard veh={snapshot.vehicle || {}} /></div>
+      <div className="zn-info"><CustomerCard cust={snapshot.customer || {}} rows={<InsuranceRows ins={snapshot.insurance} />} /><VehicleCard veh={snapshot.vehicle || {}} /></div>
       <div className="zn-info">
         {snapshot.show_intake && (
           <div className="zn-card">
@@ -251,6 +265,7 @@ function InvoiceSheet({ snapshot, qrDataUrl }) {
             <KV k="ФИО / наименование" v={snapshot.customer?.name} />
             <KV k="Телефон" v={snapshot.customer?.phone} />
             {(veh.car_model || veh.plate_number) && <KV k="Автомобиль" v={[veh.car_model, veh.plate_number].filter(Boolean).join(', ')} />}
+            <InsuranceRows ins={snapshot.insurance} />
           </div>
         </div>
       </div>

@@ -3,9 +3,16 @@ import {
   query, orderBy, where, writeBatch,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
+import { DEFAULT_INSURERS } from './insurance';
 
 const postsCol = collection(db, 'posts');
 const mastersCol = collection(db, 'masters');
+const insurersCol = collection(db, 'insurers');
+
+// Dedupes concurrent ensureSeeded() calls (React StrictMode double-invokes the
+// mount effect in dev; also guards against parallel callers) so defaults are
+// never seeded twice. Reset on failure so a transient error can be retried.
+let insurerSeedPromise = null;
 const jobsCol = collection(db, 'jobs');
 const stagesCol = collection(db, 'stages');
 const settingsCol = collection(db, 'settings');
@@ -65,6 +72,48 @@ export const api = {
     async remove(id) {
       await deleteDoc(doc(mastersCol, id));
       return { ok: true };
+    },
+  },
+
+  insurers: {
+    async list() {
+      const snap = await getDocs(query(insurersCol, orderBy('sort_order')));
+      return snap.docs.map(withId);
+    },
+    async create(data) {
+      const ref = await addDoc(insurersCol, stripUndefined({ sort_order: 0, ...data }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(insurersCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(insurersCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(insurersCol, id));
+      return { ok: true };
+    },
+    // Fill the list with common Russian insurers the first time only. A flag in
+    // settings/company prevents re-seeding after the shop curates the list.
+    // Seeded atomically with DETERMINISTIC ids (`default-N`) in one writeBatch so
+    // that (a) two clients seeding a fresh install concurrently overwrite the
+    // same 12 ids instead of creating 24 duplicates, and (b) a partial failure
+    // can never leave orphan docs that block a retry — it's all-or-nothing.
+    ensureSeeded() {
+      if (insurerSeedPromise) return insurerSeedPromise;
+      insurerSeedPromise = (async () => {
+        const snap = await getDocs(insurersCol);
+        if (!snap.empty) return;
+        const company = await api.settings.getCompany();
+        if (company.insurersSeeded) return;
+        const now = Date.now();
+        const batch = writeBatch(db);
+        DEFAULT_INSURERS.forEach((name, i) => {
+          batch.set(doc(insurersCol, `default-${i}`), { name, sort_order: i, created_at: now });
+        });
+        batch.set(doc(settingsCol, 'company'), { insurersSeeded: true }, { merge: true });
+        await batch.commit();
+      })().catch((e) => { insurerSeedPromise = null; throw e; });
+      return insurerSeedPromise;
     },
   },
 

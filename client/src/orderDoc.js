@@ -61,11 +61,22 @@ export function formatDocDate(input) {
   return `${d}.${m}.${y}`;
 }
 
+// Payer / insurance block copied onto every document snapshot.
+function insuranceFrom(job) {
+  return {
+    payment_type: job.payment_type || 'cash',
+    insurer_name: job.insurer_name || '',
+    claim_number: job.claim_number || '',
+    policy_number: job.policy_number || '',
+  };
+}
+
 // Build the auto-filled snapshot from the job + company settings. Every array
 // item is a brand-new object with a fresh id — no shared references with `job`.
 export function buildOrderSnapshot(job = {}, company = {}) {
   return {
     type: 'order',
+    insurance: insuranceFrom(job),
     job_id: job.id || null,
     doc_number: job.order_number || `ЗН-${String(job.id || '').slice(0, 6).toUpperCase()}`,
     doc_date: todayInput(),
@@ -149,6 +160,7 @@ export const DEFAULT_INVOICE_NOTE =
 function baseHead(job, company, type, prefix) {
   return {
     type,
+    insurance: insuranceFrom(job),
     job_id: job.id || null,
     doc_number: job.order_number || `${prefix}-${String(job.id || '').slice(0, 6).toUpperCase()}`,
     doc_date: todayInput(),

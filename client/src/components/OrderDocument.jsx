@@ -14,6 +14,7 @@ export default function OrderDocument({ snapshot }) {
   const c = snapshot.company || {};
   const cust = snapshot.customer || {};
   const veh = snapshot.vehicle || {};
+  const ins = snapshot.insurance || {};
   const services = snapshot.services || [];
   const parts = snapshot.parts || [];
 
@@ -53,6 +54,14 @@ export default function OrderDocument({ snapshot }) {
             <div className="zn-card-b">
               <KV k="ФИО / наименование" v={cust.name} />
               <KV k="Телефон" v={cust.phone} />
+              {ins.payment_type === 'insurance' && (
+                <>
+                  <KV k="Оплата" v={`Страховая${ins.insurer_name ? ` — ${ins.insurer_name}` : ''}`} />
+                  {ins.claim_number && <KV k="№ убытка" v={ins.claim_number} />}
+                  {ins.policy_number && <KV k="№ полиса" v={ins.policy_number} />}
+                </>
+              )}
+              {ins.payment_type === 'legal' && <KV k="Оплата" v="Юридическое лицо" />}
             </div>
           </div>
           <div className="zn-card">

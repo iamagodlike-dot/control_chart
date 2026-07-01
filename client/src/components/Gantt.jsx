@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
+import { isInsurance } from '../insurance';
 import DocumentsModal from './DocumentsModal';
 import CarCard from './CarCard';
 
+const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
 const ZOOM_LEVELS = [8, 12, 20, 32, 48]; // px per hour
 const DEFAULT_ZOOM_INDEX = 2;
 const ROW_HEIGHT = 64;
@@ -187,6 +189,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   const [posts, setPosts] = useState([]);
   const [stages, setStages] = useState([]);
   const [jobs, setJobs] = useState([]);
+  const [invoices, setInvoices] = useState([]);
   const [masters, setMasters] = useState([]);
   const [rangeStart, setRangeStart] = useState(dayjs().startOf('day'));
   const [days, setDays] = useState(7);
@@ -238,11 +241,12 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   }, [openJobId]);
 
   const load = async () => {
-    const [g, m] = await Promise.all([api.gantt(), api.masters.list()]);
+    const [g, m, docs] = await Promise.all([api.gantt(), api.masters.list(), api.orderDocuments.listAll().catch(() => [])]);
     setPosts(g.posts);
     setStages(g.stages);
     setJobs(g.jobs);
     setMasters(m);
+    setInvoices(docs.filter((d) => d.type === 'invoice'));
     setLoading(false);
   };
 
@@ -573,6 +577,10 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
             const dlState = deadlineState(j, now);
             const overall = jobOverallStatus(j, now);
             const isQueued = j.stages.length === 0;
+            const jobInvoices = invoices.filter((i) => i.job_id === j.job_id);
+            const hasPay = jobInvoices.length > 0;
+            const payTotal = jobInvoices.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
+            const payAllPaid = hasPay && jobInvoices.every((i) => i.paid);
             return (
             <div
               key={j.job_id}
@@ -604,6 +612,12 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                 </div>
               </div>
               <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
+              {isInsurance(j) && j.insurer_name && <div className="job-item-insurer">🛡 {j.insurer_name}</div>}
+              {hasPay && (
+                <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2, color: `var(${payAllPaid ? '--color-success' : '--color-danger'})` }}>
+                  {payAllPaid ? '✓ Оплачено' : `● Не оплачено · ${fmtMoney(payTotal)}`}
+                </div>
+              )}
               {(api.warehouse.cellIds(j).length || j.storage_location) && <div className="job-item-storage">📦 {api.warehouse.cellIds(j).join(', ') || j.storage_location}</div>}
               {isQueued && j.expected_at && (
                 <div className="job-item-deadline">🕒 заедет {dayjs(j.expected_at).format('DD.MM HH:mm')}</div>

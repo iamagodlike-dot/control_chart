@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { api } from './api';
 import Gantt from './components/Gantt';
 import PostsBoard from './components/PostsBoard';
 import PostsMasters from './components/PostsMasters';
@@ -40,6 +41,7 @@ function App() {
     <AuthGate>
       {({ user, signOut }) => (
         <div className="app">
+          <SeedDefaults />
           <header className="app-header">
             <div className="app-brand">
               <Logo size={38} />
@@ -84,6 +86,13 @@ function App() {
       )}
     </AuthGate>
   );
+}
+
+// Seeds the insurer list once, after the user is authenticated (so Firestore
+// rules allow the write). Runs regardless of which tab is open first.
+function SeedDefaults() {
+  useEffect(() => { api.insurers.ensureSeeded().catch(() => {}); }, []);
+  return null;
 }
 
 export default App;

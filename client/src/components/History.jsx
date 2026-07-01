@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
 import { money, computeDocTotals } from '../orderDoc';
+import { isInsurance } from '../insurance';
 import DocumentsModal from './DocumentsModal';
 import '../history.css';
 
@@ -225,6 +226,7 @@ export default function History() {
                 </div>
               </div>
               <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
+              {isInsurance(j) && j.insurer_name && <div className="job-item-insurer">🛡 {j.insurer_name}{j.claim_number ? ` · убыток ${j.claim_number}` : ''}</div>}
               {j.archived_at && <div className="history-item-date">Завершён {dayjs(j.archived_at).format('DD.MM.YYYY HH:mm')}</div>}
               <div className="history-item-stages">
                 {j.stages.map((s) => (

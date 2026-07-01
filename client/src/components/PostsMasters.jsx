@@ -6,23 +6,28 @@ import { iconFor } from '../postIcons';
 export default function PostsMasters() {
   const [posts, setPosts] = useState([]);
   const [masters, setMasters] = useState([]);
+  const [insurers, setInsurers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [newPost, setNewPost] = useState('');
   const [newMaster, setNewMaster] = useState({ name: '', specialty: '', default_post_id: '' });
+  const [newInsurer, setNewInsurer] = useState('');
   const [dragIndex, setDragIndex] = useState(null);
   const [editingPostId, setEditingPostId] = useState(null);
   const [editPostName, setEditPostName] = useState('');
   const [editingMasterId, setEditingMasterId] = useState(null);
   const [editMasterForm, setEditMasterForm] = useState({ name: '', specialty: '', default_post_id: '' });
+  const [editingInsurerId, setEditingInsurerId] = useState(null);
+  const [editInsurerName, setEditInsurerName] = useState('');
 
   const load = async () => {
-    const [p, m] = await Promise.all([api.posts.list(), api.masters.list()]);
+    const [p, m, ins] = await Promise.all([api.posts.list(), api.masters.list(), api.insurers.list()]);
     setPosts(p);
     setMasters(m);
+    setInsurers(ins);
     setLoading(false);
   };
 
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/set-state-in-effect
 
   async function addPost() {
     if (!newPost.trim()) return;
@@ -98,6 +103,36 @@ export default function PostsMasters() {
       default_post_id: editMasterForm.default_post_id || null,
     });
     setEditingMasterId(null);
+    load();
+  }
+
+  async function addInsurer() {
+    if (!newInsurer.trim()) return;
+    await api.insurers.create({ name: newInsurer.trim(), sort_order: insurers.length });
+    setNewInsurer('');
+    load();
+  }
+
+  async function removeInsurer(id) {
+    if (!confirm('Удалить страховую из справочника? Уже заведённые машины сохранят её название.')) return;
+    await api.insurers.remove(id);
+    load();
+  }
+
+  function startEditInsurer(x) {
+    setEditingInsurerId(x.id);
+    setEditInsurerName(x.name);
+  }
+
+  function cancelEditInsurer() {
+    setEditingInsurerId(null);
+  }
+
+  async function saveEditInsurer() {
+    const name = editInsurerName.trim();
+    if (!name) return;
+    await api.insurers.update(editingInsurerId, { name });
+    setEditingInsurerId(null);
     load();
   }
 
@@ -220,6 +255,49 @@ export default function PostsMasters() {
             {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
           <button className="primary" onClick={addMaster}>Добавить мастера</button>
+        </div>
+      </div>
+
+      <div className="panel">
+        <h3>Страховые компании</h3>
+        <p className="panel-hint">Список для выбора в карточке машины (тип оплаты «Страховая»).</p>
+        {insurers.length === 0 ? (
+          <div className="list-empty">Справочник пуст — добавьте страховую ниже</div>
+        ) : (
+          <ul className="list">
+            {insurers.map((x) => (
+              <li key={x.id} className={editingInsurerId === x.id ? 'list-item-editing' : ''}>
+                {editingInsurerId === x.id ? (
+                  <>
+                    <input
+                      className="list-edit-input"
+                      autoFocus
+                      value={editInsurerName}
+                      onChange={(e) => setEditInsurerName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditInsurer(); if (e.key === 'Escape') cancelEditInsurer(); }}
+                    />
+                    <span className="list-actions">
+                      <button className="list-action-btn" title="Сохранить" onClick={saveEditInsurer}>✓</button>
+                      <button className="list-action-btn" title="Отмена" onClick={cancelEditInsurer}>×</button>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="list-icon">🛡️</span>
+                    <span className="list-label">{x.name}</span>
+                    <span className="list-actions">
+                      <button className="list-action-btn" title="Переименовать" onClick={() => startEditInsurer(x)}>✎</button>
+                      <button className="list-action-btn danger" title="Удалить" onClick={() => removeInsurer(x.id)}>×</button>
+                    </span>
+                  </>
+                )}
+              </li>
+            ))}
+          </ul>
+        )}
+        <div className="inline-form">
+          <input placeholder="Название страховой" value={newInsurer} onChange={(e) => setNewInsurer(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addInsurer(); }} />
+          <button className="primary" onClick={addInsurer}>Добавить</button>
         </div>
       </div>
 
