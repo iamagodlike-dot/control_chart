@@ -10,14 +10,24 @@
   border: 1px solid var(--color-border);
   border-radius: var(--radius-md);
   padding: 12px 14px;
+  text-align: left;
 }
-.hist-card-accent {
-  border-color: var(--color-primary);
-  background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface-alt));
+button.hist-card { cursor: pointer; font: inherit; color: inherit; width: 100%; transition: transform 0.05s; }
+button.hist-card:active { transform: scale(0.99); }
+.hist-card-success {
+  border-color: var(--color-success);
+  background: color-mix(in srgb, var(--color-success) 10%, var(--color-surface-alt));
 }
+.hist-card-success .hist-card-value { color: var(--color-success); }
+.hist-card-danger {
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-surface-alt));
+}
+.hist-card-danger .hist-card-value { color: var(--color-danger); }
+.hist-card-danger.is-active { outline: 2px solid var(--color-danger); outline-offset: -1px; }
 .hist-card-label { font-size: 12px; color: var(--color-text-muted); margin-bottom: 6px; }
 .hist-card-value { font-size: 22px; font-weight: 800; font-family: var(--font-mono); line-height: 1.1; }
-.hist-card-accent .hist-card-value { color: var(--color-primary); }
+.hist-card-danger .hist-card-sub { color: var(--color-danger); }
 .hist-card-sub { font-size: 11px; color: var(--color-text-muted); margin-top: 4px; }
 
 .hist-chart {
@@ -43,22 +53,36 @@
 .hist-bar-lbl { font-size: 10px; color: var(--color-text-muted); margin-top: 6px; }
 .hist-bar-lbl.is-year { color: var(--color-text); font-weight: 700; }
 
-.hist-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; }
+.hist-list-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
 .hist-list-head h3 { margin: 0; }
+.hist-controls { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
 .hist-sort { display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--color-text-muted); }
 .hist-sort select { font-size: 13px; }
+.hist-filter {
+  font-size: 13px; padding: 6px 12px; border-radius: 999px;
+  border: 1px solid var(--color-border); background: transparent; color: var(--color-text-muted); cursor: pointer;
+}
+.hist-filter.is-active {
+  border-color: var(--color-danger); color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+}
 
 /* суммы и отметка оплаты в списке */
 .hist-amount { font-family: var(--font-mono); font-weight: 700; font-size: 14px; white-space: nowrap; }
 .hist-paid-toggle {
   font-size: 12px;
-  padding: 4px 10px;
+  font-weight: 700;
+  padding: 5px 12px;
   border: 1px solid var(--color-border);
   border-radius: 999px;
   background: transparent;
-  color: var(--color-text-muted);
   cursor: pointer;
   white-space: nowrap;
+}
+.hist-paid-toggle.is-unpaid {
+  border-color: var(--color-danger);
+  color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 14%, transparent);
 }
 .hist-paid-toggle.is-paid {
   border-color: var(--color-success);

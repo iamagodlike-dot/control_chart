@@ -27,6 +27,7 @@ export default function History() {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [sort, setSort] = useState('date_desc');
+  const [onlyUnpaid, setOnlyUnpaid] = useState(false);
   const [company, setCompany] = useState({});
   const [docsJob, setDocsJob] = useState(null);
 
@@ -82,7 +83,9 @@ export default function History() {
         .reduce((s, i) => s + amt(i), 0),
     }));
     const max = Math.max(1, ...byMonth.map((b) => b.value));
-    return { billed, paid, count, avg, paidThisMonth, byMonth, max };
+    const unpaid = Math.max(0, billed - paid);
+    const unpaidCount = count - paidList.length;
+    return { billed, paid, unpaid, unpaidCount, count, avg, paidThisMonth, byMonth, max };
   }, [invoices]);
 
   async function toggleJobPaid(id) {
@@ -103,6 +106,7 @@ export default function History() {
     let list = q
       ? jobs.filter((j) => [j.car_model, j.plate_number, j.client_name, j.order_number].some((v) => (v || '').toLowerCase().includes(q)))
       : [...jobs];
+    if (onlyUnpaid) list = list.filter((j) => (invByJob[j.id] || []).some((i) => !i.paid));
     const byStr = (a, b) => a.localeCompare(b, 'ru');
     list.sort((a, b) => {
       switch (sort) {
@@ -115,7 +119,7 @@ export default function History() {
       }
     });
     return list;
-  }, [jobs, q, sort, invByJob]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [jobs, q, sort, onlyUnpaid, invByJob]); // eslint-disable-line react-hooks/exhaustive-deps
 
   if (loading) {
     return <div className="gantt-loading"><div className="spinner" /><span>Загружаем историю…</span></div>;
@@ -125,10 +129,20 @@ export default function History() {
     <div className="panel history-panel">
       <h3>Аналитика по счетам</h3>
       <div className="hist-cards">
-        <div className="hist-card hist-card-accent">
+        <div className="hist-card hist-card-success">
           <div className="hist-card-label">Оплачено</div>
           <div className="hist-card-value">{money(stats.paid)}</div>
         </div>
+        <button
+          type="button"
+          className={`hist-card hist-card-danger${onlyUnpaid ? ' is-active' : ''}`}
+          onClick={() => setOnlyUnpaid((v) => !v)}
+          title="Показать в списке только неоплаченные"
+        >
+          <div className="hist-card-label">Не оплачено · долг</div>
+          <div className="hist-card-value">{money(stats.unpaid)}</div>
+          <div className="hist-card-sub">{stats.unpaidCount} неоплаченных · {onlyUnpaid ? 'показаны в списке' : 'нажмите, чтобы показать'}</div>
+        </button>
         <div className="hist-card">
           <div className="hist-card-label">Выставлено</div>
           <div className="hist-card-value">{money(stats.billed)}</div>
@@ -163,11 +177,20 @@ export default function History() {
 
       <div className="hist-list-head">
         <h3>Закрытые заказы</h3>
-        <div className="hist-sort">
-          <span>Сортировка</span>
-          <select value={sort} onChange={(e) => setSort(e.target.value)}>
-            {SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-          </select>
+        <div className="hist-controls">
+          <button
+            type="button"
+            className={`hist-filter${onlyUnpaid ? ' is-active' : ''}`}
+            onClick={() => setOnlyUnpaid((v) => !v)}
+          >
+            {onlyUnpaid ? '✓ Только неоплаченные' : 'Только неоплаченные'}
+          </button>
+          <div className="hist-sort">
+            <span>Сортировка</span>
+            <select value={sort} onChange={(e) => setSort(e.target.value)}>
+              {SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+            </select>
+          </div>
         </div>
       </div>
 
@@ -192,8 +215,8 @@ export default function History() {
                   {hasInvoice && (
                     <>
                       <span className="hist-amount">{money(amount)}</span>
-                      <button className={`hist-paid-toggle${paid ? ' is-paid' : ''}`} onClick={() => toggleJobPaid(j.id)} title="Отметить оплату счёта">
-                        {paid ? '✓ Оплачено' : 'Не оплачено'}
+                      <button className={`hist-paid-toggle ${paid ? 'is-paid' : 'is-unpaid'}`} onClick={() => toggleJobPaid(j.id)} title={paid ? 'Отметить как неоплаченный' : 'Отметить оплату'}>
+                        {paid ? '✓ Оплачено' : '● Не оплачено'}
                       </button>
                     </>
                   )}
