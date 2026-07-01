@@ -99,6 +99,7 @@ export default function DocumentsModal({ job, company, onClose, onJobUpdated }) 
   async function save() {
     setSaving(true);
     await api.jobs.update(job.id, form);
+    await api.warehouse.syncParts({ ...job, ...form });
     setSaving(false);
     onJobUpdated && onJobUpdated();
   }
@@ -106,6 +107,7 @@ export default function DocumentsModal({ job, company, onClose, onJobUpdated }) 
   async function saveAndGenerate(generator) {
     setSaving(true);
     await api.jobs.update(job.id, form);
+    await api.warehouse.syncParts({ ...job, ...form });
     setSaving(false);
     onJobUpdated && onJobUpdated();
     await generator({ ...job, ...form }, company);

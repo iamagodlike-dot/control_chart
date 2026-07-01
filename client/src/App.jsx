@@ -1,21 +1,42 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import Gantt from './components/Gantt';
+import PostsBoard from './components/PostsBoard';
 import PostsMasters from './components/PostsMasters';
 import JobForm from './components/JobForm';
 import History from './components/History';
 import Logo from './components/Logo';
 import AuthGate from './components/AuthGate';
+import Warehouse from './components/Warehouse';
 import './App.css';
 
 const TABS = [
   { id: 'gantt', label: 'График', icon: '📅' },
+  { id: 'board', label: 'Загрузка', icon: '📊' },
+  { id: 'warehouse', label: 'Склад', icon: '📦' },
   { id: 'history', label: 'История', icon: '🗄️' },
   { id: 'config', label: 'Посты и мастера', icon: '⚙️' },
 ];
 
 function App() {
-  const [tab, setTab] = useState('gantt');
+  // Deep link from a printed cell QR code (?cell=ID) should land straight on the warehouse tab.
+  const [tab, setTab] = useState(() => (new URLSearchParams(window.location.search).get('cell') ? 'warehouse' : 'gantt'));
   const [ganttKey, setGanttKey] = useState(0);
+  const [openJobId, setOpenJobId] = useState(null);
+
+  function openJobFromWarehouse(jobId) {
+    setOpenJobId(jobId);
+    setTab('gantt');
+  }
+  const [theme, setTheme] = useState(() => {
+    const saved = localStorage.getItem('auto-academy-theme') || 'dark';
+    document.documentElement.dataset.theme = saved;
+    return saved;
+  });
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = theme;
+    localStorage.setItem('auto-academy-theme', theme);
+  }, [theme]);
 
   return (
     <AuthGate>
@@ -37,13 +58,29 @@ function App() {
               ))}
             </nav>
             <div className="app-user">
+              <button
+                className="theme-toggle"
+                onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+                title={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
+              >
+                {theme === 'dark' ? '☀️' : '🌙'}
+              </button>
               <span className="app-user-email">{user.email}</span>
               <button onClick={signOut}>Выйти</button>
             </div>
           </header>
 
           <main className="app-main">
-            {tab === 'gantt' && <Gantt key={ganttKey} onCreateJob={() => setTab('job')} />}
+            {tab === 'gantt' && (
+              <Gantt
+                key={ganttKey}
+                onCreateJob={() => setTab('job')}
+                openJobId={openJobId}
+                onOpenJobHandled={() => setOpenJobId(null)}
+              />
+            )}
+            {tab === 'board' && <PostsBoard />}
+            {tab === 'warehouse' && <Warehouse onOpenJob={openJobFromWarehouse} />}
             {tab === 'job' && (
               <JobForm onCreated={() => { setGanttKey((k) => k + 1); setTab('gantt'); }} />
             )}

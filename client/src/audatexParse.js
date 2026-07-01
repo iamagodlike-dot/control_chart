@@ -3,109 +3,131 @@ import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
-const SERVICES_HEADER_RE = /наименован.*работ/i;
-const PARTS_HEADER_RE = /расходн.*материал/i;
-const STOP_RE = /^итого|^рекомендации|^скидка|^всего по|^предоплата|^доплата/i;
-
-const NUMERIC_RE = /^-?\d[\d\s]*(?:[.,]\d+)?$/;
-const UNIT_RE = /^(шт\.?|к-?т\.?|компл\.?|м\.?|кг\.?|л\.?|пара|пар)$/i;
-const CODE_RE = /^(?=.*\d)(?=.*[A-Za-zА-Яа-я])[A-Za-zА-Яа-я0-9-]{5,}$/;
-
-function toNumber(token) {
-  return parseFloat(token.replace(/\s/g, '').replace(',', '.'));
+function toNum(s) {
+  if (!s) return 0;
+  const n = parseFloat(String(s).replace(/[\s*]/g, '').replace(',', '.'));
+  return isFinite(n) ? n : 0;
 }
 
+// Extract lines from PDF, splitting each line into left text and rightmost column (price)
 async function extractLines(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const lines = [];
+
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
+    const vp = page.getViewport({ scale: 1 });
+    // Price (СТОИМ) column starts at ~75% of page width in standard Audatex layout
+    // (verified: prices at X≈472-488 on 612pt page, threshold 459 correctly separates them)
+    const priceX = vp.width * 0.75;
     const content = await page.getTextContent();
+
     const byY = new Map();
     for (const item of content.items) {
       if (!item.str || !item.str.trim()) continue;
-      const y = Math.round(item.transform[5] / 2) * 2; // bucket close y-values together
+      const y = Math.round(item.transform[5] / 2) * 2;
       if (!byY.has(y)) byY.set(y, []);
-      byY.get(y).push(item);
+      byY.get(y).push({ str: item.str, x: item.transform[4] });
     }
+
     const ys = [...byY.keys()].sort((a, b) => b - a);
     for (const y of ys) {
-      const items = byY.get(y).sort((a, b) => a.transform[4] - b.transform[4]);
-      const text = items.map((i) => i.str).join(' ').replace(/\s+/g, ' ').trim();
-      if (text) lines.push(text);
+      const items = byY.get(y).sort((a, b) => a.x - b.x);
+      const left = items.filter(i => i.x < priceX).map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      const right = items.filter(i => i.x >= priceX).map(i => i.str).join('').replace(/\s/g, '').trim();
+      const full = items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+      if (full) lines.push({ full, left, right });
     }
   }
   return lines;
 }
 
-function parseRow(line, { withUnit }) {
-  const m = line.match(/^(\d{1,4})\s+(.*)$/);
+// Detect Audatex section from a cleaned (no-whitespace) line
+function detectSection(clean) {
+  if (clean.startsWith('ЗАПЧАСТИ')) return 'parts';
+  if (clean.startsWith('СТОИМОСТЬРАБОТ')) return 'services';
+  if (clean.startsWith('ОКРАСКА')) return 'paint';
+  if (clean.startsWith('ПРОЧЕЕ')) return 'other';
+  return null;
+}
+
+// Parts row (ЗАПЧАСТИ): "1481 ДВЕРЬ П Л *A2127205300"  |  right: "153018*"
+function parsePartsRow({ left, right }) {
+  const price = toNum(right);
+  if (!price) return null;
+
+  const m = left.match(/^(\d{4})\s+(.+)$/);
   if (!m) return null;
+
   const tokens = m[2].trim().split(/\s+/);
-  if (tokens.length < 2) return null;
-
-  const trailing = [];
-  while (tokens.length && NUMERIC_RE.test(tokens[tokens.length - 1]) && trailing.length < 3) {
-    trailing.unshift(tokens.pop());
-  }
-  if (trailing.length < 1) return null;
-
-  let unit = null;
-  if (withUnit && tokens.length && UNIT_RE.test(tokens[tokens.length - 1])) {
-    unit = tokens.pop();
-  }
-
-  let qty = null;
-  if (tokens.length && trailing.length <= 2 && NUMERIC_RE.test(tokens[tokens.length - 1])) {
-    qty = toNumber(tokens.pop());
-  }
-
-  let code = null;
-  if (tokens.length && CODE_RE.test(tokens[0])) {
-    code = tokens.shift();
+  // Code: alphanumeric token with at least one letter (e.g. A2127205300, *A0007271300)
+  let code = '';
+  const codeRe = /^\*?[A-Za-z0-9]*[A-Za-z][A-Za-z0-9-]{3,}$/;
+  if (tokens.length && codeRe.test(tokens[tokens.length - 1])) {
+    code = tokens.pop().replace(/^\*/, '');
   }
 
   const name = tokens.join(' ').trim();
   if (!name) return null;
-
-  let price, total;
-  if (qty !== null && trailing.length === 2) {
-    [price, total] = trailing.map(toNumber);
-  } else if (qty === null && trailing.length === 3) {
-    [qty, price, total] = trailing.map(toNumber);
-  } else if (qty === null && trailing.length === 2) {
-    [qty, price] = trailing.map(toNumber);
-    total = qty * price;
-  } else if (trailing.length === 1) {
-    price = toNumber(trailing[0]);
-    qty = qty ?? 1;
-    total = qty * price;
-  } else {
-    return null;
-  }
-
-  return { code, name, qty, unit, price, total };
+  return { code, name, qty: 1, unit: 'шт.', price };
 }
 
-function extractSection(lines, headerRe, { withUnit }) {
-  const startIdx = lines.findIndex((l) => headerRe.test(l));
-  if (startIdx === -1) return [];
-  const rows = [];
-  for (let i = startIdx + 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (STOP_RE.test(line) || SERVICES_HEADER_RE.test(line) || PARTS_HEADER_RE.test(line)) break;
-    const row = parseRow(line, { withUnit });
-    if (row) rows.push(row);
+// Services row: "54-1011 01 ПРОВЕСТИ КРАТКИЙ ТЕСТ 1 3"  |  right: "250"
+// Also handles 4-digit codes: "0745 ОБЛИЦОВКА КРЫЛА П Л С/У 1 6*"
+const OPCODE_RE = /^(\d{2}-\d{4}\s+\d{2}|\d{4})\s+/;
+const NUM_TAIL_RE = /^\d+\*?$/;
+
+function parseServicesRow({ left, right }) {
+  const price = toNum(right);
+  if (!price) return null;
+
+  const m = left.match(OPCODE_RE);
+  if (!m) return null;
+
+  const tokens = left.slice(m[0].length).trim().split(/\s+/);
+  // Strip trailing КЛ and РП columns (pure numbers left of the price column)
+  while (tokens.length > 1 && NUM_TAIL_RE.test(tokens[tokens.length - 1])) {
+    tokens.pop();
   }
-  return rows;
+
+  const name = tokens.join(' ').trim();
+  if (!name) return null;
+  return { name, qty: 1, price };
 }
 
 export async function parseAudatexPdf(file) {
   const lines = await extractLines(file);
-  const services = extractSection(lines, SERVICES_HEADER_RE, { withUnit: false })
-    .map(({ name, qty, price }) => ({ name, qty, price }));
-  const parts = extractSection(lines, PARTS_HEADER_RE, { withUnit: true })
-    .map(({ code, name, qty, unit, price }) => ({ code, name, qty, unit: unit || 'шт.', price }));
+  const services = [];
+  const parts = [];
+  let section = null;
+
+  for (const line of lines) {
+    const clean = line.full.replace(/\s+/g, '').toUpperCase();
+
+    // Skip separator lines and system stamps
+    if (/^-{10,}/.test(line.full)) continue;
+    if (clean.includes('СИСТЕМАAUDATEX')) continue;
+
+    // Stop at final summary or control sheet (they don't contain billable rows)
+    if (clean.startsWith('ОКОНЧАТЕЛЬНАЯКАЛЬКУЛЯЦИЯ') || clean.startsWith('КОНТРОЛЬНЫЙЛИСТ')) break;
+
+    // Detect section header
+    const detected = detectSection(clean);
+    if (detected) { section = detected; continue; }
+
+    if (section === 'parts') {
+      const row = parsePartsRow(line);
+      if (row) parts.push(row);
+    } else if (section === 'services' || section === 'paint') {
+      const row = parseServicesRow(line);
+      if (row) services.push(row);
+    } else if (section === 'other') {
+      // ПРОЧЕЕ (kits, adhesives, etc.) → treat as parts
+      const row = parsePartsRow(line);
+      if (row) parts.push(row);
+    }
+  }
+
   return { services, parts };
 }

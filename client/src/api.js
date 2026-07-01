@@ -9,6 +9,9 @@ const mastersCol = collection(db, 'masters');
 const jobsCol = collection(db, 'jobs');
 const stagesCol = collection(db, 'stages');
 const settingsCol = collection(db, 'settings');
+const cellsCol = collection(db, 'cells');
+const warehouseConfigCol = collection(db, 'warehouseConfig');
+const warehouseLogCol = collection(db, 'warehouseLog');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -227,4 +230,123 @@ export const api = {
       return api.settings.getCompany();
     },
   },
+
+  cells: {
+    async list() {
+      const snap = await getDocs(cellsCol);
+      const obj = {};
+      snap.forEach((d) => { obj[d.id] = d.data(); });
+      return obj;
+    },
+    async get(id) {
+      const snap = await getDoc(doc(cellsCol, id));
+      return snap.exists() ? snap.data() : null;
+    },
+    async save(id, data) {
+      await setDoc(doc(cellsCol, id), stripUndefined(data));
+      return data;
+    },
+    async free(id) {
+      const cell = await api.cells.get(id);
+      if (!cell) return null;
+      const archive = cell._archive || [];
+      const updated = { _archive: [...archive, { ...cell, freedAt: new Date().toLocaleDateString('ru-RU') }] };
+      await setDoc(doc(cellsCol, id), updated);
+      await api.warehouseLog.add('Освобождена', id, `${cell.car || '—'} · ${cell.orderNum || '—'}`);
+      return updated;
+    },
+  },
+
+  warehouseConfig: {
+    async get() {
+      const snap = await getDoc(doc(warehouseConfigCol, 'main'));
+      return snap.exists() ? snap.data() : null;
+    },
+    async save(cfg) {
+      await setDoc(doc(warehouseConfigCol, 'main'), cfg);
+      return cfg;
+    },
+  },
+
+  warehouseLog: {
+    async add(action, cellId, details) {
+      const id = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+      await setDoc(doc(warehouseLogCol, id), { action, cellId, details, ts: Date.now() });
+    },
+    async list() {
+      const snap = await getDocs(warehouseLogCol);
+      const arr = [];
+      snap.forEach((d) => arr.push(d.data()));
+      arr.sort((a, b) => b.ts - a.ts);
+      return arr.slice(0, 200);
+    },
+  },
+
+  // Links a job (заказ-наряд) to one or more warehouse cells so parts entered
+  // on the order automatically show up on the cell(s), instead of being
+  // typed twice. A job can span several cells (e.g. a bumper in one cell,
+  // small parts in another); every linked cell shows the same order info.
+  warehouse: {
+    cellIds: jobCellIds,
+
+    async assignCell(cellId, job) {
+      const existing = await api.cells.get(cellId);
+      const updated = {
+        ...(existing || {}),
+        job_id: job.id,
+        car: job.car_model,
+        plate: job.plate_number,
+        orderNum: job.order_number,
+        parts: partsForCell(job),
+        openedAt: existing?.openedAt || new Date().toLocaleDateString('ru-RU'),
+      };
+      await api.cells.save(cellId, updated);
+      await api.warehouseLog.add(existing?.orderNum ? 'Изменена' : 'Открыта', cellId, `${updated.car || '—'} · ${updated.orderNum || '—'}`);
+    },
+
+    // Replaces the full set of cells linked to a job in one go: frees cells
+    // that were removed, assigns newly picked ones, leaves the rest as-is.
+    async setJobCells(job, newCellIds) {
+      const current = jobCellIds(job);
+      const toAdd = newCellIds.filter((id) => !current.includes(id));
+      const toRemove = current.filter((id) => !newCellIds.includes(id));
+      for (const id of toRemove) await api.cells.free(id);
+      for (const id of toAdd) await api.warehouse.assignCell(id, job);
+      return api.jobs.update(job.id, { cell_ids: newCellIds, cell_id: newCellIds[0] || null });
+    },
+
+    // Attach one more free cell to a job that already exists, without
+    // touching any cells it's already linked to — used from the warehouse
+    // side ("Привязать к существующему заказу").
+    async addJobCell(cellId, job) {
+      const current = jobCellIds(job);
+      if (current.includes(cellId)) return job;
+      return api.warehouse.setJobCells(job, [...current, cellId]);
+    },
+
+    async syncParts(job) {
+      for (const id of jobCellIds(job)) {
+        const existing = await api.cells.get(id);
+        if (!existing) continue;
+        await api.cells.save(id, {
+          ...existing,
+          car: job.car_model,
+          orderNum: job.order_number,
+          parts: partsForCell(job),
+        });
+      }
+    },
+
+    async freeJobCells(job) {
+      for (const id of jobCellIds(job)) await api.cells.free(id);
+    },
+  },
 };
+
+function jobCellIds(job) {
+  return job.cell_ids || (job.cell_id ? [job.cell_id] : []);
+}
+
+function partsForCell(job) {
+  return (job.parts || []).map((p) => ({ name: p.name || '', code: p.code || '', qty: p.qty ?? 1 }));
+}

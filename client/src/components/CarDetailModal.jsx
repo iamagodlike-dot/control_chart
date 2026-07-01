@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import dayjs from 'dayjs';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState } from './Gantt';
+import { CellPickerModal } from './Warehouse';
 
 function toLocalInput(iso) {
   return iso ? dayjs(iso).format('YYYY-MM-DDTHH:mm') : '';
@@ -13,12 +14,13 @@ export default function CarDetailModal({ job, posts, masters, now, onClose, onOp
     client_name: job.client_name || '',
     client_phone: job.client_phone || '',
     order_number: job.order_number || '',
-    storage_location: job.storage_location || '',
+    cell_ids: job.cell_ids || (job.cell_id ? [job.cell_id] : []),
     expected_at: toLocalInput(job.expected_at),
     deadline: toLocalInput(job.deadline),
     notes: job.notes || '',
   });
   const [saving, setSaving] = useState(false);
+  const [pickerOpen, setPickerOpen] = useState(false);
   const [addingStage, setAddingStage] = useState(false);
   const [stageForm, setStageForm] = useState(() => {
     const lastStage = job.stages[job.stages.length - 1];
@@ -83,7 +85,17 @@ export default function CarDetailModal({ job, posts, masters, now, onClose, onOp
               <input placeholder="Клиент" value={form.client_name} onChange={(e) => setForm({ ...form, client_name: e.target.value })} />
               <input placeholder="Телефон" value={form.client_phone} onChange={(e) => setForm({ ...form, client_phone: e.target.value })} />
               <input placeholder="№ заказ-наряда" value={form.order_number} onChange={(e) => setForm({ ...form, order_number: e.target.value })} />
-              <input placeholder="Место на складе" value={form.storage_location} onChange={(e) => setForm({ ...form, storage_location: e.target.value })} />
+              <label className="job-form-field">
+                <span>Ячейки склада</span>
+                <button type="button" onClick={() => setPickerOpen(true)}>
+                  {form.cell_ids.length ? `📦 ${form.cell_ids.join(', ')} — изменить` : '📦 Выбрать ячейки'}
+                </button>
+              </label>
+              {!form.cell_ids.length && job.storage_location && (
+                <div className="job-form-hint" style={{ gridColumn: '1 / -1', fontSize: 12, color: 'var(--color-text-muted)' }}>
+                  Старая запись места (текст): «{job.storage_location}» — выберите ячейку, чтобы связать со складом
+                </div>
+              )}
               <label className="job-form-field">
                 <span>Дата заезда (если ещё не приехала)</span>
                 <input type="datetime-local" value={form.expected_at} onChange={(e) => setForm({ ...form, expected_at: e.target.value })} />
@@ -158,6 +170,14 @@ export default function CarDetailModal({ job, posts, masters, now, onClose, onOp
           </div>
         </div>
       </div>
+
+      {pickerOpen && (
+        <CellPickerModal
+          currentCellIds={form.cell_ids}
+          onSave={(ids) => setForm({ ...form, cell_ids: ids })}
+          onClose={() => setPickerOpen(false)}
+        />
+      )}
     </div>
   );
 }

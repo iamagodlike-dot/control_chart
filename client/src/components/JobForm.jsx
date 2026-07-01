@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
+import { CellPickerModal } from './Warehouse';
 
 const PREVIEW_HOUR_WIDTH = 16;
 
@@ -21,7 +22,7 @@ function overlaps(aStart, aEnd, bStart, bEnd) {
   return aStart.isBefore(bEnd) && bStart.isBefore(aEnd);
 }
 
-const EMPTY_JOB = { car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', storage_location: '', expected_at: '', deadline: '', notes: '' };
+const EMPTY_JOB = { car_model: '', plate_number: '', client_name: '', client_phone: '', order_number: '', cell_ids: [], expected_at: '', deadline: '', notes: '' };
 
 export default function JobForm({ onCreated }) {
   const [posts, setPosts] = useState([]);
@@ -29,6 +30,7 @@ export default function JobForm({ onCreated }) {
   const [existingStages, setExistingStages] = useState([]);
   const [job, setJob] = useState({ ...EMPTY_JOB });
   const [stages, setStages] = useState([]);
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   useEffect(() => {
     (async () => {
@@ -67,7 +69,8 @@ export default function JobForm({ onCreated }) {
         end_at: dayjs(s.end_at).toISOString(),
       })),
     };
-    await api.jobs.create(payload);
+    const created = await api.jobs.create(payload);
+    if (job.cell_ids.length) await api.warehouse.setJobCells(created, job.cell_ids);
     setJob({ ...EMPTY_JOB });
     setStages([]);
     onCreated && onCreated();
@@ -82,7 +85,12 @@ export default function JobForm({ onCreated }) {
         <input placeholder="Марка и модель *" value={job.car_model} onChange={(e) => setJob({ ...job, car_model: e.target.value })} />
         <input placeholder="Гос. номер" value={job.plate_number} onChange={(e) => setJob({ ...job, plate_number: e.target.value })} />
         <input placeholder="№ заказ-наряда" value={job.order_number} onChange={(e) => setJob({ ...job, order_number: e.target.value })} />
-        <input placeholder="Место на складе (стеллаж, бокс)" value={job.storage_location} onChange={(e) => setJob({ ...job, storage_location: e.target.value })} />
+        <div className="job-form-field">
+          <span>Ячейки склада</span>
+          <button type="button" onClick={() => setPickerOpen(true)}>
+            {job.cell_ids.length ? `📦 ${job.cell_ids.join(', ')} — изменить` : '📦 Выбрать ячейки'}
+          </button>
+        </div>
         <input placeholder="Клиент" value={job.client_name} onChange={(e) => setJob({ ...job, client_name: e.target.value })} />
         <input placeholder="Телефон" value={job.client_phone} onChange={(e) => setJob({ ...job, client_phone: e.target.value })} />
         <label className="job-form-field">
@@ -143,6 +151,14 @@ export default function JobForm({ onCreated }) {
           <h4>Где это встанет в графике</h4>
           <RoutePreview posts={posts} draftStages={stages} existingStages={existingStages} deadline={job.deadline} />
         </>
+      )}
+
+      {pickerOpen && (
+        <CellPickerModal
+          currentCellIds={job.cell_ids}
+          onSave={(ids) => setJob({ ...job, cell_ids: ids })}
+          onClose={() => setPickerOpen(false)}
+        />
       )}
     </div>
   );

@@ -1,25 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import CompanySettings from './CompanySettings';
-
-const ICON_RULES = [
-  [/рихт/i, '🔨'],
-  [/свар/i, '⚡'],
-  [/маляр|покрас/i, '🎨'],
-  [/полиров/i, '✨'],
-  [/разбор/i, '🔧'],
-  [/сбор/i, '🛠️'],
-  [/диагност/i, '🔍'],
-  [/шин|колес/i, '🛞'],
-  [/подгот/i, '🧰'],
-  [/электр/i, '🔌'],
-];
-
-function iconFor(text, fallback) {
-  if (!text) return fallback;
-  const rule = ICON_RULES.find(([re]) => re.test(text));
-  return rule ? rule[1] : fallback;
-}
+import { iconFor } from '../postIcons';
 
 export default function PostsMasters() {
   const [posts, setPosts] = useState([]);
@@ -28,6 +10,10 @@ export default function PostsMasters() {
   const [newPost, setNewPost] = useState('');
   const [newMaster, setNewMaster] = useState({ name: '', specialty: '', default_post_id: '' });
   const [dragIndex, setDragIndex] = useState(null);
+  const [editingPostId, setEditingPostId] = useState(null);
+  const [editPostName, setEditPostName] = useState('');
+  const [editingMasterId, setEditingMasterId] = useState(null);
+  const [editMasterForm, setEditMasterForm] = useState({ name: '', specialty: '', default_post_id: '' });
 
   const load = async () => {
     const [p, m] = await Promise.all([api.posts.list(), api.masters.list()]);
@@ -48,6 +34,23 @@ export default function PostsMasters() {
   async function removePost(id) {
     if (!confirm('Удалить пост? Все связанные этапы тоже будут удалены.')) return;
     await api.posts.remove(id);
+    load();
+  }
+
+  function startEditPost(p) {
+    setEditingPostId(p.id);
+    setEditPostName(p.name);
+  }
+
+  function cancelEditPost() {
+    setEditingPostId(null);
+  }
+
+  async function saveEditPost() {
+    const name = editPostName.trim();
+    if (!name) return;
+    await api.posts.update(editingPostId, { name });
+    setEditingPostId(null);
     load();
   }
 
@@ -77,6 +80,27 @@ export default function PostsMasters() {
     load();
   }
 
+  function startEditMaster(m) {
+    setEditingMasterId(m.id);
+    setEditMasterForm({ name: m.name, specialty: m.specialty || '', default_post_id: m.default_post_id || '' });
+  }
+
+  function cancelEditMaster() {
+    setEditingMasterId(null);
+  }
+
+  async function saveEditMaster() {
+    const name = editMasterForm.name.trim();
+    if (!name) return;
+    await api.masters.update(editingMasterId, {
+      name,
+      specialty: editMasterForm.specialty || null,
+      default_post_id: editMasterForm.default_post_id || null,
+    });
+    setEditingMasterId(null);
+    load();
+  }
+
   if (loading) {
     return (
       <div className="panel">
@@ -96,16 +120,37 @@ export default function PostsMasters() {
             {posts.map((p, i) => (
               <li
                 key={p.id}
-                draggable
+                draggable={editingPostId !== p.id}
                 onDragStart={() => setDragIndex(i)}
                 onDragOver={(e) => e.preventDefault()}
                 onDrop={() => { reorderPosts(dragIndex, i); setDragIndex(null); }}
-                className={dragIndex === i ? 'is-dragging' : ''}
+                className={`${dragIndex === i ? 'is-dragging' : ''}${editingPostId === p.id ? ' list-item-editing' : ''}`}
               >
-                <span className="drag-handle" title="Перетащите, чтобы изменить порядок">⠿</span>
-                <span className="list-icon">{iconFor(p.name, '🅿️')}</span>
-                <span className="list-label">{p.name}</span>
-                <button className="danger small" onClick={() => removePost(p.id)}>×</button>
+                {editingPostId === p.id ? (
+                  <>
+                    <input
+                      className="list-edit-input"
+                      autoFocus
+                      value={editPostName}
+                      onChange={(e) => setEditPostName(e.target.value)}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditPost(); if (e.key === 'Escape') cancelEditPost(); }}
+                    />
+                    <span className="list-actions">
+                      <button className="list-action-btn" title="Сохранить" onClick={saveEditPost}>✓</button>
+                      <button className="list-action-btn" title="Отмена" onClick={cancelEditPost}>×</button>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="drag-handle" title="Перетащите, чтобы изменить порядок">⠿</span>
+                    <span className="list-icon">{iconFor(p.name, '🅿️')}</span>
+                    <span className="list-label">{p.name}</span>
+                    <span className="list-actions">
+                      <button className="list-action-btn" title="Переименовать" onClick={() => startEditPost(p)}>✎</button>
+                      <button className="list-action-btn danger" title="Удалить" onClick={() => removePost(p.id)}>×</button>
+                    </span>
+                  </>
+                )}
               </li>
             ))}
           </ul>
@@ -123,10 +168,46 @@ export default function PostsMasters() {
         ) : (
           <ul className="list">
             {masters.map((m) => (
-              <li key={m.id}>
-                <span className="list-icon">{iconFor(m.specialty, '👤')}</span>
-                <span className="list-label">{m.name} {m.specialty ? <span className="list-sub">— {m.specialty}</span> : ''}</span>
-                <button className="danger small" onClick={() => removeMaster(m.id)}>×</button>
+              <li key={m.id} className={editingMasterId === m.id ? 'list-item-editing' : ''}>
+                {editingMasterId === m.id ? (
+                  <>
+                    <input
+                      className="list-edit-input"
+                      autoFocus
+                      placeholder="Имя мастера"
+                      value={editMasterForm.name}
+                      onChange={(e) => setEditMasterForm({ ...editMasterForm, name: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
+                    />
+                    <input
+                      className="list-edit-input"
+                      placeholder="Специализация"
+                      value={editMasterForm.specialty}
+                      onChange={(e) => setEditMasterForm({ ...editMasterForm, specialty: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
+                    />
+                    <select
+                      value={editMasterForm.default_post_id}
+                      onChange={(e) => setEditMasterForm({ ...editMasterForm, default_post_id: e.target.value })}
+                    >
+                      <option value="">Основной пост — не выбран</option>
+                      {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    </select>
+                    <span className="list-actions">
+                      <button className="list-action-btn" title="Сохранить" onClick={saveEditMaster}>✓</button>
+                      <button className="list-action-btn" title="Отмена" onClick={cancelEditMaster}>×</button>
+                    </span>
+                  </>
+                ) : (
+                  <>
+                    <span className="list-icon">{iconFor(m.specialty, '👤')}</span>
+                    <span className="list-label">{m.name} {m.specialty ? <span className="list-sub">— {m.specialty}</span> : ''}</span>
+                    <span className="list-actions">
+                      <button className="list-action-btn" title="Редактировать" onClick={() => startEditMaster(m)}>✎</button>
+                      <button className="list-action-btn danger" title="Удалить" onClick={() => removeMaster(m.id)}>×</button>
+                    </span>
+                  </>
+                )}
               </li>
             ))}
           </ul>

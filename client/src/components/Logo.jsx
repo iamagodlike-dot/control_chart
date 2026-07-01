@@ -6,7 +6,7 @@ export default function Logo({ size = 32, variant = 'plate' }) {
     <span
       style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: size, height: size, borderRadius: size * 0.22, background: '#C2802B', flexShrink: 0,
+        width: size, height: size, borderRadius: size * 0.22, background: 'var(--color-primary)', flexShrink: 0,
       }}
     >
       <img src="/logo-mark-white.png" alt="" width={size * 0.62} height={size * 0.62} style={{ objectFit: 'contain' }} />

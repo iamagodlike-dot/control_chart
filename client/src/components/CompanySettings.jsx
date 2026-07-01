@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 
-const EMPTY = { name: '', inn: '', ogrn: '', address: '', phone: '', director: '' };
+const EMPTY = { name: '', inn: '', ogrn: '', address: '', phone: '', director: '', workHourStart: 8, workHourEnd: 20 };
 
 export default function CompanySettings() {
   const [form, setForm] = useState(EMPTY);
@@ -41,6 +41,18 @@ export default function CompanySettings() {
         <input placeholder="Адрес" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
         <input placeholder="Телефон" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} />
         <input placeholder="Руководитель / мастер-приёмщик (ФИО для подписи)" value={form.director} onChange={(e) => setForm({ ...form, director: e.target.value })} />
+      </div>
+      <h3>Рабочие часы</h3>
+      <p className="panel-hint">Нерабочее время на графике сжимается, чтобы не занимало место — но остаётся доступным для овертайма.</p>
+      <div className="company-grid">
+        <label className="job-form-field">
+          <span>Начало рабочего дня (час)</span>
+          <input type="number" min="0" max="23" value={form.workHourStart} onChange={(e) => setForm({ ...form, workHourStart: Math.max(0, Math.min(23, Number(e.target.value) || 0)) })} />
+        </label>
+        <label className="job-form-field">
+          <span>Конец рабочего дня (час)</span>
+          <input type="number" min="1" max="24" value={form.workHourEnd} onChange={(e) => setForm({ ...form, workHourEnd: Math.max(1, Math.min(24, Number(e.target.value) || 24)) })} />
+        </label>
       </div>
       <div className="inline-form">
         <button className="primary" onClick={save}>Сохранить реквизиты</button>
