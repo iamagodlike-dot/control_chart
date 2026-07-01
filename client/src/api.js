@@ -242,6 +242,14 @@ export const api = {
       if (type) docs = docs.filter((d) => d.type === type);
       return docs.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
     },
+    async listAll() {
+      const snap = await getDocs(orderDocsCol);
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async setPaid(id, paid) {
+      await updateDoc(doc(orderDocsCol, id), stripUndefined({ paid, paid_at: paid ? Date.now() : null, updated_at: Date.now() }));
+      return { ok: true };
+    },
     async get(id) {
       const snap = await getDoc(doc(orderDocsCol, id));
       return snap.exists() ? withId(snap) : null;

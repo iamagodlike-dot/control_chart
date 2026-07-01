@@ -226,6 +226,8 @@ export function buildInvoiceSnapshot(job = {}, company = {}, seed = null) {
     invoice_note: DEFAULT_INVOICE_NOTE,
     show_invoice_note: true,
     show_qr: true,
+    paid: false,
+    paid_at: null,
   };
 }
 

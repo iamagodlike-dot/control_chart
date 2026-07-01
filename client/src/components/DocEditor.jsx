@@ -116,6 +116,10 @@ export default function DocEditor({ type, job, company, onClose }) {
         payload.prepayment = n(snapshot.prepayment);
         payload.totals = computeDocTotals(snapshot);
       }
+      if (isInvoice) {
+        payload.paid = !!snapshot.paid;
+        payload.paid_at = payload.paid ? (snapshot.paid_at || Date.now()) : null;
+      }
       if (docId) await api.orderDocuments.update(docId, payload);
       else { const created = await api.orderDocuments.create(payload); setDocId(created.id); }
       setSaved(true);
@@ -305,6 +309,14 @@ export default function DocEditor({ type, job, company, onClose }) {
                   <button className="small" onClick={() => patch({ invoice_note: DEFAULT_INVOICE_NOTE })}>Вернуть стандартный текст</button>
                 </div>
                 <textarea className="oe-textarea" value={snapshot.invoice_note} disabled={!snapshot.show_invoice_note} onChange={(e) => patch({ invoice_note: e.target.value })} />
+              </div>
+
+              <div className="oe-section">
+                <label className="oe-toggle">
+                  <input type="checkbox" checked={!!snapshot.paid} onChange={(e) => patch({ paid: e.target.checked })} />
+                  Счёт оплачен
+                </label>
+                <div className="oe-hint">Оплаченные счета попадают в «Оплачено» на борде аналитики (вкладка «История»).</div>
               </div>
             </>
           )}
