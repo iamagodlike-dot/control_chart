@@ -28,6 +28,7 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
   const [saveError, setSaveError] = useState('');
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState('');
+  const [extractInfo, setExtractInfo] = useState('');
   const [scale, setScale] = useState(0.6);
   const [history, setHistory] = useState([]);
   const paneRef = useRef(null);
@@ -110,22 +111,44 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
     if (!file) return;
     setExtracting(true);
     setExtractError('');
+    setExtractInfo('');
     try {
       const data = await parseAudatexPdf(file);
-      if (!data.services.length && !data.parts.length) {
-        setExtractError('Не нашли таблицы работ/запчастей в этом PDF — добавьте позиции вручную.');
+      const v = data.vehicle || {};
+      if (!data.services.length && !data.parts.length && !v.car_model && !v.vin) {
+        setExtractError('Не нашли данных в этом PDF — проверьте, что это калькуляция Audatex, или добавьте позиции вручную.');
         return;
       }
-      patch({
-        services: [
-          ...snapshot.services,
-          ...data.services.map((s) => ({ id: uid(), name: s.name || '', qty: Number(s.qty) || 1, price: Number(s.price) || 0 })),
-        ],
-        parts: [
-          ...snapshot.parts,
-          ...data.parts.map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0 })),
-        ],
+      const discount = Number(data.meta?.discount) || 0;
+      setSnapshot((s) => {
+        // Fill only empty vehicle fields — never overwrite what's already there.
+        const vehicle = { ...s.vehicle };
+        if (!vehicle.car_model && v.car_model) vehicle.car_model = v.car_model;
+        if (!vehicle.vin && v.vin) vehicle.vin = v.vin;
+        if (!vehicle.plate_number && v.plate) vehicle.plate_number = v.plate;
+        if (!vehicle.mileage && v.mileage) vehicle.mileage = v.mileage;
+        return {
+          ...s,
+          vehicle,
+          discount: discount > 0 ? discount : s.discount,
+          services: [
+            ...s.services,
+            ...data.services.map((x) => ({ id: uid(), name: x.name || '', qty: Number(x.qty) || 1, price: Number(x.price) || 0 })),
+          ],
+          parts: [
+            ...s.parts,
+            ...data.parts.map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0 })),
+          ],
+        };
       });
+      setSaved(false);
+      const bits = [];
+      if (v.car_model) bits.push(v.car_model);
+      bits.push(`работ: ${data.services.length}`);
+      bits.push(`запчастей: ${data.parts.length}`);
+      if (discount > 0) bits.push(`скидка: ${discount.toLocaleString('ru-RU')} ₽`);
+      if (data.meta?.repair_total > 0) bits.push(`итог Audatex: ${Number(data.meta.repair_total).toLocaleString('ru-RU')} ₽`);
+      setExtractInfo(`Распознано — ${bits.join(' · ')}`);
     } catch {
       setExtractError('Не удалось прочитать файл. Проверьте, что это PDF из Audatex.');
     } finally {
@@ -243,6 +266,7 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
               <input type="file" accept="application/pdf" onChange={handleAudatexUpload} disabled={extracting} hidden />
             </label>
             {extractError && <span className="login-error">{extractError}</span>}
+            {extractInfo && <span className="oe-recognized">{extractInfo}</span>}
           </div>
           <table className="items-table">
             <thead>

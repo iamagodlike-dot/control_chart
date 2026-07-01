@@ -3,131 +3,183 @@ import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
 
+// Audatex "РЕМОНТ-КАЛЬКУЛЯЦИЯ" is a strictly columnar report. We split each line
+// into columns by the X position of every text token (fractions of page width,
+// measured from real Audatex PDFs on 612pt pages), which is far more reliable
+// than guessing with regexes — every article (even all-digit ones) lands in its
+// own column.
+//
+// Columns (fraction of page width):
+//   [0        .. F_NAME)   код/поз. (УПР № or КОД ОПЕР.) — ignored for output
+//   [F_NAME   .. F_ART)    НАЗВАНИЕ (parts) / description (works)
+//   [F_ART    .. F_PPRICE) № ДЕТАЛИ (article) — parts only
+//   [F_RP     .. F_WPRICE) РП (labor units) — works only, excluded from name
+//   [F_PPRICE/F_WPRICE ..) СТОИМ (price), right-aligned
+const F_NAME = 0.26;
+const F_ART = 0.482;
+const F_PPRICE = 0.72;
+const F_RP = 0.716;
+const F_WPRICE = 0.77;
+
 function toNum(s) {
   if (!s) return 0;
-  const n = parseFloat(String(s).replace(/[\s*]/g, '').replace(',', '.'));
-  return isFinite(n) ? n : 0;
+  const n = parseFloat(String(s).replace(/[^0-9.,]/g, '').replace(',', '.'));
+  return Number.isFinite(n) ? n : 0;
 }
 
-// Extract lines from PDF, splitting each line into left text and rightmost column (price)
+function clean(s) {
+  return s.replace(/\s+/g, '').toUpperCase();
+}
+
+// Extract every page's lines as arrays of { x, str } tokens sorted left-to-right.
 async function extractLines(file) {
   const buf = await file.arrayBuffer();
   const pdf = await pdfjsLib.getDocument({ data: buf }).promise;
   const lines = [];
-
   for (let pageNum = 1; pageNum <= pdf.numPages; pageNum++) {
     const page = await pdf.getPage(pageNum);
-    const vp = page.getViewport({ scale: 1 });
-    // Price (СТОИМ) column starts at ~75% of page width in standard Audatex layout
-    // (verified: prices at X≈472-488 on 612pt page, threshold 459 correctly separates them)
-    const priceX = vp.width * 0.75;
+    const width = page.getViewport({ scale: 1 }).width;
     const content = await page.getTextContent();
-
     const byY = new Map();
     for (const item of content.items) {
       if (!item.str || !item.str.trim()) continue;
+      const x = item.transform[4];
       const y = Math.round(item.transform[5] / 2) * 2;
       if (!byY.has(y)) byY.set(y, []);
-      byY.get(y).push({ str: item.str, x: item.transform[4] });
+      byY.get(y).push({ x, str: item.str });
     }
-
-    const ys = [...byY.keys()].sort((a, b) => b - a);
+    const ys = [...byY.keys()].sort((a, b) => b - a); // top → bottom
     for (const y of ys) {
-      const items = byY.get(y).sort((a, b) => a.x - b.x);
-      const left = items.filter(i => i.x < priceX).map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
-      const right = items.filter(i => i.x >= priceX).map(i => i.str).join('').replace(/\s/g, '').trim();
-      const full = items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
-      if (full) lines.push({ full, left, right });
+      lines.push({ width, tokens: byY.get(y).sort((a, b) => a.x - b.x) });
     }
   }
   return lines;
 }
 
-// Detect Audatex section from a cleaned (no-whitespace) line
-function detectSection(clean) {
-  if (clean.startsWith('ЗАПЧАСТИ')) return 'parts';
-  if (clean.startsWith('СТОИМОСТЬРАБОТ')) return 'services';
-  if (clean.startsWith('ОКРАСКА')) return 'paint';
-  if (clean.startsWith('ПРОЧЕЕ')) return 'other';
-  return null;
+function join(tokens, lo, hi) {
+  return tokens.filter((t) => t.x >= lo && t.x < hi).map((t) => t.str).join(' ').replace(/\s+/g, ' ').trim();
 }
 
-// Parts row (ЗАПЧАСТИ): "1481 ДВЕРЬ П Л *A2127205300"  |  right: "153018*"
-function parsePartsRow({ left, right }) {
-  const price = toNum(right);
-  if (!price) return null;
-
-  const m = left.match(/^(\d{4})\s+(.+)$/);
-  if (!m) return null;
-
-  const tokens = m[2].trim().split(/\s+/);
-  // Code: alphanumeric token with at least one letter (e.g. A2127205300, *A0007271300)
-  let code = '';
-  const codeRe = /^\*?[A-Za-z0-9]*[A-Za-z][A-Za-z0-9-]{3,}$/;
-  if (tokens.length && codeRe.test(tokens[tokens.length - 1])) {
-    code = tokens.pop().replace(/^\*/, '');
+// Rightmost price token at/after startX. Prices are integer RUR with an optional
+// trailing marker (* = user data, U = recalculated). Tokens containing a dot are
+// skipped so dates like "15.06.2026" are never mistaken for a price.
+function priceAt(tokens, startX) {
+  for (let i = tokens.length - 1; i >= 0; i--) {
+    const t = tokens[i];
+    if (t.x < startX) continue;
+    if (t.str.includes('.')) continue;
+    const v = toNum(t.str);
+    if (v > 0) return v;
   }
-
-  const name = tokens.join(' ').trim();
-  if (!name) return null;
-  return { code, name, qty: 1, unit: 'шт.', price };
+  return 0;
 }
 
-// Services row: "54-1011 01 ПРОВЕСТИ КРАТКИЙ ТЕСТ 1 3"  |  right: "250"
-// Also handles 4-digit codes: "0745 ОБЛИЦОВКА КРЫЛА П Л С/У 1 6*"
-const OPCODE_RE = /^(\d{2}-\d{4}\s+\d{2}|\d{4})\s+/;
-const NUM_TAIL_RE = /^\d+\*?$/;
-
-function parseServicesRow({ left, right }) {
-  const price = toNum(right);
-  if (!price) return null;
-
-  const m = left.match(OPCODE_RE);
-  if (!m) return null;
-
-  const tokens = left.slice(m[0].length).trim().split(/\s+/);
-  // Strip trailing КЛ and РП columns (pure numbers left of the price column)
-  while (tokens.length > 1 && NUM_TAIL_RE.test(tokens[tokens.length - 1])) {
-    tokens.pop();
+// In the final calculation, amounts are right-aligned and split into thousand
+// groups as separate tokens (e.g. "33" + "789-" = 33789). Join the digits of all
+// right-side tokens into one integer.
+function sumRight(tokens, width) {
+  const minX = 0.6 * width;
+  let digits = '';
+  for (const t of tokens) {
+    if (t.x < minX) continue;
+    if (t.str.includes('.')) continue; // skip dates / percentages like 13.00%
+    digits += t.str.replace(/[^0-9]/g, '');
   }
-
-  const name = tokens.join(' ').trim();
-  if (!name) return null;
-  return { name, qty: 1, price };
+  return digits ? parseInt(digits, 10) : 0;
 }
 
 export async function parseAudatexPdf(file) {
   const lines = await extractLines(file);
   const services = [];
   const parts = [];
+  const vehicle = {};
+  const meta = {};
   let section = null;
 
-  for (const line of lines) {
-    const clean = line.full.replace(/\s+/g, '').toUpperCase();
+  for (const { width, tokens } of lines) {
+    const nameX = F_NAME * width;
+    const artX = F_ART * width;
+    const pPriceX = F_PPRICE * width;
+    const rpX = F_RP * width;
+    const wPriceX = F_WPRICE * width;
 
-    // Skip separator lines and system stamps
-    if (/^-{10,}/.test(line.full)) continue;
-    if (clean.includes('СИСТЕМАAUDATEX')) continue;
+    const text = tokens.map((t) => t.str).join(' ').replace(/\s+/g, ' ').trim();
+    const c = clean(text);
 
-    // Stop at final summary or control sheet (they don't contain billable rows)
-    if (clean.startsWith('ОКОНЧАТЕЛЬНАЯКАЛЬКУЛЯЦИЯ') || clean.startsWith('КОНТРОЛЬНЫЙЛИСТ')) break;
+    // ---- Vehicle / document header (appears before the item sections) ----
+    if (!vehicle.car_model && c.includes('ПРОИЗВОД')) {
+      const m = text.match(/ПРОИЗВОД\s+(.+?)\s*\(/);
+      if (m) vehicle.car_model = m[1].trim();
+    }
+    if (c.startsWith('КУЗОВ')) {
+      let m = text.match(/КУЗОВ\s*№\s*(\S+)/);
+      if (m) vehicle.vin = m[1];
+      m = text.match(/ГОС\.?\s*№\s*(\S+)/);
+      if (m) vehicle.plate = m[1];
+    }
+    if (c.startsWith('ПРОБЕГ')) {
+      const m = text.match(/ПРОБЕГ\s+(\d+)/);
+      if (m) vehicle.mileage = m[1];
+    }
+    if (!meta.date && section === null) {
+      const m = text.match(/\b(\d{2}\.\d{2}\.\d{4})\b/);
+      if (m) meta.date = m[1];
+    }
+    if (!meta.number && c.includes('ДЕЛА')) {
+      const m = text.match(/ДЕЛА\s+(\S+)/);
+      if (m) meta.number = m[1];
+    }
 
-    // Detect section header
-    const detected = detectSection(clean);
-    if (detected) { section = detected; continue; }
+    // ---- Section boundaries ----
+    if (c.startsWith('КОНТРОЛЬНЫЙЛИСТ')) break;
+    // Итоговая калькуляция: switch to summary mode to pull the remaining
+    // calculations (скидка, лакокрасочные материалы, итог) — not item rows.
+    if (c.startsWith('ОКОНЧАТЕЛЬНАЯКАЛЬКУЛЯЦИЯ')) { section = 'summary'; continue; }
+    // Page-header line ("РЕМОНТ-КАЛЬКУЛЯЦИЯ № ... дата") repeats atop every page —
+    // reset the section so it's never parsed as a data row on continuation pages.
+    if (c.includes('КАЛЬКУЛЯЦИЯ')) { section = null; continue; }
+    if (/^-{6,}/.test(text) || c.includes('СИСТЕМАAUDATEX')) continue;
+    if (section !== 'summary') {
+      if (c.startsWith('ЗАПЧАСТИ')) { section = 'parts'; continue; }
+      if (c.startsWith('СТОИМОСТЬРАБОТ')) { section = 'works'; continue; }
+      if (c.startsWith('ОКРАСКА')) { section = 'works'; continue; }
+      if (c.startsWith('ПРОЧЕЕ')) { section = 'other'; continue; }
+    }
 
+    // ---- Rows (a valid row must have a numeric price in its price column) ----
     if (section === 'parts') {
-      const row = parsePartsRow(line);
-      if (row) parts.push(row);
-    } else if (section === 'services' || section === 'paint') {
-      const row = parseServicesRow(line);
-      if (row) services.push(row);
+      const price = priceAt(tokens, pPriceX);
+      if (price <= 0) continue;
+      const name = join(tokens, nameX, artX);
+      let code = join(tokens, artX, pPriceX).replace(/\s+/g, '').replace(/^\*/, '');
+      if (/^KN/i.test(code)) code = ''; // KN = "без № запчасти" placeholder, not a real article
+      if (!name) continue;
+      parts.push({ code, name, qty: 1, unit: 'шт.', price });
+    } else if (section === 'works') {
+      const price = priceAt(tokens, wPriceX);
+      if (price <= 0) continue;
+      const name = join(tokens, nameX, rpX);
+      if (!name) continue;
+      services.push({ name, qty: 1, price });
     } else if (section === 'other') {
-      // ПРОЧЕЕ (kits, adhesives, etc.) → treat as parts
-      const row = parsePartsRow(line);
-      if (row) parts.push(row);
+      const price = priceAt(tokens, pPriceX);
+      if (price <= 0) continue;
+      const name = join(tokens, nameX, pPriceX);
+      if (!name) continue;
+      parts.push({ code: '', name, qty: 1, unit: 'шт.', price });
+    } else if (section === 'summary') {
+      if (c.startsWith('СКИДКА')) {
+        const d = sumRight(tokens, width);
+        if (d > 0) meta.discount = d;
+      } else if (c.startsWith('ЛАКОКРАСОЧН')) {
+        const price = sumRight(tokens, width);
+        if (price > 0) parts.push({ code: '', name: 'Лакокрасочные материалы', qty: 1, unit: 'компл.', price });
+      } else if (c.startsWith('СТОИМОСТЬРЕМОНТА')) {
+        const tot = sumRight(tokens, width);
+        if (tot > 0) meta.repair_total = tot;
+      }
     }
   }
 
-  return { services, parts };
+  return { services, parts, vehicle, meta };
 }
