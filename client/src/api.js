@@ -2,7 +2,7 @@ import {
   collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, setDoc,
   query, orderBy, where, writeBatch,
 } from 'firebase/firestore';
-import { db } from './firebase';
+import { db, auth } from './firebase';
 
 const postsCol = collection(db, 'posts');
 const mastersCol = collection(db, 'masters');
@@ -12,6 +12,7 @@ const settingsCol = collection(db, 'settings');
 const cellsCol = collection(db, 'cells');
 const warehouseConfigCol = collection(db, 'warehouseConfig');
 const warehouseLogCol = collection(db, 'warehouseLog');
+const orderDocsCol = collection(db, 'orderDocuments');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -228,6 +229,38 @@ export const api = {
     async updateCompany(data) {
       await setDoc(doc(settingsCol, 'company'), stripUndefined(data), { merge: true });
       return api.settings.getCompany();
+    },
+  },
+
+  // Issued documents (заказ-наряд, and later акт / акт приёма-передачи). Each is a
+  // self-contained frozen snapshot. Writing here NEVER touches jobs/stages/warehouse —
+  // that is what keeps document edits isolated from the service data.
+  orderDocuments: {
+    async listByJob(jobId) {
+      const snap = await getDocs(query(orderDocsCol, where('job_id', '==', jobId)));
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async get(id) {
+      const snap = await getDoc(doc(orderDocsCol, id));
+      return snap.exists() ? withId(snap) : null;
+    },
+    async create(data) {
+      const now = Date.now();
+      const ref = await addDoc(orderDocsCol, stripUndefined({
+        ...data,
+        created_at: now,
+        updated_at: now,
+        created_by: auth.currentUser?.email || null,
+      }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(orderDocsCol, id), stripUndefined({ ...data, updated_at: Date.now() }));
+      return withId(await getDoc(doc(orderDocsCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(orderDocsCol, id));
+      return { ok: true };
     },
   },
 

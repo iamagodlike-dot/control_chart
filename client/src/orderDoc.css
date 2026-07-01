@@ -1,0 +1,118 @@
+/* ===== Заказ-наряд — A4 документ (экранный предпросмотр + печать) ===== */
+.zn-root { --ink:#000; --muted:#333; --hair:#999; --zebra:#f6f6f6; --head:#ededed;
+  font-family:"Roboto", system-ui, "Segoe UI", Arial, sans-serif; color:var(--ink); }
+.zn-root *{ box-sizing:border-box; }
+.zn-sheet{ width:210mm; min-height:297mm; background:#fff; color:#000;
+  padding:15mm 16mm 14mm 16mm; margin:0 auto; position:relative;
+  box-shadow:0 2px 14px rgba(0,0,0,.22); }
+
+.zn-top{ display:flex; align-items:flex-start; justify-content:space-between; gap:8mm;
+  border-bottom:1.6pt solid #000; padding-bottom:3mm; }
+.zn-brand{ display:flex; align-items:center; gap:4mm; }
+.zn-logo{ width:16mm; height:16mm; object-fit:contain; flex:0 0 auto; }
+.zn-co-name{ font-size:15pt; font-weight:700; letter-spacing:.3px; line-height:1.05; }
+.zn-co-sub{ font-size:8.2pt; color:var(--muted); line-height:1.45; margin-top:1.2mm; max-width:82mm; }
+.zn-co-sub b{ color:#000; font-weight:600; }
+.zn-doc-meta{ text-align:right; font-size:8.6pt; line-height:1.6; min-width:52mm; }
+.zn-doc-meta .zn-mrow{ display:flex; justify-content:flex-end; gap:3mm; }
+.zn-doc-meta .zn-mrow span:first-child{ color:var(--muted); }
+.zn-doc-meta .zn-mrow b{ font-weight:600; }
+
+.zn-title{ text-align:center; margin:5mm 0 4mm; }
+.zn-title h1{ font-size:16pt; font-weight:700; letter-spacing:1.2px; margin:0; }
+.zn-title .zn-num{ font-size:10.5pt; font-weight:600; margin-top:1mm; }
+
+.zn-info{ display:flex; gap:6mm; margin-bottom:3.5mm; }
+.zn-card{ flex:1; border:0.6pt solid var(--hair); }
+.zn-card-h{ font-size:8.2pt; font-weight:700; text-transform:uppercase; letter-spacing:.5px;
+  background:var(--head); padding:1.6mm 2.5mm; border-bottom:0.6pt solid var(--hair); }
+.zn-card-b{ padding:2mm 2.5mm; }
+.zn-kv{ display:flex; font-size:9pt; line-height:1.55; }
+.zn-kv .zn-k{ flex:0 0 34mm; color:var(--muted); }
+.zn-kv .zn-v{ flex:1; font-weight:500; }
+
+.zn-sec{ font-size:9pt; font-weight:700; text-transform:uppercase; letter-spacing:.4px;
+  margin:3.5mm 0 1.6mm; padding-bottom:.8mm; border-bottom:0.6pt solid var(--ink); }
+.zn-textblock{ font-size:9pt; line-height:1.5; padding:.5mm 0 0; white-space:pre-wrap; }
+
+.zn-table{ width:100%; border-collapse:collapse; font-size:8.8pt; }
+.zn-table th, .zn-table td{ border:0.5pt solid var(--hair); padding:1.6mm 2mm; vertical-align:top; }
+.zn-table thead th{ background:var(--head); font-weight:700; text-align:left; font-size:8.2pt;
+  text-transform:uppercase; letter-spacing:.3px; }
+.zn-table tbody tr{ break-inside:avoid; page-break-inside:avoid; }
+.zn-table tbody tr:nth-child(even){ background:var(--zebra); }
+.zn-c-num{ width:9mm; text-align:center; }
+.zn-c-qty{ width:20mm; text-align:center; }
+.zn-c-unit{ width:14mm; text-align:center; }
+.zn-c-price,.zn-c-sum{ width:26mm; text-align:right; white-space:nowrap; }
+.zn-c-code{ width:28mm; }
+.zn-table tfoot td{ border:0.5pt solid var(--hair); padding:1.5mm 2mm; font-weight:700; background:var(--zebra); }
+
+.zn-bottom{ display:flex; gap:6mm; margin-top:4mm; align-items:flex-start; }
+.zn-bottom-left{ flex:1; }
+.zn-totals{ flex:0 0 86mm; border:0.6pt solid var(--hair); }
+.zn-tr{ display:flex; justify-content:space-between; font-size:9pt; padding:1.5mm 3mm; line-height:1.4; }
+.zn-tr:not(:last-child){ border-bottom:0.5pt solid #ddd; }
+.zn-tr .zn-tl{ color:var(--muted); }
+.zn-tr .zn-tv{ font-weight:600; white-space:nowrap; }
+.zn-tr-total{ background:var(--head); }
+.zn-tr-total .zn-tl{ color:#000; font-weight:700; font-size:10pt; }
+.zn-tr-total .zn-tv{ font-weight:700; font-size:11.5pt; }
+.zn-words{ font-size:8.6pt; font-style:italic; padding:1.6mm 3mm; border-top:0.5pt solid #ddd; line-height:1.4; }
+
+.zn-legal{ font-size:8pt; line-height:1.5; text-align:justify; color:#111; margin-top:4mm;
+  border:0.5pt solid var(--hair); padding:2.5mm 3mm; break-inside:avoid; page-break-inside:avoid; }
+.zn-legal .zn-lh{ font-weight:700; text-transform:uppercase; letter-spacing:.4px; font-size:8pt; display:block; margin-bottom:1mm; }
+.zn-legal p{ margin:0 0 2mm; white-space:pre-wrap; }
+.zn-legal p:last-child{ margin-bottom:0; }
+
+.zn-signs{ display:flex; gap:12mm; margin-top:6mm; break-inside:avoid; page-break-inside:avoid; }
+.zn-sign{ flex:1; font-size:8.6pt; }
+.zn-sign .zn-sl{ font-weight:700; margin-bottom:6mm; }
+.zn-sigline{ border-top:0.6pt solid #000; padding-top:1mm; display:flex; justify-content:space-between; }
+.zn-sigline small{ color:var(--muted); font-size:7.6pt; }
+.zn-sign .zn-name{ margin-top:1.5mm; font-size:8.4pt; }
+.zn-date{ margin-top:5mm; font-size:8.6pt; }
+
+.zn-foot{ margin-top:7mm; border-top:0.5pt solid var(--hair); padding-top:1.5mm;
+  display:flex; justify-content:space-between; font-size:7.4pt; color:var(--muted); }
+
+/* ===== Редактор заказ-наряда (левая панель + предпросмотр справа) ===== */
+.modal.modal-order { width: min(1180px, calc(100vw - 32px)); max-width: calc(100vw - 32px); height: 92vh; max-height: 92vh; }
+.order-editor-root { display:flex; flex-direction:column; flex:1; min-height:0; }
+.oe-history { display:flex; align-items:center; gap:6px; flex-wrap:wrap; padding:0 0 8px; margin-bottom:4px; border-bottom:1px solid var(--color-border); }
+.oe-history-label { font-size:12px; color:var(--color-text-muted); }
+.oe-history button { font-size:12px; padding:4px 8px; }
+.oe-history button.active { background:var(--color-primary); color:var(--color-on-primary); border-color:var(--color-primary); }
+.oe-history-new { margin-left:auto; }
+.order-editor { display:flex; gap:16px; flex:1; min-height:0; overflow:hidden; }
+.order-editor-left { flex:0 0 380px; overflow-y:auto; padding-right:8px; display:flex; flex-direction:column; gap:12px; }
+.order-editor-right { flex:1; overflow:auto; background:#e8e8e8; border-radius:var(--radius-lg); padding:16px; }
+.order-editor-right .zn-preview-scale { transform-origin: top center; }
+
+.oe-section { border-top:1px solid var(--color-border); padding-top:10px; display:flex; flex-direction:column; gap:8px; }
+.oe-section:first-child { border-top:none; padding-top:0; }
+.oe-section h4 { margin:0; font-size:13px; }
+.oe-grid { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+.oe-grid .oe-full { grid-column:1 / -1; }
+.oe-field { display:flex; flex-direction:column; gap:3px; font-size:12px; color:var(--color-text-muted); }
+.oe-toggle-row { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.oe-toggle { display:flex; align-items:center; gap:8px; font-size:13px; font-weight:600; color:var(--color-text); cursor:pointer; }
+.oe-toggle input { width:16px; height:16px; }
+.oe-textarea { width:100%; min-height:60px; font-family:inherit; }
+.oe-textarea:disabled { opacity:.45; }
+.oe-hint { font-size:11px; color:var(--color-text-muted); }
+.order-editor-actions { display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:12px; border-top:1px solid var(--color-border); padding-top:12px; }
+.order-editor-actions > div { display:flex; gap:8px; align-items:center; }
+.oe-saved { font-size:13px; color:var(--color-success, #16a34a); }
+
+/* ===== Печать: показываем только сам лист, скрываем интерфейс ===== */
+#zn-print-mount { display:none; }
+@media print {
+  @page { size:A4; margin:12mm; }
+  #root { display:none !important; }
+  #zn-print-mount { display:block !important; }
+  #zn-print-mount .zn-sheet { box-shadow:none; margin:0; width:auto; min-height:auto; padding:0; }
+  .zn-table thead { display:table-header-group; }
+  .zn-root { -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+}
