@@ -4,6 +4,7 @@ import { api } from '../api';
 import { money, computeDocTotals } from '../orderDoc';
 import { isInsurance } from '../insurance';
 import DocumentsModal from './DocumentsModal';
+import { DocsButton } from './RowActionButtons';
 import '../history.css';
 
 const SORTS = [
@@ -210,18 +211,16 @@ export default function History() {
           const paid = jobPaid(j.id);
           return (
             <div className="history-item" key={j.id}>
-              <div className="history-item-head">
-                <div className="job-item-title">{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
-                <div className="history-item-actions">
+              <div className="history-item-head" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+                <div className="job-item-title" style={{ flex: '1 1 auto', minWidth: 0 }}>{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
+                {hasInvoice && <span className="hist-amount">{money(amount)}</span>}
+                <div className="history-item-actions" style={{ flexBasis: '100%', flexWrap: 'wrap', justifyContent: 'flex-end', marginTop: 4 }}>
                   {hasInvoice && (
-                    <>
-                      <span className="hist-amount">{money(amount)}</span>
-                      <button className={`hist-paid-toggle ${paid ? 'is-paid' : 'is-unpaid'}`} onClick={() => toggleJobPaid(j.id)} title={paid ? 'Отметить как неоплаченный' : 'Отметить оплату'}>
-                        {paid ? '✓ Оплачено' : '● Не оплачено'}
-                      </button>
-                    </>
+                    <button className={`hist-paid-toggle ${paid ? 'is-paid' : 'is-unpaid'}`} onClick={() => toggleJobPaid(j.id)} title={paid ? 'Отметить как неоплаченный' : 'Отметить оплату'}>
+                      {paid ? '✓ Оплачено' : '● Не оплачено'}
+                    </button>
                   )}
-                  <button className="job-item-docs" title="Документы: заказ-наряд, акты, счёт" onClick={() => openDocs(j.id)}>📄</button>
+                  <DocsButton onClick={() => openDocs(j.id)} />
                   <button className="history-item-restore" onClick={() => restore(j.id)}>↺ Вернуть в работу</button>
                 </div>
               </div>

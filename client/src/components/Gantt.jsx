@@ -4,6 +4,7 @@ import { api } from '../api';
 import { isInsurance } from '../insurance';
 import DocumentsModal from './DocumentsModal';
 import CarCard from './CarCard';
+import { DocsButton, FinishButton } from './RowActionButtons';
 
 const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
 const ZOOM_LEVELS = [8, 12, 20, 32, 48]; // px per hour
@@ -117,6 +118,17 @@ export function jobOverallStatus(job, now) {
   return 'planned';
 }
 
+// The one-tap "advance" action for a stage: Запланировано → Начать → В работе →
+// Готово. `due` = the scheduled moment has arrived — drives the nudge highlight.
+// We never flip the status on our own, only offer the next step for one tap.
+export function nextStatusAction(stage, now) {
+  if (stage.status === 'done') return null;
+  if (stage.status === 'in_progress') {
+    return { next: 'done', label: 'Готово', icon: '✓', due: dayjs(stage.end_at).isBefore(now) };
+  }
+  return { next: 'in_progress', label: 'Начать', icon: '▶', due: !dayjs(stage.start_at).isAfter(now) };
+}
+
 // 'missed' = deadline already passed and not all stages done; 'at-risk' = last stage finishes after deadline; 'ok' = on track
 export function deadlineState(job, now) {
   if (!job.deadline || !job.stages || job.stages.length === 0) return null;
@@ -205,13 +217,37 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   const [dragLocked, setDragLocked] = useState(() => localStorage.getItem('gantt-drag-locked') === 'true');
   const [dragInfo, setDragInfo] = useState(null);
   const [toast, setToast] = useState(null);
-  const toastTimerRef = useRef(null);
   const suppressClickRef = useRef(false);
+
+  // Auto-dismiss declaratively (no ref writes in render-reachable helpers): an
+  // action toast lingers longer so there's time to hit Отменить / Начать.
+  useEffect(() => {
+    if (!toast) return undefined;
+    const ms = typeof toast === 'string' ? 4000 : 7000;
+    const t = setTimeout(() => setToast(null), ms);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  // Toast with one or more inline buttons. Actions are plain DATA (not closures)
+  // so runToastAction — re-created fresh on every render — interprets them against
+  // LIVE state, never a stale snapshot captured when the toast was shown.
+  function showActionToast(message, actions) {
+    setToast({ message, actions });
+  }
+
+  async function runToastAction(action) {
+    setToast(null);
+    if (action.kind === 'undo') {
+      for (const c of action.changes) await patchStage(c.id, { status: c.prev });
+      if (detailJob?.job_id === action.jobId) await refreshDetailJob(action.jobId);
+    } else if (action.kind === 'start') {
+      const fresh = stages.find((s) => s.id === action.stageId);
+      if (fresh && fresh.status === 'planned') advanceStage(fresh);
+    }
+  }
 
   function showToast(message) {
     setToast(message);
-    clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 4000);
   }
   const scrollRef = useRef(null);
   const [loading, setLoading] = useState(true);
@@ -386,6 +422,54 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
     setStages(g.stages);
     setJobs(g.jobs);
     return g.stages.find((s) => s.id === newStage.id) || null;
+  }
+
+  // One-tap status advance with all the guardrails: confirm before «Готово»,
+  // warn if the previous stage isn't done, keep only one «В работе» per car
+  // (auto-close the previous), then offer to start the next stage — all undoable.
+  async function advanceStage(passed) {
+    // Resolve against the current render's `stages` (fresh: the bar passes a live
+    // stage, and the toast «Начать» is dispatched via runToastAction which also
+    // holds live state). undo/next are emitted as data, resolved live on click.
+    const stage = stages.find((s) => s.id === passed.id) || passed;
+    const action = nextStatusAction(stage, now);
+    if (!action) return;
+    const jobStages = stages
+      .filter((s) => s.job_id === stage.job_id)
+      .sort((a, b) => (a.sequence ?? 0) - (b.sequence ?? 0));
+    const idx = jobStages.findIndex((s) => s.id === stage.id);
+    const postName = (st) => posts.find((p) => p.id === st?.post_id)?.name || 'этап';
+
+    if (action.next === 'done') {
+      const prev = idx > 0 ? jobStages[idx - 1] : null;
+      const msg = prev && prev.status !== 'done'
+        ? `Предыдущий этап «${postName(prev)}» ещё не завершён. Всё равно отметить «${postName(stage)}» готовым?`
+        : `Отметить этап «${postName(stage)}» готовым?`;
+      if (!window.confirm(msg)) return;
+    }
+
+    const changes = [{ id: stage.id, prev: stage.status }];
+    let closed = [];
+    if (action.next === 'in_progress') {
+      closed = jobStages.filter((s) => s.id !== stage.id && s.status === 'in_progress');
+      for (const c of closed) changes.push({ id: c.id, prev: c.status });
+    }
+
+    await patchStage(stage.id, { status: action.next });
+    for (const c of closed) await patchStage(c.id, { status: 'done' });
+    if (detailJob?.job_id === stage.job_id) await refreshDetailJob(stage.job_id);
+
+    const actions = [{ label: 'Отменить', kind: 'undo', changes, jobId: stage.job_id }];
+    let message = action.next === 'done' ? `«${postName(stage)}» — готово` : `«${postName(stage)}» — в работе`;
+    if (closed.length) message += ', предыдущий закрыт';
+
+    if (action.next === 'done') {
+      const next = jobStages[idx + 1];
+      if (next && next.status === 'planned') {
+        actions.push({ label: `Начать «${postName(next)}»`, kind: 'start', stageId: next.id });
+      }
+    }
+    showActionToast(message, actions);
   }
 
   function startDrag(e, stage, mode) {
@@ -589,26 +673,12 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
               onMouseEnter={() => setHoveredJobId(j.job_id)}
               onMouseLeave={() => setHoveredJobId(null)}
             >
-              <div className="job-item-head">
-                <div className="job-item-title">{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
-                <div className="job-item-head-actions">
-                  <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
-                  <button
-                    className="job-item-docs"
-                    title="Документы: заказ-наряд, акты"
-                    onClick={(e) => { e.stopPropagation(); openDocs(j.job_id); }}
-                  >
-                    📄
-                  </button>
-                  {!isQueued && (
-                    <button
-                      className="job-item-finish"
-                      title="Завершить и убрать в историю"
-                      onClick={(e) => { e.stopPropagation(); finalizeJob(j, overall); }}
-                    >
-                      ✓
-                    </button>
-                  )}
+              <div className="job-item-head" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
+                <div className="job-item-title" style={{ flex: '1 1 auto', minWidth: 0 }}>{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
+                <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
+                <div className="job-item-head-actions" style={{ flexBasis: '100%', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                  <DocsButton onClick={() => openDocs(j.job_id)} />
+                  {!isQueued && <FinishButton onClick={() => finalizeJob(j, overall)} />}
                 </div>
               </div>
               <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
@@ -871,6 +941,21 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                               <div className="gantt-bar-resize right" onMouseDown={(e) => startDrag(e, s, 'resize-right')} />
                             </>
                           )}
+                          {width >= 40 && (() => {
+                            const act = nextStatusAction(s, now);
+                            if (!act) return null;
+                            return (
+                              <button
+                                className={`gantt-bar-advance${act.due ? ' is-due' : ''}`}
+                                title={`${act.label} этап`}
+                                draggable={false}
+                                onMouseDown={(e) => e.stopPropagation()}
+                                onClick={(e) => { e.stopPropagation(); advanceStage(s); }}
+                              >
+                                {act.icon}
+                              </button>
+                            );
+                          })()}
                         </div>
                       );
                     })}
@@ -887,7 +972,24 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
           </div>
         </div>
 
-        {toast && <div className="gantt-toast">{toast}</div>}
+        {toast && (
+          <div className="gantt-toast">
+            {typeof toast === 'string' ? toast : (
+              <>
+                <span>{toast.message}</span>
+                {toast.actions.map((a, i) => (
+                  <button
+                    key={i}
+                    className="gantt-toast-btn"
+                    onClick={() => runToastAction(a)}
+                  >
+                    {a.label}
+                  </button>
+                ))}
+              </>
+            )}
+          </div>
+        )}
       </div>
 
       {selectedStage && (
