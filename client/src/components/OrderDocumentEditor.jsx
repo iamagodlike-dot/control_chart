@@ -36,7 +36,7 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
   async function loadHistory() {
     if (!job?.id) return;
     try {
-      setHistory(await api.orderDocuments.listByJob(job.id));
+      setHistory(await api.orderDocuments.listByJob(job.id, 'order'));
     } catch {
       // Reading issued documents may be blocked until Firestore rules are deployed;
       // the editor still works for creating/printing.

@@ -39,9 +39,10 @@ function threeDigitsToWords(n, gender) {
 }
 
 export function numberToWordsRu(amount) {
-  const total = Math.max(0, Math.round(Number(amount) || 0));
-  const rubles = Math.floor(total);
-  const kopecks = Math.round((total - rubles) * 100);
+  const value = Math.max(0, Number(amount) || 0);
+  let rubles = Math.floor(value);
+  let kopecks = Math.round((value - rubles) * 100);
+  if (kopecks === 100) { rubles += 1; kopecks = 0; }
 
   if (rubles === 0) {
     return `Ноль рублей ${String(kopecks).padStart(2, '0')} копеек`;

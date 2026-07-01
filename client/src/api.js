@@ -236,9 +236,11 @@ export const api = {
   // self-contained frozen snapshot. Writing here NEVER touches jobs/stages/warehouse —
   // that is what keeps document edits isolated from the service data.
   orderDocuments: {
-    async listByJob(jobId) {
+    async listByJob(jobId, type) {
       const snap = await getDocs(query(orderDocsCol, where('job_id', '==', jobId)));
-      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+      let docs = snap.docs.map(withId);
+      if (type) docs = docs.filter((d) => d.type === type);
+      return docs.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
     },
     async get(id) {
       const snap = await getDoc(doc(orderDocsCol, id));

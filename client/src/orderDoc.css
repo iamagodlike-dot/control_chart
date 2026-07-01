@@ -77,6 +77,20 @@
 .zn-foot{ margin-top:7mm; border-top:0.5pt solid var(--hair); padding-top:1.5mm;
   display:flex; justify-content:space-between; font-size:7.4pt; color:var(--muted); }
 
+/* Счёт: банковские реквизиты, QR, итог */
+.zn-bank{ width:100%; border-collapse:collapse; margin:3mm 0 1mm; font-size:8.8pt; }
+.zn-bank th{ background:var(--head); border:0.5pt solid var(--hair); padding:1.6mm 2mm;
+  text-transform:uppercase; letter-spacing:.4px; font-size:8.2pt; text-align:center; }
+.zn-bank td{ border:0.5pt solid var(--hair); padding:1.6mm 2.5mm; vertical-align:middle; }
+.zn-bank .zn-bank-l{ color:var(--muted); white-space:nowrap; }
+.zn-bank .zn-bank-v{ font-weight:600; }
+.zn-invoice-total{ margin-top:3mm; font-size:9.5pt; }
+.zn-invoice-total b{ font-size:11pt; }
+.zn-invoice-total .zn-words{ padding:1.5mm 0 0; border:0; font-style:italic; }
+.zn-qr{ display:flex; align-items:center; gap:4mm; margin-top:4mm; break-inside:avoid; page-break-inside:avoid; }
+.zn-qr img{ width:32mm; height:32mm; flex:0 0 auto; }
+.zn-qr-cap{ font-size:8.4pt; color:var(--muted); line-height:1.45; }
+
 /* ===== Редактор заказ-наряда (левая панель + предпросмотр справа) ===== */
 .modal.modal-order { width: min(1180px, calc(100vw - 32px)); max-width: calc(100vw - 32px); height: 92vh; max-height: 92vh; }
 .order-editor-root { display:flex; flex-direction:column; flex:1; min-height:0; }
