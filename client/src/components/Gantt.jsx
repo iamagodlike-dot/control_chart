@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
 import DocumentsModal from './DocumentsModal';
-import CarDetailModal from './CarDetailModal';
+import CarCard from './CarCard';
 
 const ZOOM_LEVELS = [8, 12, 20, 32, 48]; // px per hour
 const DEFAULT_ZOOM_INDEX = 2;
@@ -183,7 +183,7 @@ function RouteStrip({ stages, posts, now }) {
   );
 }
 
-export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
+export default function Gantt({ openJobId, onOpenJobHandled }) {
   const [posts, setPosts] = useState([]);
   const [stages, setStages] = useState([]);
   const [jobs, setJobs] = useState([]);
@@ -214,6 +214,7 @@ export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
   const [loading, setLoading] = useState(true);
   const [docsJob, setDocsJob] = useState(null);
   const [detailJob, setDetailJob] = useState(null);
+  const [createOpen, setCreateOpen] = useState(false);
   const [company, setCompany] = useState({});
   const workHourStart = company.workHourStart ?? 8;
   const workHourEnd = company.workHourEnd ?? 20;
@@ -517,6 +518,26 @@ export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
     return links;
   }, [stages, stageLayout, rowMode, rangeStart, hourWidth]);
 
+  // Shared "add car" modal — the same CarCard as the detail view, but empty.
+  // Kept as a variable so it renders in every early-return branch too.
+  const createModal = createOpen && (
+    <CarCard
+      mode="create"
+      job={null}
+      posts={posts}
+      masters={masters}
+      now={now}
+      onClose={() => setCreateOpen(false)}
+      onCreate={async (payload, cellIds) => {
+        const created = await api.jobs.create(payload);
+        if (cellIds?.length) await api.warehouse.setJobCells(created, cellIds);
+        setCreateOpen(false);
+        showToast(payload.stages.length ? 'Автомобиль добавлен и поставлен в график' : 'Автомобиль добавлен — ждём заезда, маршрут можно запланировать позже');
+        load();
+      }}
+    />
+  );
+
   if (loading) {
     return (
       <div className="gantt-loading">
@@ -532,7 +553,8 @@ export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
         <div className="gantt-empty-icon">🚗</div>
         <h3>Пока нет ни одного заказа</h3>
         <p>Создайте первую машину с маршрутом по постам — она появится здесь на графике.</p>
-        <button className="primary" onClick={onCreateJob}>+ Создать первый заказ</button>
+        <button className="primary" onClick={() => setCreateOpen(true)}>+ Создать первый заказ</button>
+        {createModal}
       </div>
     );
   }
@@ -616,7 +638,7 @@ export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
           })}
           {filteredJobs.length === 0 && <div className="job-empty">Ничего не найдено</div>}
         </div>
-        <button className="job-sidebar-new" onClick={onCreateJob}>+ Добавить автомобиль</button>
+        <button className="job-sidebar-new" onClick={() => setCreateOpen(true)}>+ Добавить автомобиль</button>
       </aside>
 
       <div className="gantt">
@@ -888,7 +910,8 @@ export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
       )}
 
       {detailJob && (
-        <CarDetailModal
+        <CarCard
+          mode="edit"
           job={detailJob}
           posts={posts}
           masters={masters}
@@ -905,30 +928,43 @@ export default function Gantt({ onCreateJob, openJobId, onOpenJobHandled }) {
             setDetailJob(null);
             load();
           }}
-          onEditStage={(stage) => { setSelectedStage(stage); setDetailJob(null); }}
-          onUpdateJob={async (patch) => {
+          onSaveInfo={async (patch) => {
             await api.jobs.update(detailJob.job_id, patch);
             const merged = { ...detailJob, ...patch };
-            if ('cell_ids' in patch) {
-              const before = api.warehouse.cellIds(detailJob);
-              const after = patch.cell_ids || [];
-              await api.warehouse.setJobCells(merged, after);
+            const before = api.warehouse.cellIds(detailJob);
+            const after = patch.cell_ids || [];
+            if (before.join(',') !== after.join(',')) {
+              // Diff against the OLD cell set (keep new labels) so cells actually open/free.
+              await api.warehouse.setJobCells({ ...merged, cell_ids: before, cell_id: before[0] ?? null }, after);
               if (after.length && !before.length) showToast(`Машина поставлена в ячейки: ${after.join(', ')}`);
               else if (!after.length && before.length) showToast(`Ячейки освобождены: ${before.join(', ')}`);
-              else if (after.join(',') !== before.join(',')) showToast(`Ячейки обновлены: ${after.join(', ') || '—'}`);
-            } else if (api.warehouse.cellIds(merged).length) {
+              else showToast(`Ячейки обновлены: ${after.join(', ') || '—'}`);
+            } else if (after.length) {
               await api.warehouse.syncParts(merged);
             }
             await refreshDetailJob(detailJob.job_id);
             load();
           }}
           onAddStage={async (stageData) => {
-            await api.stages.create(detailJob.job_id, stageData);
+            const created = await api.stages.create(detailJob.job_id, stageData);
+            await refreshDetailJob(detailJob.job_id);
+            load();
+            return created;
+          }}
+          onUpdateStage={async (id, patch) => {
+            await api.stages.update(id, patch);
+            await refreshDetailJob(detailJob.job_id);
+            load();
+          }}
+          onRemoveStage={async (id) => {
+            await api.stages.remove(id);
             await refreshDetailJob(detailJob.job_id);
             load();
           }}
         />
       )}
+
+      {createModal}
     </div>
   );
 }

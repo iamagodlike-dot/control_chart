@@ -184,7 +184,7 @@ export default function Warehouse({ onOpenJob }) {
   );
 }
 
-// Reusable cell-grid picker used from JobForm/CarDetailModal to assign one
+// Reusable cell-grid picker used from CarCard to assign one
 // or more warehouse cells to a job without opening the full cell-editing
 // modal. Cells toggle in/out of the selection; nothing is saved until
 // "Сохранить" is pressed.

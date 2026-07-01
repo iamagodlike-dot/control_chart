@@ -445,6 +445,127 @@ textarea { width: 100%; min-height: 50px; }
 .car-add-stage h4 { font-size: 13px; }
 .panel-hint-inline { font-weight: 400; color: var(--color-text-muted); font-size: 11px; text-transform: none; letter-spacing: 0; }
 
+/* ===== Car card — unified add + detail screen ===== */
+/* .modal.cc-modal (not plain .cc-modal) so these beat the base .modal rule,
+   which is later in the file — otherwise the modal falls back to 360px wide. */
+.modal.cc-modal {
+  width: min(1040px, calc(100vw - 40px));
+  max-height: 92vh;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.cc-header, .cc-footer { flex-shrink: 0; }
+.cc-body { flex: 1 1 auto; min-height: 0; }
+
+.cc-header {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 16px 20px; border-bottom: 1px solid var(--color-border);
+  background: linear-gradient(135deg, var(--color-surface-alt), var(--color-surface));
+}
+.cc-header-main { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.cc-header-icon { font-size: 22px; flex-shrink: 0; }
+.cc-header-text { min-width: 0; }
+.cc-title { margin: 0; font-size: 18px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-header-meta { display: flex; align-items: center; gap: 8px; margin-top: 4px; flex-wrap: wrap; }
+.cc-plate {
+  font-family: var(--font-mono); font-weight: 700; font-size: 12px; letter-spacing: .5px;
+  padding: 2px 8px; border-radius: 5px; background: var(--color-surface); border: 1px solid var(--color-border); text-transform: uppercase;
+}
+.cc-header-sub { font-size: 12px; color: var(--color-text-muted); }
+.cc-close {
+  flex-shrink: 0; width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 13px;
+  color: var(--color-text-muted); display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid transparent;
+}
+.cc-close:hover { background: var(--color-surface); color: var(--color-text); border-color: var(--color-border); }
+
+.cc-body { overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
+.cc-audatex { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; border: 1px dashed var(--color-primary); border-radius: var(--radius-md); background: var(--color-primary-light); }
+.cc-audatex-row { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cc-audatex-hint { font-size: 12px; color: var(--color-text-muted); flex: 1; min-width: 160px; }
+.cc-audatex-ok { font-size: 12px; font-weight: 700; color: var(--color-success); }
+.cc-audatex-err { font-size: 12px; font-weight: 600; color: var(--color-danger-text); }
+
+.cc-imported-head {
+  width: 100%; display: flex; align-items: center; gap: 8px; padding: 0; cursor: pointer;
+  background: transparent; border: none; color: var(--color-text);
+  font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .4px;
+}
+.cc-imported-count { margin-left: auto; font-family: var(--font-body); font-weight: 600; text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--color-text-muted); }
+.cc-imported-chevron { font-size: 11px; color: var(--color-text-muted); width: 14px; text-align: center; }
+.cc-imported-body { margin-top: 12px; display: flex; flex-direction: column; gap: 12px; }
+.cc-imported-group { display: flex; flex-direction: column; }
+.cc-imported-sub { display: flex; justify-content: space-between; gap: 10px; font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .3px; color: var(--color-text-muted); margin-bottom: 4px; }
+.cc-imported-sub span:last-child { font-family: var(--font-mono); color: var(--color-text); }
+.cc-imported-list { display: flex; flex-direction: column; }
+.cc-imported-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px solid var(--color-border); font-size: 12px; }
+.cc-imported-row:last-child { border-bottom: none; }
+.cc-imported-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-imported-qty { flex-shrink: 0; color: var(--color-text-muted); font-family: var(--font-mono); font-size: 11px; }
+.cc-imported-price { flex-shrink: 0; font-family: var(--font-mono); font-weight: 700; min-width: 84px; text-align: right; }
+.cc-imported-foot { display: flex; justify-content: space-between; gap: 10px; padding-top: 4px; font-size: 12px; color: var(--color-text-muted); }
+.cc-imported-note { font-style: italic; }
+.cc-section { background: var(--color-surface-alt); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 14px; }
+.cc-section-head {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 12px;
+  font-family: var(--font-display); font-weight: 800; font-size: 13px; text-transform: uppercase; letter-spacing: .4px; color: var(--color-text);
+}
+.cc-section-icon { font-size: 14px; }
+.cc-section-hint { margin-left: auto; font-family: var(--font-body); font-weight: 500; text-transform: none; letter-spacing: 0; font-size: 11px; color: var(--color-text-muted); }
+.cc-section-subhead { font-family: var(--font-display); font-weight: 700; font-size: 12px; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .3px; margin: 14px 0 6px; }
+
+.cc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; }
+.cc-field { display: flex; flex-direction: column; gap: 5px; min-width: 0; }
+.cc-field.full { grid-column: 1 / -1; }
+.cc-field > span { font-size: 11px; font-weight: 600; color: var(--color-text-muted); text-transform: uppercase; letter-spacing: .3px; display: flex; align-items: center; gap: 5px; }
+.cc-field > span i { font-style: normal; font-weight: 500; text-transform: none; letter-spacing: 0; opacity: .8; }
+.cc-field input, .cc-field select { width: 100%; }
+.cc-req { color: var(--color-primary); font-weight: 800; }
+
+.cc-cell-btn { width: 100%; text-align: left; border-style: dashed; background: var(--color-surface); color: var(--color-text); }
+.cc-cell-btn:hover { border-color: var(--color-primary); color: var(--color-primary); }
+
+.cc-hint { margin-top: 10px; font-size: 12px; color: var(--color-text-muted); }
+.cc-deadline { margin-top: 10px; font-size: 12px; font-weight: 700; padding: 7px 12px; border-radius: var(--radius-md); font-family: var(--font-mono); }
+.cc-deadline.is-ok { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 14%, transparent); }
+.cc-deadline.is-at-risk { color: var(--color-warning); background: var(--color-warning-bg); }
+.cc-deadline.is-missed { color: var(--color-danger-text); background: var(--color-danger-bg); }
+.cc-notes { width: 100%; min-height: 60px; }
+
+.cc-route { display: flex; flex-direction: column; gap: 8px; }
+.cc-route-empty { padding: 14px; text-align: center; color: var(--color-text-muted); font-size: 13px; background: var(--color-surface); border: 1px dashed var(--color-border); border-radius: var(--radius-md); margin-bottom: 10px; }
+.cc-stage { display: flex; align-items: flex-start; gap: 10px; background: var(--color-surface); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: 8px 10px; }
+.cc-stage.is-editing { border-color: var(--color-primary); box-shadow: 0 0 0 3px var(--color-primary-light); }
+.cc-stage-num { flex-shrink: 0; width: 26px; height: 26px; border-radius: 50%; color: #fff; font-size: 12px; font-weight: 800; display: flex; align-items: center; justify-content: center; margin-top: 2px; }
+.cc-stage-view { flex: 1; display: flex; align-items: center; gap: 10px; cursor: pointer; min-width: 0; }
+.cc-stage-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.cc-stage-title { font-weight: 700; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-stage-sub { font-size: 12px; color: var(--color-text-muted); font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cc-stage-edit-hint { flex-shrink: 0; font-size: 11px; color: var(--color-text-muted); opacity: 0; transition: opacity .12s; }
+.cc-stage-view:hover .cc-stage-edit-hint { opacity: 1; }
+.cc-stage-edit { flex: 1; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.cc-stage-edit-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px 10px; }
+.cc-stage-edit-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.cc-add-stage {
+  width: 100%; margin-top: 10px; border-style: dashed; color: var(--color-primary);
+  border-color: var(--color-primary-dark); background: var(--color-primary-light); font-weight: 700;
+}
+.cc-add-stage:hover { background: color-mix(in srgb, var(--color-primary) 24%, transparent); }
+
+.cc-footer {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 14px 20px; border-top: 1px solid var(--color-border); background: var(--color-surface);
+}
+.cc-footer-actions { display: flex; gap: 8px; align-items: center; }
+.cc-footer-hint { font-size: 12px; color: var(--color-text-muted); }
+
+@media (max-width: 640px) {
+  .cc-grid, .cc-stage-edit-grid { grid-template-columns: 1fr; }
+  .cc-footer { flex-wrap: wrap; }
+  .cc-footer-actions { width: 100%; justify-content: flex-end; }
+}
+
 .history-panel { max-width: 760px; }
 .history-panel .job-search { width: 100%; margin: 10px 0 16px; }
 .history-list { display: flex; flex-direction: column; gap: 10px; }

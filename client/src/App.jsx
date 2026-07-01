@@ -2,7 +2,6 @@ import { useEffect, useState } from 'react';
 import Gantt from './components/Gantt';
 import PostsBoard from './components/PostsBoard';
 import PostsMasters from './components/PostsMasters';
-import JobForm from './components/JobForm';
 import History from './components/History';
 import Logo from './components/Logo';
 import AuthGate from './components/AuthGate';
@@ -20,7 +19,6 @@ const TABS = [
 function App() {
   // Deep link from a printed cell QR code (?cell=ID) should land straight on the warehouse tab.
   const [tab, setTab] = useState(() => (new URLSearchParams(window.location.search).get('cell') ? 'warehouse' : 'gantt'));
-  const [ganttKey, setGanttKey] = useState(0);
   const [openJobId, setOpenJobId] = useState(null);
 
   function openJobFromWarehouse(jobId) {
@@ -73,17 +71,12 @@ function App() {
           <main className="app-main">
             {tab === 'gantt' && (
               <Gantt
-                key={ganttKey}
-                onCreateJob={() => setTab('job')}
                 openJobId={openJobId}
                 onOpenJobHandled={() => setOpenJobId(null)}
               />
             )}
             {tab === 'board' && <PostsBoard />}
             {tab === 'warehouse' && <Warehouse onOpenJob={openJobFromWarehouse} />}
-            {tab === 'job' && (
-              <JobForm onCreated={() => { setGanttKey((k) => k + 1); setTab('gantt'); }} />
-            )}
             {tab === 'history' && <History />}
             {tab === 'config' && <PostsMasters />}
           </main>
