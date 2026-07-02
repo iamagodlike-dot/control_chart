@@ -198,16 +198,20 @@ function RouteStrip({ stages, posts, now }) {
   );
 }
 
-export default function Gantt({ openJobId, onOpenJobHandled }) {
+export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
+  // TV / kiosk mode: a clean, read-only view for the big screen in the shop.
+  // No editing affordances, bigger bars, auto-follows the current day & time,
+  // and keeps the display awake. Opened via the ?tv=1 URL.
+  const readOnly = !!tv;
   const [posts, setPosts] = useState([]);
   const [stages, setStages] = useState([]);
   const [jobs, setJobs] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [masters, setMasters] = useState([]);
   const [rangeStart, setRangeStart] = useState(dayjs().startOf('day'));
-  const [days, setDays] = useState(7);
+  const [days, setDays] = useState(tv ? 3 : 7);
   const [rowMode, setRowMode] = useState('post'); // 'post' | 'master'
-  const [zoomIndex, setZoomIndex] = useState(DEFAULT_ZOOM_INDEX);
+  const [zoomIndex, setZoomIndex] = useState(tv ? 3 : DEFAULT_ZOOM_INDEX);
   const hourWidth = ZOOM_LEVELS[zoomIndex];
   const [selectedStage, setSelectedStage] = useState(null);
   const [selectedJobId, setSelectedJobId] = useState(null);
@@ -289,11 +293,52 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
 
   useEffect(() => { api.settings.getCompany().then(setCompany); }, []);
 
-  useEffect(() => { load(); }, []);
+  // Live data: subscribe once and let Firestore push every change (from any
+  // device) straight onto the screen — no manual refresh needed. The returned
+  // function unsubscribes when the component unmounts.
   useEffect(() => {
-    const t = setInterval(() => setNow(dayjs()), 60000);
-    return () => clearInterval(t);
+    const unsub = api.subscribeGantt(
+      ({ posts, stages, jobs, masters, invoices }) => {
+        setPosts(posts);
+        setStages(stages);
+        setJobs(jobs);
+        setMasters(masters);
+        setInvoices(invoices);
+        setLoading(false);
+      },
+      (err) => console.error('Живые обновления графика недоступны:', err),
+    );
+    return unsub;
   }, []);
+
+  // Tick the clock every minute (drives the «now» line). In TV mode also roll
+  // the visible window onto the new day at midnight so a screen left running for
+  // days always shows today.
+  useEffect(() => {
+    const t = setInterval(() => {
+      const n = dayjs();
+      setNow(n);
+      if (tv) setRangeStart((prev) => (prev.isSame(n, 'day') ? prev : n.startOf('day')));
+    }, 60000);
+    return () => clearInterval(t);
+  }, [tv]);
+
+  // TV mode: keep the monitor from going to sleep while the schedule is shown.
+  // The lock is dropped when the tab is hidden, so re-acquire it on return.
+  useEffect(() => {
+    if (!tv || typeof navigator === 'undefined' || !('wakeLock' in navigator)) return undefined;
+    let lock = null;
+    const request = async () => {
+      try { lock = await navigator.wakeLock.request('screen'); } catch { /* denied / unsupported — ignore */ }
+    };
+    request();
+    const onVisible = () => { if (document.visibilityState === 'visible') request(); };
+    document.addEventListener('visibilitychange', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      if (lock) lock.release().catch(() => {});
+    };
+  }, [tv]);
 
   const dayList = useMemo(
     () => Array.from({ length: days }, (_, i) => rangeStart.add(i, 'day')),
@@ -478,7 +523,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   }
 
   function startDrag(e, stage, mode) {
-    if (dragLocked) return;
+    if (dragLocked || readOnly) return;
     e.preventDefault();
     e.stopPropagation();
     const startX = e.clientX;
@@ -541,7 +586,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   function allowDrop(e) { if (rowMode !== 'job') e.preventDefault(); }
 
   function onDropToRow(e, rowId) {
-    if (rowMode === 'job' || dragLocked) return;
+    if (rowMode === 'job' || dragLocked || readOnly) return;
     e.preventDefault();
     const stageId = e.dataTransfer.getData('stageId');
     if (!stageId) return;
@@ -560,6 +605,14 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
     return Math.max(ROW_HEIGHT, laneCount * LANE_HEIGHT + (laneCount - 1) * LANE_GAP + 16);
   });
   const gridHeight = HEADER_HEIGHT + rowHeights.reduce((sum, h) => sum + h + 1, 0);
+
+  // TV mode: keep "now" centred horizontally so the relevant part of the day is
+  // always visible on the wall screen, re-centring each minute as time advances.
+  useEffect(() => {
+    if (!tv || loading || nowX == null || !scrollRef.current) return;
+    const el = scrollRef.current;
+    el.scrollLeft = Math.max(0, LABEL_WIDTH + nowX - el.clientWidth / 2);
+  }, [tv, loading, nowX, days, zoomIndex, rowMode]);
 
   const rowTops = useMemo(() => {
     let y = HEADER_HEIGHT;
@@ -645,22 +698,24 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
       <div className="gantt-empty">
         <div className="gantt-empty-icon">🚗</div>
         <h3>Пока нет ни одного заказа</h3>
-        <p>Создайте первую машину с маршрутом по постам — она появится здесь на графике.</p>
-        <button className="primary" onClick={() => setCreateOpen(true)}>+ Создать первый заказ</button>
+        {!readOnly && <p>Создайте первую машину с маршрутом по постам — она появится здесь на графике.</p>}
+        {!readOnly && <button className="primary" onClick={() => setCreateOpen(true)}>+ Создать первый заказ</button>}
         {createModal}
       </div>
     );
   }
 
   return (
-    <div className="gantt-layout">
+    <div className={`gantt-layout${readOnly ? ' gantt-layout--tv' : ''}`}>
       <aside className="job-sidebar">
-        <input
-          className="job-search"
-          placeholder="Поиск по машине, номеру, клиенту…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+        {!readOnly && (
+          <input
+            className="job-search"
+            placeholder="Поиск по машине, номеру, клиенту…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        )}
         <div className="job-list">
           {filteredJobs.map((j) => {
             const dlState = deadlineState(j, now);
@@ -673,18 +728,20 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
             return (
             <div
               key={j.job_id}
-              className={`job-item${isQueued ? ' is-queued' : ''}${hoveredJobId === j.job_id ? ' hovered' : ''}`}
-              onClick={() => setDetailJob(j)}
+              className={`job-item${isQueued ? ' is-queued' : ''}${hoveredJobId === j.job_id ? ' hovered' : ''}${selectedJobId === j.job_id ? ' selected' : ''}`}
+              onClick={() => (readOnly ? setSelectedJobId((id) => (id === j.job_id ? null : j.job_id)) : setDetailJob(j))}
               onMouseEnter={() => setHoveredJobId(j.job_id)}
               onMouseLeave={() => setHoveredJobId(null)}
             >
               <div className="job-item-head" style={{ flexWrap: 'wrap', alignItems: 'center' }}>
                 <div className="job-item-title" style={{ flex: '1 1 auto', minWidth: 0 }}>{j.car_model}{j.order_number ? <span className="job-item-order"> №{j.order_number}</span> : ''}</div>
                 <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
-                <div className="job-item-head-actions" style={{ flexBasis: '100%', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
-                  <DocsButton onClick={() => openDocs(j.job_id)} />
-                  {!isQueued && <FinishButton onClick={() => finalizeJob(j, overall)} />}
-                </div>
+                {!readOnly && (
+                  <div className="job-item-head-actions" style={{ flexBasis: '100%', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
+                    <DocsButton onClick={() => openDocs(j.job_id)} />
+                    {!isQueued && <FinishButton onClick={() => finalizeJob(j, overall)} />}
+                  </div>
+                )}
               </div>
               <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
               {isInsurance(j) && j.insurer_name && <div className="job-item-insurer">🛡 {j.insurer_name}</div>}
@@ -705,21 +762,23 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                 </div>
               )}
               {isQueued ? (
-                <div className="job-item-queued-hint">🛣 Маршрут не задан — нажмите, чтобы запланировать</div>
+                <div className="job-item-queued-hint">🛣 Маршрут не задан{readOnly ? '' : ' — нажмите, чтобы запланировать'}</div>
               ) : (
                 <div className="job-item-route-row">
                   <RouteStrip stages={j.stages} posts={posts} now={now} />
-                  <button
-                    className="job-item-add-stage"
-                    title="Добавить следующий этап маршрута"
-                    onClick={async (e) => {
-                      e.stopPropagation();
-                      const created = await addNextStage(j.stages[0]);
-                      setSelectedStage(created);
-                    }}
-                  >
-                    +
-                  </button>
+                  {!readOnly && (
+                    <button
+                      className="job-item-add-stage"
+                      title="Добавить следующий этап маршрута"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        const created = await addNextStage(j.stages[0]);
+                        setSelectedStage(created);
+                      }}
+                    >
+                      +
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -727,10 +786,24 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
           })}
           {filteredJobs.length === 0 && <div className="job-empty">Ничего не найдено</div>}
         </div>
-        <button className="job-sidebar-new" onClick={() => setCreateOpen(true)}>+ Добавить автомобиль</button>
+        {!readOnly && <button className="job-sidebar-new" onClick={() => setCreateOpen(true)}>+ Добавить автомобиль</button>}
       </aside>
 
       <div className="gantt">
+        {readOnly ? (
+          <div className="gantt-toolbar gantt-toolbar--tv">
+            <div className="tv-clock">
+              <span className="tv-clock-time">{now.format('HH:mm')}</span>
+              <span className="tv-clock-date">{now.format('dd, D MMMM')}</span>
+            </div>
+            <div className="legend">
+              {Object.entries(STATUS_LABELS).map(([k, label]) => (
+                <span key={k} className="legend-item"><i style={{ background: STATUS_COLORS[k] }} />{label}</span>
+              ))}
+            </div>
+            {conflictCount > 0 && <span className="conflict-banner">⚠ Конфликтов: {conflictCount}</span>}
+          </div>
+        ) : (
         <div className="gantt-toolbar">
           <div className="row-mode-toggle">
             <button className={rowMode === 'post' ? 'active' : ''} onClick={() => setRowMode('post')}>По постам</button>
@@ -781,6 +854,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
             ))}
           </div>
         </div>
+        )}
 
         <div className="gantt-scroll" ref={scrollRef} onClick={() => setSelectedJobId(null)}>
           <div className="gantt-grid" style={{ width: LABEL_WIDTH + totalWidth }}>
@@ -898,7 +972,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                         <div
                           key={s.id}
                           className={`gantt-bar${isFocused ? ' is-focused' : ''}${isDimmed ? ' is-dimmed' : ''}${conflicts ? ' has-conflict' : ''}${dragLocked ? ' is-locked' : ''}${isDragging ? ' is-dragging' : ''}${isOvertimeHour(hourOf(s.start_at), workHourStart, workHourEnd) ? ' is-ot-start' : ''}${isOvertimeHour(hourOf(s.end_at), workHourStart, workHourEnd) ? ' is-ot-end' : ''}`}
-                          draggable={!dragLocked}
+                          draggable={!dragLocked && !readOnly}
                           onDragStart={(e) => e.dataTransfer.setData('stageId', String(s.id))}
                           style={{ left: x, width, top, height: LANE_HEIGHT, background: STATUS_COLORS[status] || '#888' }}
                           onMouseDown={(e) => startDrag(e, s, 'move')}
@@ -907,6 +981,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                           onClick={(e) => {
                             e.stopPropagation();
                             if (suppressClickRef.current) { suppressClickRef.current = false; return; }
+                            if (readOnly) { setSelectedJobId((id) => (id === s.job_id ? null : s.job_id)); return; }
                             setSelectedStage(s);
                           }}
                         >
@@ -934,13 +1009,13 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                               </span>
                             )}
                           </div>
-                          {!dragLocked && (
+                          {!dragLocked && !readOnly && (
                             <>
                               <div className="gantt-bar-resize left" onMouseDown={(e) => startDrag(e, s, 'resize-left')} />
                               <div className="gantt-bar-resize right" onMouseDown={(e) => startDrag(e, s, 'resize-right')} />
                             </>
                           )}
-                          {width >= 40 && (() => {
+                          {!readOnly && width >= 40 && (() => {
                             const act = nextStatusAction(s, now);
                             if (!act) return null;
                             return (

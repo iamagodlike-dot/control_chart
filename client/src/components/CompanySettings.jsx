@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
+import { DEFAULT_MATERIALS_PCT, DEFAULT_OVERHEAD_PCT } from '../costing';
 
 const EMPTY = {
   name: '', inn: '', kpp: '', ogrn: '', address: '', phone: '', director: '',
   bank_name: '', bik: '', account: '', corr_account: '', vat_mode: 'none',
   workHourStart: 8, workHourEnd: 20,
+  materials_pct: DEFAULT_MATERIALS_PCT, overhead_pct: DEFAULT_OVERHEAD_PCT,
 };
 
 export default function CompanySettings() {
@@ -76,6 +78,25 @@ export default function CompanySettings() {
           <input type="number" min="1" max="24" value={form.workHourEnd} onChange={(e) => setForm({ ...form, workHourEnd: Math.max(1, Math.min(24, Number(e.target.value) || 24)) })} />
         </label>
       </div>
+      <h3>Экономика и себестоимость</h3>
+      <p className="panel-hint">Средние значения для расчёта себестоимости ремонта. Их можно поправить в каждой машине (кнопка «💰 Себестоимость»).</p>
+      <div className="company-grid">
+        <label className="job-form-field">
+          <span>Материалы, % от работ</span>
+          <input
+            type="number" min="0" max="100" value={form.materials_pct}
+            onChange={(e) => setForm({ ...form, materials_pct: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+          />
+        </label>
+        <label className="job-form-field">
+          <span>Накладные, % от выручки</span>
+          <input
+            type="number" min="0" max="100" value={form.overhead_pct}
+            onChange={(e) => setForm({ ...form, overhead_pct: Math.max(0, Math.min(100, Number(e.target.value) || 0)) })}
+          />
+        </label>
+      </div>
+
       <div className="inline-form">
         <button className="primary" onClick={save}>Сохранить реквизиты</button>
         {saved && <span className="company-saved">Сохранено ✓</span>}

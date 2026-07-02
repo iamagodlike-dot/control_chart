@@ -1,9 +1,10 @@
-import { useEffect, useState } from 'react';
+import { Component, useEffect, useState } from 'react';
 import { api } from './api';
 import Gantt from './components/Gantt';
 import PostsBoard from './components/PostsBoard';
 import PostsMasters from './components/PostsMasters';
 import History from './components/History';
+import Finance from './components/Finance';
 import Logo from './components/Logo';
 import AuthGate from './components/AuthGate';
 import Warehouse from './components/Warehouse';
@@ -13,11 +14,39 @@ const TABS = [
   { id: 'gantt', label: 'График', icon: '📅' },
   { id: 'board', label: 'Загрузка', icon: '📊' },
   { id: 'warehouse', label: 'Склад', icon: '📦' },
+  { id: 'finance', label: 'Финансы', icon: '💰' },
   { id: 'history', label: 'История', icon: '🗄️' },
-  { id: 'config', label: 'Посты и мастера', icon: '⚙️' },
 ];
 
+// Unattended big-screen safety net: if a runtime error ever blanks the TV view,
+// show a calm message and reload shortly after so the wall display recovers on
+// its own instead of getting stuck until someone walks over to it.
+class TVErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { failed: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { failed: true };
+  }
+
+  componentDidCatch() {
+    setTimeout(() => window.location.reload(), 8000);
+  }
+
+  render() {
+    if (this.state.failed) {
+      return <div className="tv-error"><div className="spinner" /><span>Обновляем экран…</span></div>;
+    }
+    return this.props.children;
+  }
+}
+
 function App() {
+  // Kiosk view for the shop's wall screen: ?tv=1 renders a clean, read-only,
+  // self-updating График with no app chrome.
+  const isTV = new URLSearchParams(window.location.search).get('tv') === '1';
   // Deep link from a printed cell QR code (?cell=ID) should land straight on the warehouse tab.
   const [tab, setTab] = useState(() => (new URLSearchParams(window.location.search).get('cell') ? 'warehouse' : 'gantt'));
   const [openJobId, setOpenJobId] = useState(null);
@@ -36,6 +65,20 @@ function App() {
     document.documentElement.dataset.theme = theme;
     localStorage.setItem('auto-academy-theme', theme);
   }, [theme]);
+
+  if (isTV) {
+    return (
+      <AuthGate>
+        {() => (
+          <div className="app app--tv">
+            <TVErrorBoundary>
+              <Gantt tv />
+            </TVErrorBoundary>
+          </div>
+        )}
+      </AuthGate>
+    );
+  }
 
   return (
     <AuthGate>
@@ -59,6 +102,20 @@ function App() {
             </nav>
             <div className="app-user">
               <button
+                className={`theme-toggle${tab === 'config' ? ' active' : ''}`}
+                onClick={() => setTab('config')}
+                title="Настройки — посты, мастера, страховые, реквизиты, экономика"
+              >
+                ⚙️
+              </button>
+              <button
+                className="theme-toggle"
+                onClick={() => window.open(`${window.location.pathname}?tv=1`, '_blank')}
+                title="Открыть режим для экрана в цехе (ТВ)"
+              >
+                📺
+              </button>
+              <button
                 className="theme-toggle"
                 onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
                 title={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
@@ -79,6 +136,7 @@ function App() {
             )}
             {tab === 'board' && <PostsBoard />}
             {tab === 'warehouse' && <Warehouse onOpenJob={openJobFromWarehouse} />}
+            {tab === 'finance' && <Finance />}
             {tab === 'history' && <History />}
             {tab === 'config' && <PostsMasters />}
           </main>

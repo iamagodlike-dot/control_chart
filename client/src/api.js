@@ -1,6 +1,6 @@
 import {
   collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, setDoc,
-  query, orderBy, where, writeBatch,
+  query, orderBy, where, writeBatch, onSnapshot,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { DEFAULT_INSURERS } from './insurance';
@@ -20,6 +20,7 @@ const cellsCol = collection(db, 'cells');
 const warehouseConfigCol = collection(db, 'warehouseConfig');
 const warehouseLogCol = collection(db, 'warehouseLog');
 const orderDocsCol = collection(db, 'orderDocuments');
+const transactionsCol = collection(db, 'transactions');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -34,6 +35,54 @@ function stripUndefined(obj) {
 async function stagesForJob(jobId) {
   const snap = await getDocs(query(stagesCol, where('job_id', '==', jobId)));
   return snap.docs.map(withId).sort((a, b) => (a.sequence - b.sequence) || (a.start_at > b.start_at ? 1 : -1));
+}
+
+// Joins raw collection arrays into the shape the Gantt screen needs. Kept as a
+// pure function so both gantt() (one-time fetch) and subscribeGantt() (live)
+// produce byte-for-byte identical output — the live screen and a refreshed one
+// can never disagree.
+function buildGantt(posts, allStages, jobsList, mastersList) {
+  const jobsById = new Map(jobsList.map((j) => [j.id, j]));
+  const mastersById = new Map(mastersList.map((m) => [m.id, m]));
+  const stagesByJob = new Map();
+  for (const s of allStages) {
+    if (!stagesByJob.has(s.job_id)) stagesByJob.set(s.job_id, []);
+    stagesByJob.get(s.job_id).push(s);
+  }
+
+  const stages = allStages
+    .filter((s) => !jobsById.get(s.job_id)?.archived)
+    .map((s) => {
+      const job = jobsById.get(s.job_id) || {};
+      const master = s.master_id ? mastersById.get(s.master_id) : null;
+      return {
+        ...s,
+        car_model: job.car_model,
+        plate_number: job.plate_number,
+        client_name: job.client_name,
+        order_number: job.order_number,
+        storage_location: job.storage_location,
+        deadline: job.deadline,
+        master_name: master ? master.name : null,
+      };
+    })
+    .sort((a, b) => (a.start_at > b.start_at ? 1 : -1));
+
+  // Full job list (including jobs with no stages yet, i.e. queued cars), for the sidebar.
+  const jobs = jobsList
+    .filter((j) => !j.archived)
+    .map((j) => ({
+      ...j,
+      job_id: j.id,
+      stages: (stagesByJob.get(j.id) || []).sort((a, b) => (a.sequence - b.sequence) || (a.start_at > b.start_at ? 1 : -1)),
+    }))
+    .sort((a, b) => {
+      const aTime = a.stages[0]?.start_at || a.expected_at || '';
+      const bTime = b.stages[0]?.start_at || b.expected_at || '';
+      return aTime > bTime ? 1 : -1;
+    });
+
+  return { posts, stages, jobs };
 }
 
 export const api = {
@@ -124,6 +173,13 @@ export const api = {
       for (const job of jobs) job.stages = await stagesForJob(job.id);
       return jobs;
     },
+    // Every job (active + archived) with all its own fields but NO stages — one
+    // query, no N+1. Used by the finance/analytics screen which only needs
+    // costing / payment_type / dates, not the route.
+    async listAllBrief() {
+      const snap = await getDocs(jobsCol);
+      return snap.docs.map(withId);
+    },
     async get(id) {
       const snap = await getDoc(doc(jobsCol, id));
       if (!snap.exists()) return null;
@@ -201,50 +257,37 @@ export const api = {
       getDocs(jobsCol),
       getDocs(mastersCol),
     ]);
-    const posts = postsSnap.docs.map(withId);
-    const jobsById = new Map(jobsSnap.docs.map((d) => [d.id, d.data()]));
-    const mastersById = new Map(mastersSnap.docs.map((d) => [d.id, d.data()]));
-    const allStages = stagesSnap.docs.map(withId);
-    const stagesByJob = new Map();
-    for (const s of allStages) {
-      if (!stagesByJob.has(s.job_id)) stagesByJob.set(s.job_id, []);
-      stagesByJob.get(s.job_id).push(s);
-    }
+    return buildGantt(
+      postsSnap.docs.map(withId),
+      stagesSnap.docs.map(withId),
+      jobsSnap.docs.map(withId),
+      mastersSnap.docs.map(withId),
+    );
+  },
 
-    const stages = allStages
-      .filter((s) => !jobsById.get(s.job_id)?.archived)
-      .map((s) => {
-        const job = jobsById.get(s.job_id) || {};
-        const master = s.master_id ? mastersById.get(s.master_id) : null;
-        return {
-          ...s,
-          car_model: job.car_model,
-          plate_number: job.plate_number,
-          client_name: job.client_name,
-          order_number: job.order_number,
-          storage_location: job.storage_location,
-          deadline: job.deadline,
-          master_name: master ? master.name : null,
-        };
-      })
-      .sort((a, b) => (a.start_at > b.start_at ? 1 : -1));
-
-    // Full job list (including jobs with no stages yet, i.e. queued cars), for the sidebar.
-    const jobs = jobsSnap.docs
-      .map(withId)
-      .filter((j) => !j.archived)
-      .map((j) => ({
-        ...j,
-        job_id: j.id,
-        stages: (stagesByJob.get(j.id) || []).sort((a, b) => (a.sequence - b.sequence) || (a.start_at > b.start_at ? 1 : -1)),
-      }))
-      .sort((a, b) => {
-        const aTime = a.stages[0]?.start_at || a.expected_at || '';
-        const bTime = b.stages[0]?.start_at || b.expected_at || '';
-        return aTime > bTime ? 1 : -1;
-      });
-
-    return { posts, stages, jobs };
+  // Live version of gantt(): calls `onData` with the same { posts, stages, jobs,
+  // masters, invoices } shape every time ANY of the underlying collections
+  // changes in Firestore — on this device or any other. This is what lets the
+  // big screen in the shop update itself with no page refresh. Returns an
+  // unsubscribe function; call it to stop listening (e.g. on unmount).
+  subscribeGantt(onData, onError = () => {}) {
+    const raw = { posts: null, stages: null, jobs: null, masters: null, docs: null };
+    const emit = () => {
+      // Wait until every collection has delivered its first snapshot so we never
+      // render a half-loaded graph. Empty collections still fire (as []), so
+      // this resolves even on a brand-new shop.
+      if (!raw.posts || !raw.stages || !raw.jobs || !raw.masters || !raw.docs) return;
+      const g = buildGantt(raw.posts, raw.stages, raw.jobs, raw.masters);
+      onData({ ...g, masters: raw.masters, invoices: raw.docs.filter((d) => d.type === 'invoice') });
+    };
+    const subs = [
+      onSnapshot(query(postsCol, orderBy('sort_order')), (s) => { raw.posts = s.docs.map(withId); emit(); }, onError),
+      onSnapshot(stagesCol, (s) => { raw.stages = s.docs.map(withId); emit(); }, onError),
+      onSnapshot(jobsCol, (s) => { raw.jobs = s.docs.map(withId); emit(); }, onError),
+      onSnapshot(mastersCol, (s) => { raw.masters = s.docs.map(withId); emit(); }, onError),
+      onSnapshot(orderDocsCol, (s) => { raw.docs = s.docs.map(withId); emit(); }, onError),
+    ];
+    return () => subs.forEach((unsub) => unsub());
   },
 
   async history() {
@@ -319,6 +362,35 @@ export const api = {
     },
     async remove(id) {
       await deleteDoc(doc(orderDocsCol, id));
+      return { ok: true };
+    },
+  },
+
+  // Standalone income/expenses NOT tied to a car (rent, salaries, taxes, bulk
+  // purchases…). Together with per-job profit these give real net profit.
+  transactions: {
+    async list() {
+      const snap = await getDocs(transactionsCol);
+      return snap.docs.map(withId).sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : (b.created_at || 0) - (a.created_at || 0)));
+    },
+    async create(data) {
+      const ref = await addDoc(transactionsCol, stripUndefined({
+        direction: data.direction === 'income' ? 'income' : 'expense',
+        category: data.category || 'Прочее',
+        amount: Number(data.amount) || 0,
+        date: data.date,
+        note: data.note || '',
+        created_at: Date.now(),
+        created_by: auth.currentUser?.email || null,
+      }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(transactionsCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(transactionsCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(transactionsCol, id));
       return { ok: true };
     },
   },

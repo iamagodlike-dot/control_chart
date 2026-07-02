@@ -5,6 +5,7 @@ import { parseAudatexPdf } from '../audatexParse';
 import { PAYMENT_TYPES, isInsurance } from '../insurance';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState, nextStatusAction } from './Gantt';
 import { CellPickerModal } from './Warehouse';
+import CostingModal from './CostingModal';
 import DateTimeField from './DateTimeField';
 
 const FMT = 'YYYY-MM-DDTHH:mm';
@@ -86,6 +87,8 @@ export default function CarCard({
   const [savingInfo, setSavingInfo] = useState(false);
   const [busyStage, setBusyStage] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [costingOpen, setCostingOpen] = useState(false);
+  const [localCosting, setLocalCosting] = useState(job?.costing || null);
   const [existingStages, setExistingStages] = useState([]);
   const [insurers, setInsurers] = useState([]);
   const [invoices, setInvoices] = useState([]);
@@ -308,6 +311,7 @@ export default function CarCard({
     onClose();
   }
   async function openDocs() { await flushOpenRow(); onOpenDocs(); }
+  async function openCosting() { await flushOpenRow(); setCostingOpen(true); }
   async function finalize() { await flushOpenRow(); onFinalize(); }
 
   async function saveInfo() {
@@ -383,6 +387,11 @@ export default function CarCard({
     try { setInvoices(await api.orderDocuments.listByJob(id, 'invoice')); } catch { /* ignore */ }
     setPayBusy(false);
   }
+
+  // Stable object for the costing modal: without memoization a fresh literal
+  // would be created on every CarCard render (clock tick / live Firestore push),
+  // needlessly re-rendering the open modal.
+  const costingJob = useMemo(() => ({ ...job, costing: localCosting }), [job, localCosting]);
 
   // Does the route overshoot the deadline? (shown live in both modes)
   const deadlineWarn = useMemo(() => {
@@ -713,6 +722,7 @@ export default function CarCard({
               <button className="danger" onClick={onRemove}>🗑 Удалить</button>
               <div className="cc-footer-actions">
                 <button onClick={openDocs}>📄 Документы</button>
+                <button onClick={openCosting}>💰 Себестоимость</button>
                 {routeSet.length > 0 && <button onClick={finalize}>✓ Завершить</button>}
                 <button className="primary" disabled={savingInfo || !dirtyInfo} onClick={saveInfo}>
                   {savingInfo ? 'Сохраняем…' : dirtyInfo ? 'Сохранить' : 'Сохранено'}
@@ -738,6 +748,14 @@ export default function CarCard({
           currentCellIds={form.cell_ids}
           onSave={(ids) => patchForm({ cell_ids: ids })}
           onClose={() => setPickerOpen(false)}
+        />
+      )}
+
+      {costingOpen && (
+        <CostingModal
+          job={costingJob}
+          onSaved={(c) => setLocalCosting(c)}
+          onClose={() => setCostingOpen(false)}
         />
       )}
     </div>

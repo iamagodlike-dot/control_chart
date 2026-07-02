@@ -16,13 +16,13 @@ const SORTS = [
   { id: 'car', label: 'Марка А-Я' },
 ];
 
-const MONTHS_RU = ['янв', 'фев', 'мар', 'апр', 'май', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
-
 function invoiceAmount(inv) {
   const t = inv.totals && typeof inv.totals.total === 'number' ? inv.totals.total : computeDocTotals(inv).total;
   return Number(t) || 0;
 }
 
+// Closed-orders archive: view/print documents, mark paid, return to work.
+// Money analysis lives in the separate «Финансы» tab.
 export default function History() {
   const [jobs, setJobs] = useState([]);
   const [docs, setDocs] = useState([]);
@@ -43,7 +43,6 @@ export default function History() {
     setDocs(d);
     setLoading(false);
   };
-
   const loadDocs = async () => setDocs(await api.orderDocuments.listAll().catch(() => []));
 
   useEffect(() => {
@@ -52,7 +51,6 @@ export default function History() {
   }, []);
 
   const invoices = useMemo(() => docs.filter((d) => d.type === 'invoice'), [docs]);
-
   const invByJob = useMemo(() => {
     const m = {};
     for (const inv of invoices) (m[inv.job_id] ||= []).push(inv);
@@ -61,34 +59,6 @@ export default function History() {
 
   const jobAmount = (id) => (invByJob[id] || []).reduce((s, i) => s + invoiceAmount(i), 0);
   const jobPaid = (id) => { const a = invByJob[id] || []; return a.length > 0 && a.every((i) => i.paid); };
-
-  const stats = useMemo(() => {
-    const amt = (i) => invoiceAmount(i);
-    const billed = invoices.reduce((s, i) => s + amt(i), 0);
-    const paidList = invoices.filter((i) => i.paid);
-    const paid = paidList.reduce((s, i) => s + amt(i), 0);
-    const count = invoices.length;
-    const avg = count ? Math.round(billed / count) : 0;
-    const nowMonth = dayjs().format('YYYY-MM');
-    const paidThisMonth = paidList
-      .filter((i) => dayjs(i.paid_at || i.created_at).format('YYYY-MM') === nowMonth)
-      .reduce((s, i) => s + amt(i), 0);
-
-    const months = [];
-    for (let k = 11; k >= 0; k--) months.push(dayjs().subtract(k, 'month'));
-    const byMonth = months.map((m) => ({
-      key: m.format('YYYY-MM'),
-      label: MONTHS_RU[m.month()],
-      isYearStart: m.month() === 0,
-      value: paidList
-        .filter((i) => dayjs(i.paid_at || i.created_at).format('YYYY-MM') === m.format('YYYY-MM'))
-        .reduce((s, i) => s + amt(i), 0),
-    }));
-    const max = Math.max(1, ...byMonth.map((b) => b.value));
-    const unpaid = Math.max(0, billed - paid);
-    const unpaidCount = count - paidList.length;
-    return { billed, paid, unpaid, unpaidCount, count, avg, paidThisMonth, byMonth, max };
-  }, [invoices]);
 
   async function toggleJobPaid(id) {
     const arr = invByJob[id] || [];
@@ -129,54 +99,6 @@ export default function History() {
 
   return (
     <div className="panel history-panel">
-      <h3>Аналитика по счетам</h3>
-      <div className="hist-cards">
-        <div className="hist-card hist-card-success">
-          <div className="hist-card-label">Оплачено</div>
-          <div className="hist-card-value">{money(stats.paid)}</div>
-        </div>
-        <button
-          type="button"
-          className={`hist-card hist-card-danger${onlyUnpaid ? ' is-active' : ''}`}
-          onClick={() => setOnlyUnpaid((v) => !v)}
-          title="Показать в списке только неоплаченные"
-        >
-          <div className="hist-card-label">Не оплачено · долг</div>
-          <div className="hist-card-value">{money(stats.unpaid)}</div>
-          <div className="hist-card-sub">{stats.unpaidCount} неоплаченных · {onlyUnpaid ? 'показаны в списке' : 'нажмите, чтобы показать'}</div>
-        </button>
-        <div className="hist-card">
-          <div className="hist-card-label">Выставлено</div>
-          <div className="hist-card-value">{money(stats.billed)}</div>
-          <div className="hist-card-sub">{stats.count} {stats.count === 1 ? 'счёт' : 'счетов'}</div>
-        </div>
-        <div className="hist-card">
-          <div className="hist-card-label">Оплачено в этом месяце</div>
-          <div className="hist-card-value">{money(stats.paidThisMonth)}</div>
-        </div>
-        <div className="hist-card">
-          <div className="hist-card-label">Средний чек</div>
-          <div className="hist-card-value">{money(stats.avg)}</div>
-        </div>
-      </div>
-
-      <div className="hist-chart">
-        <div className="hist-chart-title">Оплачено по месяцам</div>
-        {stats.paid === 0 ? (
-          <div className="hist-chart-empty">Пока нет оплаченных счетов — цифры появятся, как отметите оплату.</div>
-        ) : (
-          <div className="hist-bars">
-            {stats.byMonth.map((b) => (
-              <div className="hist-bar-col" key={b.key} title={`${b.label}: ${money(b.value)}`}>
-                <div className="hist-bar-val">{b.value ? Math.round(b.value / 1000) + 'к' : ''}</div>
-                <div className="hist-bar" style={{ height: `${Math.round((b.value / stats.max) * 100)}%` }} />
-                <div className={`hist-bar-lbl${b.isYearStart ? ' is-year' : ''}`}>{b.label}</div>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
       <div className="hist-list-head">
         <h3>Закрытые заказы</h3>
         <div className="hist-controls">

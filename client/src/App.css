@@ -131,6 +131,7 @@ h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.2px; }
 .app-user button { background: rgba(255, 255, 255, .06); border-color: rgba(255, 255, 255, .14); color: var(--color-on-ink); }
 .app-user button:hover { background: rgba(255, 255, 255, .14); }
 .theme-toggle { font-size: 15px; padding: 7px 10px; }
+.app-user button.theme-toggle.active { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
 
 .app-main {
   flex: 1; overflow: auto; padding: 20px 24px;
@@ -976,3 +977,70 @@ textarea { width: 100%; min-height: 50px; }
   .handover-form { grid-template-columns: 1fr; }
   .doc-fields-row { flex-direction: column; }
 }
+
+/* ── TV / kiosk mode (?tv=1): read-only wall display for the shop ─────────── */
+.app--tv { padding: 0; }
+.app--tv .gantt-layout { flex: 1; min-height: 0; padding: 14px; box-sizing: border-box; }
+
+/* Larger type so the schedule reads from across the room. */
+.gantt-layout--tv { font-size: 15px; }
+.gantt-layout--tv .job-item-title { font-size: 16px; }
+.gantt-layout--tv .gantt-row-label { font-size: 15px; }
+.gantt-layout--tv .gantt-day { font-size: 14px; }
+.gantt-layout--tv .gantt-bar-label { font-size: 15px; }
+.gantt-layout--tv .gantt-bar-sub { font-size: 12px; }
+
+/* A tapped car (or its bar) stays highlighted so its route is easy to trace. */
+.job-item.selected { border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary-light); }
+
+/* TV top bar: big live clock on the left, status legend on the right. */
+.gantt-toolbar--tv { justify-content: space-between; padding: 12px 18px; }
+.tv-clock { display: flex; align-items: baseline; gap: 12px; }
+.tv-clock-time { font-family: var(--font-mono); font-size: 30px; font-weight: 800; letter-spacing: 1px; line-height: 1; color: var(--color-text); }
+.tv-clock-date { font-size: 15px; color: var(--color-text-muted); text-transform: capitalize; }
+.gantt-toolbar--tv .legend { margin-left: 0; font-size: 13px; }
+
+/* Self-recovery screen if the unattended wall display ever hits a runtime error. */
+.tv-error { height: 100vh; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; background: var(--color-bg); color: var(--color-text-muted); font-size: 15px; }
+
+/* ===== Себестоимость / экономика ремонта (CostingModal) ===== */
+.modal.costing-modal {
+  width: min(880px, calc(100vw - 40px));
+  max-height: 92vh;
+  padding: 0;
+  gap: 0;
+  overflow: hidden;
+}
+.costing-source {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  font-size: 13px; color: var(--color-text-muted);
+  padding: 8px 12px; border-radius: 8px; background: var(--color-surface-alt); margin-bottom: 4px;
+}
+.costing-source b { color: var(--color-text); }
+.costing-table th, .costing-table td { vertical-align: middle; }
+.costing-code { color: var(--color-text-muted); font-size: 11px; }
+.costing-num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+.costing-num.is-loss { color: var(--color-danger); }
+.costing-num.is-gain { color: var(--color-success); }
+.costing-table tfoot td { border-top: 1px solid var(--color-border); padding-top: 8px; font-weight: 600; }
+.costing-input {
+  width: 100%; max-width: 130px; padding: 5px 8px; font-size: 13px;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 6px; color: var(--color-text); text-align: right;
+}
+.costing-fields { display: flex; gap: 16px; flex-wrap: wrap; }
+.costing-fields .cc-field { flex: 1 1 220px; }
+.costing-fields .cc-field i { color: var(--color-text-muted); font-size: 11px; }
+.costing-auto-row { display: flex; align-items: center; gap: 6px; }
+
+.costing-summary {
+  margin-top: 4px; padding: 14px 16px; border-radius: 12px;
+  background: var(--color-surface-alt); border: 1px solid var(--color-border);
+  display: flex; flex-direction: column; gap: 8px;
+}
+.costing-summary-row { display: flex; align-items: baseline; justify-content: space-between; font-size: 14px; }
+.costing-summary-row .costing-summary-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+.costing-breakdown { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--color-text-muted); }
+.costing-summary-row.is-total { border-top: 1px solid var(--color-border); padding-top: 10px; font-size: 17px; }
+.costing-summary-row.is-total.is-gain { color: var(--color-success); }
+.costing-summary-row.is-total.is-loss { color: var(--color-danger); }
