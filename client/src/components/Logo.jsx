@@ -6,10 +6,18 @@ export default function Logo({ size = 32, variant = 'plate' }) {
     <span
       style={{
         display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-        width: size, height: size, borderRadius: size * 0.22, background: 'var(--color-primary)', flexShrink: 0,
+        width: size, height: size, borderRadius: size * 0.25, flexShrink: 0,
+        background: 'linear-gradient(150deg, var(--color-primary), color-mix(in srgb, var(--color-primary) 55%, #0a5))',
+        boxShadow: '0 4px 16px -4px var(--brand-soft), inset 0 1px 0 rgba(255,255,255,.25)',
       }}
     >
-      <img src="/logo-mark-white.png" alt="" width={size * 0.62} height={size * 0.62} style={{ objectFit: 'contain' }} />
+      <img
+        src="/logo-mark-white.png"
+        alt=""
+        width={size * 0.58}
+        height={size * 0.58}
+        style={{ objectFit: 'contain', filter: 'brightness(0)' }}
+      />
     </span>
   );
 }

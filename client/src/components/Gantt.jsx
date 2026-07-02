@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
-import { isInsurance } from '../insurance';
+import { isInsurance, PAYMENT_SHORT } from '../insurance';
 import DocumentsModal from './DocumentsModal';
 import CarCard from './CarCard';
+import AlertStrip from './AlertStrip';
+import Icon from './Icon';
 import DateTimeField from './DateTimeField';
 import { DocsButton, FinishButton } from './RowActionButtons';
 
@@ -684,6 +686,34 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
     />
   );
 
+  // «Требует внимания» counters — derived live from the same jobs/stages/posts.
+  // Declared before the early returns so the hook order stays stable.
+  const alerts = useMemo(() => {
+    const active = jobs.filter((j) => !j.archived);
+    let delay = 0; let noRoute = 0; let inProg = 0; let ready = 0;
+    for (const j of active) {
+      if (!j.stages || j.stages.length === 0) { noRoute += 1; continue; }
+      const st = jobOverallStatus(j, now);
+      if (st === 'delayed' || deadlineState(j, now) === 'missed') delay += 1;
+      else if (st === 'in_progress') inProg += 1;
+      else if (st === 'done') ready += 1;
+    }
+    const busyPosts = new Set(
+      stages
+        .filter((s) => s.status !== 'done' && !dayjs(s.start_at).isAfter(now) && !dayjs(s.end_at).isBefore(now))
+        .map((s) => s.post_id),
+    );
+    const idle = posts.filter((p) => !busyPosts.has(p.id)).length;
+    return [
+      { key: 'delay', count: delay, label: 'Задержка', color: 'var(--delay)', pulse: true },
+      { key: 'idle', count: idle, label: 'Простой постов', color: 'var(--wait)' },
+      { key: 'noroute', count: noRoute, label: 'Без маршрута', color: 'var(--color-primary)' },
+      { key: 'prog', count: inProg, label: 'В работе', color: 'var(--progress)' },
+      { key: 'ready', count: ready, label: 'Готово к выдаче', color: 'var(--done)' },
+    ].filter((a) => a.count > 0);
+  }, [jobs, stages, posts, now]);
+  const shiftInfo = `Смена активна · ${posts.length} постов · ${masters.length} мастеров`;
+
   if (loading) {
     return (
       <div className="gantt-loading">
@@ -706,15 +736,26 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
   }
 
   return (
-    <div className={`gantt-layout${readOnly ? ' gantt-layout--tv' : ''}`}>
+    <div className={`gantt-page${readOnly ? ' gantt-page--tv' : ''}`}>
+      {!readOnly && <AlertStrip alerts={alerts} shift={shiftInfo} />}
+      <div className={`gantt-layout${readOnly ? ' gantt-layout--tv' : ''}`}>
       <aside className="job-sidebar">
         {!readOnly && (
-          <input
-            className="job-search"
-            placeholder="Поиск по машине, номеру, клиенту…"
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-          />
+          <div className="job-search-wrap">
+            <span className="job-search-icon"><Icon name="search" size={16} strokeWidth={1.8} /></span>
+            <input
+              className="job-search"
+              placeholder="Поиск по машине, номеру, клиенту"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+            />
+          </div>
+        )}
+        {!readOnly && (
+          <div className="job-queue-label">
+            <span>Очередь · {filteredJobs.length}</span>
+            <span>сегодня</span>
+          </div>
         )}
         <div className="job-list">
           {filteredJobs.map((j) => {
@@ -728,7 +769,8 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
             return (
             <div
               key={j.job_id}
-              className={`job-item${isQueued ? ' is-queued' : ''}${hoveredJobId === j.job_id ? ' hovered' : ''}${selectedJobId === j.job_id ? ' selected' : ''}`}
+              className={`job-item${isQueued ? ' is-queued' : ''}${overall === 'delayed' ? ' is-delay' : ''}${hoveredJobId === j.job_id ? ' hovered' : ''}${selectedJobId === j.job_id ? ' selected' : ''}`}
+              style={{ '--sc': STATUS_COLORS[overall] }}
               onClick={() => (readOnly ? setSelectedJobId((id) => (id === j.job_id ? null : j.job_id)) : setDetailJob(j))}
               onMouseEnter={() => setHoveredJobId(j.job_id)}
               onMouseLeave={() => setHoveredJobId(null)}
@@ -743,26 +785,35 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
                   </div>
                 )}
               </div>
-              <div className="job-item-sub">{j.plate_number || '—'} {j.client_name ? `· ${j.client_name}` : ''}</div>
-              {isInsurance(j) && j.insurer_name && <div className="job-item-insurer">🛡 {j.insurer_name}</div>}
-              {hasPay && (
-                <div style={{ fontSize: 11, fontWeight: 700, marginTop: 2, color: `var(${payAllPaid ? '--color-success' : '--color-danger'})` }}>
-                  {payAllPaid ? '✓ Оплачено' : `● Не оплачено · ${fmtMoney(payTotal)}`}
+              <div className="job-item-sub">{j.plate_number || '—'}{j.client_name ? ` · ${j.client_name}` : ''}</div>
+              <div className="job-item-meta">
+                <div className="job-meta-row">
+                  <Icon name="shield" size={14} />
+                  <span>{isInsurance(j) && j.insurer_name ? j.insurer_name : (PAYMENT_SHORT[j.payment_type] || 'Наличные')}</span>
                 </div>
-              )}
-              {(api.warehouse.cellIds(j).length || j.storage_location) && <div className="job-item-storage">📦 {api.warehouse.cellIds(j).join(', ') || j.storage_location}</div>}
-              {isQueued && j.expected_at && (
-                <div className="job-item-deadline">🕒 заедет {dayjs(j.expected_at).format('DD.MM HH:mm')}</div>
-              )}
-              {j.deadline && (
-                <div className={`job-item-deadline${dlState ? ` is-${dlState}` : ''}`}>
-                  ⏰ до {dayjs(j.deadline).format('DD.MM HH:mm')}
-                  {dlState === 'missed' && ' — просрочен'}
-                  {dlState === 'at-risk' && ' — под угрозой'}
-                </div>
-              )}
+                {hasPay && (payAllPaid ? (
+                  <div className="job-meta-row is-done"><Icon name="check" size={14} strokeWidth={2} /><span>Оплачено</span></div>
+                ) : (
+                  <div className="job-meta-row is-danger"><span className="job-meta-dot" /><span>Не оплачено · {fmtMoney(payTotal)}</span></div>
+                ))}
+                {(api.warehouse.cellIds(j).length || j.storage_location) && (
+                  <div className="job-meta-row"><Icon name="box" size={14} /><span>{api.warehouse.cellIds(j).join(', ') || j.storage_location}</span></div>
+                )}
+                {isQueued && j.expected_at && (
+                  <div className="job-meta-row"><Icon name="clock" size={14} /><span>заедет {dayjs(j.expected_at).format('DD.MM HH:mm')}</span></div>
+                )}
+                {j.deadline && (
+                  <div className={`job-meta-row${dlState === 'missed' ? ' is-danger' : (dlState === 'at-risk' ? ' is-warn' : '')}`}>
+                    <Icon name="clock" size={14} />
+                    <span>до {dayjs(j.deadline).format('DD.MM HH:mm')}{dlState === 'missed' ? ' — просрочен' : (dlState === 'at-risk' ? ' — под угрозой' : '')}</span>
+                  </div>
+                )}
+              </div>
               {isQueued ? (
-                <div className="job-item-queued-hint">🛣 Маршрут не задан{readOnly ? '' : ' — нажмите, чтобы запланировать'}</div>
+                <div className="job-item-queued-hint">
+                  <Icon name="chevron-right" size={15} strokeWidth={1.8} />
+                  <span>Маршрут не задан{readOnly ? '' : ' — нажмите, чтобы запланировать'}</span>
+                </div>
               ) : (
                 <div className="job-item-route-row">
                   <RouteStrip stages={j.stages} posts={posts} now={now} />
@@ -931,8 +982,8 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name}</span>
                     {rowStages.length > 0 && (
                       <span className="load-wrap">
-                        <span className={`load-bar${loadPct >= 90 ? ' load-high' : loadPct >= 60 ? ' load-mid' : ''}`}><i style={{ width: `${loadPct}%` }} /></span>
-                        <span className={`load-pill${loadPct >= 90 ? ' load-high' : loadPct >= 60 ? ' load-mid' : ''}`}>{loadPct}%</span>
+                        <span className={`load-bar${loadPct >= 60 ? ' load-high' : loadPct >= 30 ? ' load-mid' : ''}`}><i style={{ width: `${loadPct}%` }} /></span>
+                        <span className={`load-pill${loadPct >= 60 ? ' load-high' : loadPct >= 30 ? ' load-mid' : ''}`}>{loadPct}%</span>
                       </span>
                     )}
                   </div>
@@ -971,10 +1022,10 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
                       return (
                         <div
                           key={s.id}
-                          className={`gantt-bar${isFocused ? ' is-focused' : ''}${isDimmed ? ' is-dimmed' : ''}${conflicts ? ' has-conflict' : ''}${dragLocked ? ' is-locked' : ''}${isDragging ? ' is-dragging' : ''}${isOvertimeHour(hourOf(s.start_at), workHourStart, workHourEnd) ? ' is-ot-start' : ''}${isOvertimeHour(hourOf(s.end_at), workHourStart, workHourEnd) ? ' is-ot-end' : ''}`}
+                          className={`gantt-bar${status === 'delayed' ? ' is-delay' : ''}${isFocused ? ' is-focused' : ''}${isDimmed ? ' is-dimmed' : ''}${conflicts ? ' has-conflict' : ''}${dragLocked ? ' is-locked' : ''}${isDragging ? ' is-dragging' : ''}${isOvertimeHour(hourOf(s.start_at), workHourStart, workHourEnd) ? ' is-ot-start' : ''}${isOvertimeHour(hourOf(s.end_at), workHourStart, workHourEnd) ? ' is-ot-end' : ''}`}
                           draggable={!dragLocked && !readOnly}
                           onDragStart={(e) => e.dataTransfer.setData('stageId', String(s.id))}
-                          style={{ left: x, width, top, height: LANE_HEIGHT, background: STATUS_COLORS[status] || '#888' }}
+                          style={{ left: x, width, top, height: LANE_HEIGHT, '--jc': STATUS_COLORS[status] || '#888' }}
                           onMouseDown={(e) => startDrag(e, s, 'move')}
                           onMouseEnter={() => { setHoveredJobId(s.job_id); setHoveredStageId(s.id); }}
                           onMouseLeave={() => { setHoveredJobId(null); setHoveredStageId(null); }}
@@ -1158,6 +1209,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
       )}
 
       {createModal}
+      </div>
     </div>
   );
 }

@@ -12,13 +12,14 @@ import FinancePanel from './FinancePanel';
 import MoneyFeed from './MoneyFeed';
 import CostingModal from './CostingModal';
 import DocumentsModal from './DocumentsModal';
+import Icon from './Icon';
 import { DocsButton } from './RowActionButtons';
 import '../history.css';
 
 const VIEWS = [
-  { id: 'overview', label: '📊 Обзор' },
-  { id: 'feed', label: '💸 Лента' },
-  { id: 'cars', label: '🚗 Машины' },
+  { id: 'overview', label: 'Обзор', icon: 'chart' },
+  { id: 'feed', label: 'Лента', icon: 'receipt' },
+  { id: 'cars', label: 'Машины', icon: 'car' },
 ];
 
 const SORTS = [
@@ -175,7 +176,7 @@ export default function Finance() {
       <div className="fin-toolbar">
         <div className="hist-viewtabs fin-views">
           {VIEWS.map((v) => (
-            <button key={v.id} className={view === v.id ? 'active' : ''} onClick={() => setView(v.id)}>{v.label}</button>
+            <button key={v.id} className={view === v.id ? 'active' : ''} onClick={() => setView(v.id)}><Icon name={v.icon} size={15} />{v.label}</button>
           ))}
         </div>
         <div className="fin-periods">
@@ -183,7 +184,7 @@ export default function Finance() {
             <button key={p.id} className={period === p.id ? 'active' : ''} onClick={() => setPeriod(p.id)}>{p.label}</button>
           ))}
         </div>
-        <button className="fin-export" onClick={exportCsv} title="Скачать сводку в Excel (CSV)">⬇ Для бухгалтера</button>
+        <button className="fin-export cc-btn-ico" onClick={exportCsv} title="Скачать сводку в Excel (CSV)"><Icon name="download" size={15} />Для бухгалтера</button>
       </div>
 
       {view === 'overview' && <FinancePanel fin={fin} periodLabel={periodLabel} />}
@@ -212,7 +213,7 @@ export default function Finance() {
 
           {cars.length === 0 && (
             <div className="job-empty">
-              {search ? 'Ничего не найдено' : 'Пока нет машин с финансами за этот период. Заполните себестоимость (💰) на графике или в карточке.'}
+              {search ? 'Ничего не найдено' : 'Пока нет машин с финансами за этот период. Заполните себестоимость на графике или в карточке машины.'}
             </div>
           )}
 
@@ -231,17 +232,17 @@ export default function Finance() {
 
                 <div className="job-item-sub">
                   {j.plate_number || '—'}{j.client_name ? ` · ${j.client_name}` : ''}
-                  {j.payment_type ? ` · ${isInsurance(j) && j.insurer_name ? `🛡 ${j.insurer_name}` : (PAYMENT_SHORT[j.payment_type] || '')}` : ''}
+                  {j.payment_type ? ` · ${isInsurance(j) && j.insurer_name ? j.insurer_name : (PAYMENT_SHORT[j.payment_type] || '')}` : ''}
                 </div>
 
                 {c && (
                   <div className="fin-car-breakdown">
                     <span>Выручка {money(c.revenue)}</span>
                     <span>Себест. {money(c.cost_total)}</span>
-                    <span className="fin-car-chip">🔩 {money(c.parts_cost)}</span>
-                    <span className="fin-car-chip">🎨 {money(c.materials_cost)}</span>
-                    <span className="fin-car-chip">👷 {money(c.labor_cost)}</span>
-                    {c.overhead_cost > 0 && <span className="fin-car-chip">🏢 {money(c.overhead_cost)}</span>}
+                    <span className="fin-car-chip"><em>Запчасти</em> {money(c.parts_cost)}</span>
+                    <span className="fin-car-chip"><em>Материалы</em> {money(c.materials_cost)}</span>
+                    <span className="fin-car-chip"><em>Мастера</em> {money(c.labor_cost)}</span>
+                    {c.overhead_cost > 0 && <span className="fin-car-chip"><em>Накладные</em> {money(c.overhead_cost)}</span>}
                   </div>
                 )}
 
@@ -264,14 +265,14 @@ export default function Finance() {
                       >
                         {j.prepayment_paid
                           ? `✓ Предоплата получена · ${money(j.prepayment_paid_amount)}`
-                          : `🪙 Предоплата ${money(prepayAgreed)} — подтвердить`}
+                          : `Предоплата ${money(prepayAgreed)} — подтвердить`}
                       </button>
                     )}
                   </div>
                 )}
 
                 <div className="history-item-actions" style={{ justifyContent: 'flex-end', marginTop: 6 }}>
-                  <button className="primary small" onClick={() => openCosting(j.id)}>💰 Себестоимость</button>
+                  <button className="primary small cc-btn-ico" onClick={() => openCosting(j.id)}><Icon name="wallet" size={14} />Себестоимость</button>
                   <DocsButton onClick={() => openDocs(j.id)} />
                 </div>
               </div>

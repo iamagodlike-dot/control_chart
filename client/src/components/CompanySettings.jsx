@@ -79,7 +79,7 @@ export default function CompanySettings() {
         </label>
       </div>
       <h3>Экономика и себестоимость</h3>
-      <p className="panel-hint">Средние значения для расчёта себестоимости ремонта. Их можно поправить в каждой машине (кнопка «💰 Себестоимость»).</p>
+      <p className="panel-hint">Средние значения для расчёта себестоимости ремонта. Их можно поправить в каждой машине (кнопка «Себестоимость»).</p>
       <div className="company-grid">
         <label className="job-form-field">
           <span>Материалы, % от работ</span>

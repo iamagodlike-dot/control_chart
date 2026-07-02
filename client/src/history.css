@@ -113,9 +113,11 @@ button.hist-card:active { transform: scale(0.99); }
 /* ===== Финансы: переключатель, период, чистая прибыль, транзакции ===== */
 .hist-viewtabs { display: flex; gap: 8px; margin-bottom: 16px; }
 .hist-viewtabs button {
+  display: inline-flex; align-items: center; gap: 7px;
   padding: 9px 16px; border-radius: 10px; font-weight: 700; font-size: 14px;
   background: var(--color-surface-alt); border: 1px solid var(--color-border); color: var(--color-text-muted); cursor: pointer;
 }
+.hist-viewtabs button svg { flex-shrink: 0; }
 .hist-viewtabs button.active { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
 
 .fin-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
@@ -184,6 +186,7 @@ button.hist-card:active { transform: scale(0.99); }
 .fin-car-breakdown { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 6px; font-size: 12px; color: var(--color-text-muted); align-items: center; }
 .fin-car-breakdown > span:first-child, .fin-car-breakdown > span:nth-child(2) { color: var(--color-text); font-weight: 600; }
 .fin-car-chip { background: var(--color-surface-alt); border: 1px solid var(--color-border); border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums; }
+.fin-car-chip em { font-style: normal; color: var(--text3); margin-right: 3px; }
 .fin-car-invoice { font-size: 12px; color: var(--color-text-muted); margin-top: 4px; }
 .fin-car-invoice .is-gain { color: var(--color-success); font-weight: 600; }
 .fin-car-invoice .is-loss { color: var(--color-danger); font-weight: 600; }
@@ -191,7 +194,7 @@ button.hist-card:active { transform: scale(0.99); }
 
 /* ===== Лента движения денег + подтверждение предоплаты ===== */
 .feed-day-head { font-size: 12px; font-weight: 700; color: var(--color-text-muted); margin: 14px 0 6px; text-transform: capitalize; }
-.feed-ico { width: 20px; text-align: center; flex-shrink: 0; }
+.feed-ico { width: 20px; display: inline-flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--text3); }
 .fin-tx-del-spacer { width: 18px; flex-shrink: 0; }
 
 .fin-car-pay { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 6px; }

@@ -3,10 +3,11 @@ import dayjs from 'dayjs';
 import { api } from '../api';
 import { money } from '../orderDoc';
 import { EXPENSE_CATEGORIES, INCOME_CATEGORIES } from '../finance';
+import Icon from './Icon';
 
 const todayInput = () => dayjs().format('YYYY-MM-DD');
 
-const KIND_ICON = { prepayment: '🪙', invoice_paid: '💳', income: '➕', expense: '➖' };
+const KIND_ICON = { prepayment: 'wallet', invoice_paid: 'file', income: 'plus', expense: 'minus' };
 const KIND_BADGE = { prepayment: 'предоплата', invoice_paid: 'оплата счёта', income: 'доход', expense: 'расход' };
 
 // «Лента» — the cash-flow view: every money event (предоплаты, оплаты счетов,
@@ -114,7 +115,7 @@ export default function MoneyFeed({ cash, onTxChanged }) {
             <div className="fin-tx-list">
               {evs.map((e) => (
                 <div className="fin-tx-row" key={e.id}>
-                  <span className="feed-ico">{KIND_ICON[e.kind] || '•'}</span>
+                  <span className="feed-ico"><Icon name={KIND_ICON[e.kind] || 'wallet'} size={15} /></span>
                   <span className={`fin-tx-badge ${e.direction === 'income' ? 'is-income' : 'is-expense'}`}>{KIND_BADGE[e.kind] || e.kind}</span>
                   <span className="fin-tx-cat">{e.title}{e.sub ? <span className="fin-tx-note"> · {e.sub}</span> : ''}</span>
                   <span className={`fin-tx-amount ${e.direction === 'income' ? 'is-gain' : 'is-loss'}`}>

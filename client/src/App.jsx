@@ -6,16 +6,17 @@ import PostsMasters from './components/PostsMasters';
 import History from './components/History';
 import Finance from './components/Finance';
 import Logo from './components/Logo';
+import Icon from './components/Icon';
 import AuthGate from './components/AuthGate';
 import Warehouse from './components/Warehouse';
 import './App.css';
 
 const TABS = [
-  { id: 'gantt', label: 'График', icon: '📅' },
-  { id: 'board', label: 'Загрузка', icon: '📊' },
-  { id: 'warehouse', label: 'Склад', icon: '📦' },
-  { id: 'finance', label: 'Финансы', icon: '💰' },
-  { id: 'history', label: 'История', icon: '🗄️' },
+  { id: 'gantt', label: 'График', icon: 'calendar' },
+  { id: 'board', label: 'Загрузка', icon: 'chart' },
+  { id: 'warehouse', label: 'Склад', icon: 'box' },
+  { id: 'finance', label: 'Финансы', icon: 'wallet' },
+  { id: 'history', label: 'История', icon: 'history' },
 ];
 
 // Unattended big-screen safety net: if a runtime error ever blanks the TV view,
@@ -54,6 +55,11 @@ function App() {
   function openJobFromWarehouse(jobId) {
     setOpenJobId(jobId);
     setTab('gantt');
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else document.documentElement.requestFullscreen?.();
   }
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('auto-academy-theme') || 'dark';
@@ -96,38 +102,46 @@ function App() {
             <nav className="tabs">
               {TABS.map((t) => (
                 <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
-                  <span className="tab-icon">{t.icon}</span>{t.label}
+                  <Icon name={t.icon} size={16} />{t.label}
                 </button>
               ))}
             </nav>
             <div className="app-user">
               <button
-                className={`theme-toggle${tab === 'config' ? ' active' : ''}`}
+                className={`icon-btn${tab === 'config' ? ' active' : ''}`}
                 onClick={() => setTab('config')}
                 title="Настройки — посты, мастера, страховые, реквизиты, экономика"
               >
-                ⚙️
+                <Icon name="gear" size={17} />
+              </button>
+              <button className="icon-btn" onClick={toggleFullscreen} title="Полноэкранный режим">
+                <Icon name="maximize" size={17} />
               </button>
               <button
-                className="theme-toggle"
+                className="icon-btn"
                 onClick={() => window.open(`${window.location.pathname}?tv=1`, '_blank')}
                 title="Открыть режим для экрана в цехе (ТВ)"
               >
-                📺
+                <Icon name="tv" size={17} />
               </button>
               <button
-                className="theme-toggle"
+                className="icon-btn is-theme"
                 onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
                 title={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
               >
-                {theme === 'dark' ? '☀️' : '🌙'}
+                <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
               </button>
-              <span className="app-user-email">{user.email}</span>
-              <button onClick={signOut}>Выйти</button>
+              <div className="app-user-id">
+                <span className="app-user-avatar"><Icon name="user" size={17} /></span>
+                <span className="app-user-email">{user.email}</span>
+              </div>
+              <button className="app-logout" onClick={signOut}>
+                <Icon name="power" size={15} strokeWidth={1.8} />Выйти
+              </button>
             </div>
           </header>
 
-          <main className="app-main">
+          <main className={`app-main${tab === 'gantt' ? ' app-main--flush' : ''}`}>
             {tab === 'gantt' && (
               <Gantt
                 openJobId={openJobId}

@@ -76,18 +76,18 @@ export default function FinancePanel({ fin, periodLabel }) {
 
       <div className="fin-two-col">
         <Breakdown title="Из чего складывается себестоимость" total={fin.repairs.cost} rows={[
-          { label: '🔩 Запчасти', amount: fin.repairs.parts },
-          { label: '🎨 Материалы', amount: fin.repairs.materials },
-          { label: '👷 Оплата мастерам', amount: fin.repairs.labor },
-          { label: '🏢 Накладные', amount: fin.repairs.overhead },
+          { label: 'Запчасти', amount: fin.repairs.parts },
+          { label: 'Материалы', amount: fin.repairs.materials },
+          { label: 'Оплата мастерам', amount: fin.repairs.labor },
+          { label: 'Накладные', amount: fin.repairs.overhead },
         ].filter((r) => r.amount > 0)} />
         <Breakdown title="Выручка по типу оплаты" rows={fin.byPayment} getVal={(r) => r.revenue} getLabel={(r) => r.label} />
       </div>
 
       <div className="fin-two-col">
-        <Breakdown title="Выплаты мастерам (сдельно)" total={fin.repairs.labor} rows={fin.payroll} getVal={(r) => r.amount} getLabel={(r) => `👤 ${r.label}`} />
+        <Breakdown title="Выплаты мастерам (сдельно)" total={fin.repairs.labor} rows={fin.payroll} getVal={(r) => r.amount} getLabel={(r) => r.label} />
         {fin.byInsurer.length > 0 && (
-          <Breakdown title="По страховым компаниям" rows={fin.byInsurer} getVal={(r) => r.revenue} getLabel={(r) => `🛡 ${r.label}`} />
+          <Breakdown title="По страховым компаниям" rows={fin.byInsurer} getVal={(r) => r.revenue} getLabel={(r) => r.label} />
         )}
       </div>
 
@@ -99,7 +99,7 @@ export default function FinancePanel({ fin, periodLabel }) {
         <div className="fin-two-col">
           {topOrders.length > 0 && (
             <div className="hist-breakdown">
-              <div className="hist-breakdown-title">🏆 Самые прибыльные заказы</div>
+              <div className="hist-breakdown-title">Самые прибыльные заказы</div>
               <div className="fin-order-rows">
                 {topOrders.map((o) => (
                   <div className="fin-order-row" key={o.id}>
@@ -112,7 +112,7 @@ export default function FinancePanel({ fin, periodLabel }) {
           )}
           {lossOrders.length > 0 && (
             <div className="hist-breakdown">
-              <div className="hist-breakdown-title">⚠ Убыточные заказы</div>
+              <div className="hist-breakdown-title">Убыточные заказы</div>
               <div className="fin-order-rows">
                 {lossOrders.map((o) => (
                   <div className="fin-order-row" key={o.id}>

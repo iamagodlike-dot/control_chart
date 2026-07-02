@@ -6,6 +6,7 @@ import { PAYMENT_TYPES, isInsurance } from '../insurance';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState, nextStatusAction } from './Gantt';
 import { CellPickerModal } from './Warehouse';
 import CostingModal from './CostingModal';
+import Icon from './Icon';
 import DateTimeField from './DateTimeField';
 
 const FMT = 'YYYY-MM-DDTHH:mm';
@@ -402,19 +403,24 @@ export default function CarCard({
   }, [form.deadline, routeSet]);
 
   return (
-    <div className="modal-backdrop" onClick={closeCard}>
-      <div className="modal cc-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop cc-backdrop" onClick={closeCard}>
+      <div
+        className="modal cc-modal"
+        style={{ '--sc': isEdit ? STATUS_COLORS[overall] : 'var(--color-primary)' }}
+        onClick={(e) => e.stopPropagation()}
+      >
         <div className="cc-header">
           <div className="cc-header-main">
-            <span className="cc-header-icon">🚗</span>
             <div className="cc-header-text">
+              <div className="cc-doc-label">{isEdit ? (job.order_number ? `Заказ-наряд №${job.order_number}` : 'Заказ-наряд') : 'Новый заказ'}</div>
               <h3 className="cc-title">{isEdit ? (job.car_model || 'Без модели') : 'Новый автомобиль'}</h3>
               <div className="cc-header-meta">
                 {isEdit ? (
                   <>
                     {job.plate_number && <span className="cc-plate">{job.plate_number}</span>}
-                    <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>
-                    {isInsurance(form) && form.insurer_name && <span className="cc-insurer-chip">🛡 {form.insurer_name}</span>}
+                    {job.client_name && <span className="cc-header-client">{job.client_name}</span>}
+                    {job.client_phone && <span className="cc-header-phone">{job.client_phone}</span>}
+                    {isInsurance(form) && form.insurer_name && <span className="cc-insurer-chip"><Icon name="shield" size={12} /> {form.insurer_name}</span>}
                   </>
                 ) : (
                   <span className="cc-header-sub">Заполните данные — машина появится в графике</span>
@@ -422,7 +428,10 @@ export default function CarCard({
               </div>
             </div>
           </div>
-          <button className="cc-close" onClick={closeCard} aria-label="Закрыть">✕</button>
+          <div className="cc-header-right">
+            {isEdit && <span className="cc-status-pill" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>}
+            <button className="cc-close" onClick={closeCard} aria-label="Закрыть"><Icon name="x" size={18} strokeWidth={2} /></button>
+          </div>
         </div>
 
         <div className="cc-body">
@@ -719,11 +728,11 @@ export default function CarCard({
         <div className="cc-footer">
           {isEdit ? (
             <>
-              <button className="danger" onClick={onRemove}>🗑 Удалить</button>
+              <button className="danger cc-btn-ico" onClick={onRemove}><Icon name="trash" size={15} />Удалить</button>
               <div className="cc-footer-actions">
-                <button onClick={openDocs}>📄 Документы</button>
-                <button onClick={openCosting}>💰 Себестоимость</button>
-                {routeSet.length > 0 && <button onClick={finalize}>✓ Завершить</button>}
+                <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
+                <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>
+                {routeSet.length > 0 && <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>}
                 <button className="primary" disabled={savingInfo || !dirtyInfo} onClick={saveInfo}>
                   {savingInfo ? 'Сохраняем…' : dirtyInfo ? 'Сохранить' : 'Сохранено'}
                 </button>

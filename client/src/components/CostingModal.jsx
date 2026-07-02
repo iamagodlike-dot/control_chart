@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { money, uid } from '../orderDoc';
 import { buildCosting, computeCosting } from '../costing';
+import Icon from './Icon';
 
 // Internal repair-cost / profit editor for one car. Reads the latest заказ-наряд
 // to seed works & parts (no double entry), lets the shop fill purchase prices,
@@ -108,8 +109,8 @@ export default function CostingModal({ job, onClose, onSaved }) {
       <div className="modal modal-wide costing-modal" onClick={(e) => e.stopPropagation()}>
         <div className="cc-header">
           <div className="cc-header-main">
-            <span className="cc-header-icon">💰</span>
             <div className="cc-header-text">
+              <div className="cc-doc-label">Себестоимость</div>
               <h3 className="cc-title">Себестоимость ремонта</h3>
               <div className="cc-header-meta">
                 <span className="cc-header-sub">
@@ -118,7 +119,7 @@ export default function CostingModal({ job, onClose, onSaved }) {
               </div>
             </div>
           </div>
-          <button className="cc-close" onClick={onClose} aria-label="Закрыть">✕</button>
+          <button className="cc-close" onClick={onClose} aria-label="Закрыть"><Icon name="x" size={18} strokeWidth={2} /></button>
         </div>
 
         {loading || !costing || !totals ? (

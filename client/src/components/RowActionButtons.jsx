@@ -1,6 +1,7 @@
-// Clear, labelled row actions shared by the Gantt car list and the History list,
-// replacing the old bare "📄" / "✓" icon buttons. Inline-styled (app theme vars)
-// so they need no shared CSS. Both stop row-click propagation.
+// Clear, labelled row actions shared by the Gantt car list and the History list.
+// Line icons (no emoji) + inline styles (app theme vars) so they need no shared CSS.
+// Both stop row-click propagation.
+import Icon from './Icon';
 
 const baseStyle = {
   display: 'inline-flex', alignItems: 'center', gap: 5,
@@ -25,7 +26,7 @@ export function DocsButton({ onClick, title }) {
       title={title || 'Заказ-наряд · акты · счёт'}
       onClick={(e) => { e.stopPropagation(); onClick(e); }}
     >
-      📄 Документы
+      <Icon name="file" size={14} />Документы
     </button>
   );
 }
@@ -38,7 +39,7 @@ export function FinishButton({ onClick, title, label = 'Завершить' }) {
       title={title || 'Завершить и убрать в историю'}
       onClick={(e) => { e.stopPropagation(); onClick(e); }}
     >
-      ✓ {label}
+      <Icon name="check" size={14} strokeWidth={2} />{label}
     </button>
   );
 }
