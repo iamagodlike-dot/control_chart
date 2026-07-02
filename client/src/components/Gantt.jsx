@@ -4,6 +4,7 @@ import { api } from '../api';
 import { isInsurance } from '../insurance';
 import DocumentsModal from './DocumentsModal';
 import CarCard from './CarCard';
+import DateTimeField from './DateTimeField';
 import { DocsButton, FinishButton } from './RowActionButtons';
 
 const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
@@ -404,10 +405,14 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   }
 
   async function addNextStage(fromStage) {
-    const jobStages = stages.filter((s) => s.job_id === fromStage.job_id);
+    // Read fresh so we chain after the latest saved end (e.g. the stage editor
+    // may have just persisted a new end via "Сохранить и добавить следующий").
+    const fresh = await api.gantt();
+    const jobStages = fresh.stages.filter((s) => s.job_id === fromStage.job_id);
+    if (!jobStages.length) return null;
     const last = jobStages.reduce((max, s) => (s.sequence > max.sequence ? s : max), jobStages[0]);
-    const postIdx = posts.findIndex((p) => p.id === last.post_id);
-    const nextPost = posts[postIdx + 1] || posts[postIdx] || posts[0];
+    const postIdx = fresh.posts.findIndex((p) => p.id === last.post_id);
+    const nextPost = fresh.posts[postIdx + 1] || fresh.posts[postIdx] || fresh.posts[0];
     const start = dayjs(last.end_at);
     const newStage = await api.stages.create(fromStage.job_id, {
       post_id: nextPost.id,
@@ -892,7 +897,7 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                       return (
                         <div
                           key={s.id}
-                          className={`gantt-bar${isFocused ? ' is-focused' : ''}${isDimmed ? ' is-dimmed' : ''}${conflicts ? ' has-conflict' : ''}${dragLocked ? ' is-locked' : ''}${isDragging ? ' is-dragging' : ''}`}
+                          className={`gantt-bar${isFocused ? ' is-focused' : ''}${isDimmed ? ' is-dimmed' : ''}${conflicts ? ' has-conflict' : ''}${dragLocked ? ' is-locked' : ''}${isDragging ? ' is-dragging' : ''}${isOvertimeHour(hourOf(s.start_at), workHourStart, workHourEnd) ? ' is-ot-start' : ''}${isOvertimeHour(hourOf(s.end_at), workHourStart, workHourEnd) ? ' is-ot-end' : ''}`}
                           draggable={!dragLocked}
                           onDragStart={(e) => e.dataTransfer.setData('stageId', String(s.id))}
                           style={{ left: x, width, top, height: LANE_HEIGHT, background: STATUS_COLORS[status] || '#888' }}
@@ -921,12 +926,6 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
                             </div>
                           )}
                           {conflicts && <span className="conflict-flag">⚠</span>}
-                          {isOvertimeHour(hourOf(s.start_at), workHourStart, workHourEnd) && (
-                            <span className="gantt-bar-overtime left">⏱</span>
-                          )}
-                          {isOvertimeHour(hourOf(s.end_at), workHourStart, workHourEnd) && (
-                            <span className="gantt-bar-overtime right">⏱</span>
-                          )}
                           <div className="gantt-bar-content">
                             <span className="gantt-bar-label">{rowMode === 'job' ? (posts.find((p) => p.id === s.post_id)?.name || s.car_model) : s.car_model}</span>
                             {width > 90 && (
@@ -998,15 +997,18 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
           stage={selectedStage}
           posts={posts}
           masters={masters}
+          allStages={stages}
+          now={now}
           onClose={() => setSelectedStage(null)}
           onSaved={(patch) => {
             patchStage(selectedStage.id, patch);
             setSelectedStage(null);
           }}
           onDeleted={async () => { await api.stages.remove(selectedStage.id); setSelectedStage(null); load(); }}
-          onAddNext={async () => {
-            const created = await addNextStage(selectedStage);
-            setSelectedStage(created);
+          onAddNext={async (patch) => {
+            if (patch) await patchStage(selectedStage.id, patch);
+            const created = await addNextStage({ ...selectedStage, ...(patch || {}) });
+            if (created) setSelectedStage(created);
           }}
           onOpenCar={async () => {
             const job = await api.jobs.get(selectedStage.job_id);
@@ -1085,71 +1087,169 @@ export default function Gantt({ openJobId, onOpenJobHandled }) {
   );
 }
 
-function StageEditor({ stage, posts, masters, onClose, onSaved, onDeleted, onAddNext, onOpenCar }) {
+const SE_FMT = 'YYYY-MM-DDTHH:mm';
+const SE_DURATIONS = [1, 2, 3, 4, 6, 8];
+
+function StageEditor({ stage, posts, masters, allStages = [], now, onClose, onSaved, onDeleted, onAddNext, onOpenCar }) {
   const [adding, setAdding] = useState(false);
   const [form, setForm] = useState({
     post_id: stage.post_id,
     master_id: stage.master_id || '',
     status: stage.status,
-    start_at: dayjs(stage.start_at).format('YYYY-MM-DDTHH:mm'),
-    end_at: dayjs(stage.end_at).format('YYYY-MM-DDTHH:mm'),
+    start_at: dayjs(stage.start_at).format(SE_FMT),
+    end_at: dayjs(stage.end_at).format(SE_FMT),
   });
+
+  const start = dayjs(form.start_at);
+  const end = dayjs(form.end_at);
+  const durationMin = start.isValid() && end.isValid() ? end.diff(start, 'minute') : NaN;
+  const invalid = !form.start_at || !form.end_at || !(durationMin > 0);
+  const nowD = now || dayjs();
+  const badgeStatus = form.status === 'done'
+    ? 'done'
+    : (end.isValid() && end.isBefore(nowD) ? 'delayed' : form.status);
+  const durText = durationMin > 0
+    ? `${Math.floor(durationMin / 60)} ч${durationMin % 60 ? ` ${durationMin % 60} мин` : ''}`
+    : '—';
+
+  // Moving the start keeps the stage's length (end follows), so scheduling is one
+  // action; editing the end (input or a duration chip) sets a new length.
+  function setStart(v) {
+    setForm((f) => {
+      const dur = dayjs(f.end_at).diff(dayjs(f.start_at), 'minute');
+      const ns = dayjs(v);
+      const ne = ns.isValid() ? ns.add(dur > 0 ? dur : 240, 'minute') : null;
+      return { ...f, start_at: v, end_at: ne ? ne.format(SE_FMT) : f.end_at };
+    });
+  }
+  function setEnd(v) { setForm((f) => ({ ...f, end_at: v })); }
+  function setDuration(h) {
+    setForm((f) => {
+      const s = dayjs(f.start_at);
+      if (!s.isValid()) return f; // no valid start → don't write "Invalid Date" into end
+      return { ...f, end_at: s.add(h, 'hour').format(SE_FMT) };
+    });
+  }
+  function startNow() {
+    setForm((f) => {
+      const dur = dayjs(f.end_at).diff(dayjs(f.start_at), 'minute');
+      const n = roundTo15(dayjs());
+      return { ...f, start_at: n.format(SE_FMT), end_at: n.add(dur > 0 ? dur : 240, 'minute').format(SE_FMT) };
+    });
+  }
+
+  const conflicts = invalid ? [] : allStages.filter((o) =>
+    o.id !== stage.id && o.status !== 'done'
+    && (o.post_id === form.post_id || (form.master_id && o.master_id === form.master_id))
+    && overlaps(start, end, dayjs(o.start_at), dayjs(o.end_at)),
+  );
+  const conflictText = conflicts
+    .map((c) => `${c.car_model || 'машина'}${c.post_id === form.post_id ? ' (тот же пост)' : ' (тот же мастер)'}`)
+    .join(', ');
+
+  function buildPatch() {
+    return {
+      post_id: form.post_id,
+      master_id: form.master_id || null,
+      status: form.status,
+      start_at: dayjs(form.start_at).toISOString(),
+      end_at: dayjs(form.end_at).toISOString(),
+    };
+  }
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal stage-editor" onClick={(e) => e.stopPropagation()}>
-        <div className="stage-editor-header">
-          <h3>{stage.car_model} {stage.plate_number ? `(${stage.plate_number})` : ''}</h3>
-          <button className="stage-editor-car-link" onClick={onOpenCar}>Карточка машины →</button>
+      <div className="modal cc-modal is-narrow" onClick={(e) => e.stopPropagation()}>
+        <div className="cc-header">
+          <div className="cc-header-main">
+            <span className="cc-header-icon">🔧</span>
+            <div className="cc-header-text">
+              <h3 className="cc-title">{stage.car_model || 'Этап'}</h3>
+              <div className="cc-header-meta">
+                {stage.plate_number && <span className="cc-plate">{stage.plate_number}</span>}
+                <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[badgeStatus] }}>{STATUS_LABELS[badgeStatus]}</span>
+                <button className="cc-linkbtn" onClick={onOpenCar}>Карточка машины →</button>
+              </div>
+            </div>
+          </div>
+          <button className="cc-close" onClick={onClose} aria-label="Закрыть">✕</button>
         </div>
 
-        <div className="stage-editor-grid">
-          <label>Пост
-            <select value={form.post_id} onChange={(e) => setForm({ ...form, post_id: e.target.value })}>
-              {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-            </select>
-          </label>
-          <label>Мастер
-            <select value={form.master_id} onChange={(e) => setForm({ ...form, master_id: e.target.value || '' })}>
-              <option value="">— не назначен —</option>
-              {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-            </select>
-          </label>
-          <label>Статус
-            <select value={form.status} onChange={(e) => setForm({ ...form, status: e.target.value })}>
-              {Object.entries(STATUS_LABELS).filter(([k]) => k !== 'queued').map(([k, l]) => <option key={k} value={k}>{l}</option>)}
-            </select>
-          </label>
-          <label>Начало
-            <input type="datetime-local" value={form.start_at} onChange={(e) => setForm({ ...form, start_at: e.target.value })} />
-          </label>
-          <label>Конец
-            <input type="datetime-local" value={form.end_at} onChange={(e) => setForm({ ...form, end_at: e.target.value })} />
-          </label>
+        <div className="cc-body">
+          <div className="cc-field full">
+            <span>Статус</span>
+            <div className="seg">
+              {['planned', 'in_progress', 'done'].map((k) => (
+                <button
+                  key={k}
+                  type="button"
+                  className={`seg-btn${form.status === k ? ' active' : ''}`}
+                  style={form.status === k ? { background: STATUS_COLORS[k] } : undefined}
+                  onClick={() => setForm({ ...form, status: k })}
+                >
+                  {STATUS_LABELS[k]}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div className="cc-grid">
+            <label className="cc-field">
+              <span>Пост</span>
+              <select value={form.post_id} onChange={(e) => setForm({ ...form, post_id: e.target.value })}>
+                {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+              </select>
+            </label>
+            <label className="cc-field">
+              <span>Мастер</span>
+              <select value={form.master_id} onChange={(e) => setForm({ ...form, master_id: e.target.value })}>
+                <option value="">— не назначен —</option>
+                {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+              </select>
+            </label>
+            <label className="cc-field">
+              <span>Начало</span>
+              <DateTimeField value={form.start_at} onChange={setStart} />
+            </label>
+            <label className="cc-field">
+              <span>Конец</span>
+              <DateTimeField value={form.end_at} onChange={setEnd} />
+            </label>
+          </div>
+
+          <div className="se-quick">
+            <button type="button" className="dur-chip" onClick={startNow}>🕒 Сейчас</button>
+            <span className="se-dur-label">Длительность: <b>{durText}</b></span>
+            {SE_DURATIONS.map((h) => (
+              <button
+                key={h}
+                type="button"
+                className={`dur-chip${durationMin === h * 60 ? ' active' : ''}`}
+                onClick={() => setDuration(h)}
+              >
+                {h} ч
+              </button>
+            ))}
+          </div>
+
+          {invalid && <div className="se-warn err">⚠ Конец раньше начала — поправьте время (или задайте длительность кнопками)</div>}
+          {!invalid && conflicts.length > 0 && <div className="se-warn">⚠ Пересекается: {conflictText}</div>}
+
+          <button
+            className="cc-add-stage"
+            disabled={adding || invalid}
+            onClick={async () => { setAdding(true); try { await onAddNext(buildPatch()); } finally { setAdding(false); } }}
+          >
+            {adding ? 'Добавляем…' : '＋ Сохранить и добавить этап в конец маршрута'}
+          </button>
+          <div className="se-hint">Сохранит этот этап и добавит новый в конец маршрута.</div>
         </div>
 
-        <button
-          className="add-next-stage"
-          disabled={adding}
-          onClick={async () => {
-            setAdding(true);
-            try { await onAddNext(); } finally { setAdding(false); }
-          }}
-        >
-          + Добавить следующий этап маршрута {adding ? '…' : ''}
-        </button>
-        <p className="add-next-hint">Несохранённые изменения этого этапа нужно сохранить отдельно — кнопка добавляет этап после последнего сохранённого в маршруте.</p>
-        <div className="modal-actions">
-          <button className="danger" onClick={onDeleted}>Удалить этап</button>
-          <div>
+        <div className="cc-footer">
+          <button className="danger" onClick={() => { if (window.confirm('Удалить этот этап?')) onDeleted(); }}>🗑 Удалить</button>
+          <div className="cc-footer-actions">
             <button onClick={onClose}>Отмена</button>
-            <button className="primary" onClick={() => onSaved({
-              post_id: form.post_id,
-              master_id: form.master_id || null,
-              status: form.status,
-              start_at: dayjs(form.start_at).toISOString(),
-              end_at: dayjs(form.end_at).toISOString(),
-            })}>Сохранить</button>
+            <button className="primary" disabled={invalid} onClick={() => onSaved(buildPatch())}>Сохранить</button>
           </div>
         </div>
       </div>

@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import { api } from '../api';
 import { parseAudatexPdf } from '../audatexParse';
 import OrderDocument from './OrderDocument';
+import DateTimeField from './DateTimeField';
 import {
   buildOrderSnapshot, computeOrderTotals, uid, money, lineTotal, formatDocDate,
   DEFAULT_WARRANTY, DEFAULT_CONSENT,
@@ -26,6 +27,7 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [savedToCar, setSavedToCar] = useState(false);
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState('');
   const [extractInfo, setExtractInfo] = useState('');
@@ -83,6 +85,31 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
   function patchGroup(group, fields) {
     setSnapshot((s) => ({ ...s, [group]: { ...s[group], ...fields } }));
     setSaved(false);
+    setSavedToCar(false);
+  }
+
+  // Push the document's vehicle + client data back onto the car (opt-in — the
+  // document is isolated by default). Only non-empty fields overwrite the card.
+  async function saveToCar() {
+    if (!job?.id) return;
+    const veh = snapshot.vehicle || {};
+    const cust = snapshot.customer || {};
+    const upd = {};
+    if (veh.car_model) upd.car_model = veh.car_model;
+    if (veh.plate_number) upd.plate_number = veh.plate_number;
+    if (veh.vin) upd.vin = veh.vin;
+    if (veh.year) upd.year = veh.year;
+    if (veh.mileage) upd.mileage = veh.mileage;
+    if (cust.name) upd.client_name = cust.name;
+    if (cust.phone) upd.client_phone = cust.phone;
+    if (!Object.keys(upd).length) return;
+    if (!window.confirm('Обновить данные машины в карточке данными из документа? Заполненные поля перезапишут карточку.')) return;
+    try {
+      await api.jobs.update(job.id, upd);
+      setSavedToCar(true);
+    } catch {
+      alert('Не удалось обновить карточку машины.');
+    }
   }
 
   function addService() {
@@ -212,10 +239,10 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
               <input value={snapshot.doc_number} onChange={(e) => patch({ doc_number: e.target.value })} />
             </label>
             <label className="oe-field">Дата составления
-              <input type="date" value={snapshot.doc_date} onChange={(e) => patch({ doc_date: e.target.value })} />
+              <DateTimeField mode="date" value={snapshot.doc_date} onChange={(v) => patch({ doc_date: v })} />
             </label>
             <label className="oe-field oe-full">Плановая готовность (необязательно)
-              <input type="date" value={snapshot.planned_ready_at} onChange={(e) => patch({ planned_ready_at: e.target.value })} />
+              <DateTimeField mode="date" value={snapshot.planned_ready_at} onChange={(v) => patch({ planned_ready_at: v })} />
             </label>
           </div>
         </div>
@@ -390,7 +417,9 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
         <button onClick={onClose}>Закрыть</button>
         <div>
           {saveError && <span className="login-error">{saveError}</span>}
+          {savedToCar && <span className="oe-saved">Карточка обновлена ✓</span>}
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
+          <button onClick={saveToCar} title="Перенести марку, гос. номер, VIN, пробег и клиента в карточку машины">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
           <button className="primary" onClick={() => window.print()}>🖨 Печать</button>
         </div>

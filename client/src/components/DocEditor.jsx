@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import QRCode from 'qrcode';
 import { api } from '../api';
 import DocSheet from './DocSheet';
+import DateTimeField from './DateTimeField';
 import {
   buildActSnapshot, buildInvoiceSnapshot, buildHandoverSnapshot, pickSeedItems,
   computeDocTotals, buildPaymentQrString, qrIsComplete, uid, money, lineTotal,
@@ -29,6 +30,7 @@ export default function DocEditor({ type, job, company, onClose }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const [savedToCar, setSavedToCar] = useState(false);
   const [scale, setScale] = useState(0.6);
   const [history, setHistory] = useState([]);
   const [qrDataUrl, setQrDataUrl] = useState('');
@@ -90,7 +92,30 @@ export default function DocEditor({ type, job, company, onClose }) {
   }, [isInvoice, snapshot]);
 
   function patch(fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, ...fields })); setSaved(false); }
-  function patchGroup(group, fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, [group]: { ...s[group], ...fields } })); setSaved(false); }
+  function patchGroup(group, fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, [group]: { ...s[group], ...fields } })); setSaved(false); setSavedToCar(false); }
+
+  // Opt-in: push the document's vehicle + client data back onto the car card.
+  async function saveToCar() {
+    if (!job?.id) return;
+    const veh = snapshot.vehicle || {};
+    const cust = snapshot.customer || {};
+    const upd = {};
+    if (veh.car_model) upd.car_model = veh.car_model;
+    if (veh.plate_number) upd.plate_number = veh.plate_number;
+    if (veh.vin) upd.vin = veh.vin;
+    if (veh.year) upd.year = veh.year;
+    if (veh.mileage) upd.mileage = veh.mileage;
+    if (cust.name) upd.client_name = cust.name;
+    if (cust.phone) upd.client_phone = cust.phone;
+    if (!Object.keys(upd).length) return;
+    if (!window.confirm('Обновить данные машины в карточке данными из документа? Заполненные поля перезапишут карточку.')) return;
+    try {
+      await api.jobs.update(job.id, upd);
+      setSavedToCar(true);
+    } catch {
+      alert('Не удалось обновить карточку машины.');
+    }
+  }
   function patchBank(fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, company: { ...s.company, bank: { ...(s.company.bank || {}), ...fields } } })); setSaved(false); }
 
   function addService() { patch({ services: [...(snapshot.services || []), { id: uid(), name: '', qty: 1, price: 0 }] }); }
@@ -160,7 +185,7 @@ export default function DocEditor({ type, job, company, onClose }) {
                 <input value={snapshot.doc_number} onChange={(e) => patch({ doc_number: e.target.value })} />
               </label>
               <label className="oe-field">Дата
-                <input type="date" value={snapshot.doc_date} onChange={(e) => patch({ doc_date: e.target.value })} />
+                <DateTimeField mode="date" value={snapshot.doc_date} onChange={(v) => patch({ doc_date: v })} />
               </label>
               {hasItems && (
                 <label className="oe-field oe-full">Основание — заказ-наряд №
@@ -421,7 +446,9 @@ export default function DocEditor({ type, job, company, onClose }) {
         <button onClick={onClose}>Закрыть</button>
         <div>
           {saveError && <span className="login-error">{saveError}</span>}
+          {savedToCar && <span className="oe-saved">Карточка обновлена ✓</span>}
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
+          <button onClick={saveToCar} title="Перенести марку, гос. номер, VIN, пробег и клиента в карточку машины">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
           <button className="primary" onClick={() => window.print()}>🖨 Печать</button>
         </div>
