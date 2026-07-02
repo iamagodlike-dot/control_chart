@@ -210,7 +210,9 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
   const [jobs, setJobs] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [masters, setMasters] = useState([]);
-  const [rangeStart, setRangeStart] = useState(dayjs().startOf('day'));
+  // Start one day earlier so "now" always has lead-in context (yesterday's tail)
+  // before it, instead of being jammed to the left edge in the early morning.
+  const [rangeStart, setRangeStart] = useState(dayjs().subtract(1, 'day').startOf('day'));
   const [days, setDays] = useState(tv ? 3 : 7);
   const [rowMode, setRowMode] = useState('post'); // 'post' | 'master'
   const [zoomIndex, setZoomIndex] = useState(tv ? 3 : DEFAULT_ZOOM_INDEX);
@@ -616,6 +618,24 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
     el.scrollLeft = Math.max(0, LABEL_WIDTH + nowX - el.clientWidth / 2);
   }, [tv, loading, nowX, days, zoomIndex, rowMode]);
 
+  // Normal mode: on first load and on layout changes (view/zoom/date), scroll so
+  // "now" sits ~28% from the left — leaving a lead-in of recent time BEFORE it,
+  // instead of jamming the now-line against the edge. Keyed on structural changes
+  // only (NOT on `now`), so it re-positions once and never fights manual scroll.
+  useEffect(() => {
+    if (tv || loading || !showNowLine) return undefined;
+    const apply = () => {
+      const el = scrollRef.current;
+      if (!el) return;
+      const nx = dateToX(now, rangeStart, hourWidth, workHourStart, workHourEnd);
+      el.scrollLeft = Math.max(0, LABEL_WIDTH + nx - el.clientWidth * 0.28);
+    };
+    const raf = requestAnimationFrame(apply);
+    const t = setTimeout(apply, 160); // re-apply after live-update churn settles on first load
+    return () => { cancelAnimationFrame(raf); clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tv, loading, days, zoomIndex, rowMode, rangeStart]);
+
   const rowTops = useMemo(() => {
     let y = HEADER_HEIGHT;
     return rows.map((row, i) => {
@@ -869,7 +889,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
             <strong>{rangeStart.format('DD.MM')} — {rangeStart.add(days - 1, 'day').format('DD.MM')}</strong>
             <button onClick={() => setRangeStart((d) => d.add(1, 'day'))} title="Следующий день">▶</button>
             <span className="date-nav-sep" />
-            <button onClick={() => setRangeStart(dayjs().startOf('day'))}>Сегодня</button>
+            <button onClick={() => setRangeStart(dayjs().subtract(1, 'day').startOf('day'))}>Сегодня</button>
             <span className="date-nav-sep" />
             <select value={days} onChange={(e) => setDays(Number(e.target.value))}>
               <option value={3}>3 дня</option>
@@ -1090,7 +1110,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
             })}
 
             {showNowLine && (
-              <div className="gantt-now-line" style={{ left: LABEL_WIDTH + nowX, height: gridHeight }}>
+              <div className="gantt-now-line" style={{ left: LABEL_WIDTH + nowX, top: HEADER_HEIGHT, height: gridHeight - HEADER_HEIGHT }}>
                 <span className="gantt-now-label">{now.format('HH:mm')}</span>
               </div>
             )}
