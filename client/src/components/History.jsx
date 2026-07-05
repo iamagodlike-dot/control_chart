@@ -3,6 +3,7 @@ import dayjs from 'dayjs';
 import { api } from '../api';
 import { money, computeDocTotals } from '../orderDoc';
 import { isInsurance } from '../insurance';
+import { STATUS_COLORS, STATUS_LABELS } from './Gantt';
 import DocumentsModal from './DocumentsModal';
 import { DocsButton } from './RowActionButtons';
 import '../history.css';
@@ -66,7 +67,7 @@ export default function History() {
     const makePaid = !jobPaid(id);
     try {
       await Promise.all(arr.map((i) => api.orderDocuments.setPaid(i.id, makePaid)));
-    } catch { /* сеть/правила — просто перечитаем актуальное состояние ниже */ }
+    } catch { alert('Не удалось сохранить отметку оплаты. Проверьте соединение и попробуйте ещё раз.'); }
     loadDocs();
   }
 
@@ -150,9 +151,14 @@ export default function History() {
               {isInsurance(j) && j.insurer_name && <div className="job-item-insurer">{j.insurer_name}{j.claim_number ? ` · убыток ${j.claim_number}` : ''}</div>}
               {j.archived_at && <div className="history-item-date">Завершён {dayjs(j.archived_at).format('DD.MM.YYYY HH:mm')}</div>}
               <div className="history-item-stages">
-                {j.stages.map((s) => (
-                  <span key={s.id} className="history-stage-chip">{s.post_name || 'Пост'}: {s.status}</span>
-                ))}
+                {j.stages.map((s) => {
+                  const c = STATUS_COLORS[s.status] || 'var(--color-text-muted)';
+                  return (
+                    <span key={s.id} className="history-stage-chip" style={{ color: c, borderColor: `color-mix(in srgb, ${c} 45%, transparent)`, background: `color-mix(in srgb, ${c} 12%, transparent)` }}>
+                      {s.post_name || 'Пост'} · {STATUS_LABELS[s.status] || s.status}
+                    </span>
+                  );
+                })}
               </div>
             </div>
           );

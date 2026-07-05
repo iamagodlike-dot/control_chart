@@ -74,6 +74,10 @@ function round1(n) { return Math.round((Number(n) || 0) * 10) / 10; }
 // The one aggregate the whole «Финансы» screen reads.
 export function computeFinance({ jobs = [], invoices = [], transactions = [], company = {}, period = 'all', now = dayjs() } = {}) {
   const range = periodRange(period, now);
+  // Ignore invoices whose car no longer exists (deleted) so a stale счёт can't
+  // resurrect a phantom «Долг клиентов». Standalone invoices (no job_id) are kept.
+  const jobIdSet = new Set(jobs.map((j) => j.id));
+  invoices = invoices.filter((i) => !i.job_id || jobIdSet.has(i.job_id));
 
   // ---- Прибыль от ремонтов (по машинам с заполненной себестоимостью) ----
   const jobsWithCosting = jobs.filter((j) => j.costing);
@@ -136,12 +140,26 @@ export function computeFinance({ jobs = [], invoices = [], transactions = [], co
     bucket.byCategory.set(t.category || 'Прочее', (bucket.byCategory.get(t.category || 'Прочее') || 0) + amount);
   }
 
-  const net = repairs.profit - expenses.total + otherIncome.total;
+  // ---- НДС к уплате (ориентир, только для ОСН) ----
+  // Прибыль от ремонтов считается от выручки С НДС, поэтому на ОСН её нужно
+  // уменьшить на НДС к уплате. Точный НДС требует разметки «с/без НДС» по каждой
+  // строке затрат, которой нет; поэтому это ОЦЕНКА по добавленной стоимости:
+  // (выручка − закупка запчастей − материалы) × 20/120 (входящий НДС по закупкам
+  // идёт к вычету, зарплата НДС не облагается).
+  const vatMode = company.vat_mode === 'vat20' ? 'vat20' : 'none';
+  const vatBase = Math.max(0, repairs.revenue - repairs.parts - repairs.materials);
+  const vatPayable = vatMode === 'vat20' ? round1(vatBase * 20 / 120) : 0;
+
+  const net = repairs.profit - expenses.total + otherIncome.total - vatPayable;
 
   // ---- Касса (счета): за период + общий долг (снимок, не за период) ----
-  const invInPeriod = invoices.filter((i) => inRange(invoiceTs(i), range));
-  const billed = invInPeriod.reduce((s, i) => s + invoiceAmount(i), 0);
-  const paid = invInPeriod.filter((i) => i.paid).reduce((s, i) => s + invoiceAmount(i), 0);
+  // «Выставлено» атрибутируется по дате счёта (created_at), «оплачено» — по дате
+  // оплаты (paid_at). Раздельно: иначе отметка старого счёта оплаченным задним
+  // числом «переносила» его выручку из прошлого периода в текущий.
+  const billedInv = invoices.filter((i) => inRange(num(i.created_at, 0), range));
+  const paidInv = invoices.filter((i) => i.paid && inRange(num(i.paid_at, 0) || num(i.created_at, 0), range));
+  const billed = billedInv.reduce((s, i) => s + invoiceAmount(i), 0);
+  const paid = paidInv.reduce((s, i) => s + invoiceAmount(i), 0);
   const outstanding = invoices.filter((i) => !i.paid).reduce((s, i) => s + invoiceAmount(i), 0);
   const outstandingCount = invoices.filter((i) => !i.paid).length;
 
@@ -155,7 +173,8 @@ export function computeFinance({ jobs = [], invoices = [], transactions = [], co
     expenses: { total: expenses.total, byCategory: toSortedArr(expenses.byCategory) },
     otherIncome: { total: otherIncome.total, byCategory: toSortedArr(otherIncome.byCategory) },
     net,
-    cash: { billed, paid, outstanding, outstandingCount, count: invInPeriod.length },
+    vat: { mode: vatMode, payable: vatPayable },
+    cash: { billed, paid, outstanding, outstandingCount, count: billedInv.length },
     byPayment: toSortedArr(payMap, (k) => PAYMENT_SHORT[k] || k),
     byInsurer: toSortedArr(insurerMap, (k) => k),
     payroll: toSortedArr(payrollMap).filter((p) => p.amount > 0),
@@ -178,6 +197,9 @@ export function confirmedPrepayment(job = {}) {
 export function computeCashFlow({ jobs = [], invoices = [], transactions = [], period = 'all', now = dayjs() } = {}) {
   const range = periodRange(period, now);
   const jobsById = new Map(jobs.map((j) => [j.id, j]));
+  // Drop invoices whose car was deleted (see computeFinance) — keeps the лента and
+  // «Долг» free of phantom rows for cars that no longer exist.
+  invoices = invoices.filter((i) => !i.job_id || jobsById.has(i.job_id));
   const carLabel = (j) => [j?.car_model, j?.plate_number].filter(Boolean).join(' · ') || 'Машина';
   const events = [];
 
@@ -275,6 +297,7 @@ export function buildFinanceCsv(fin, periodLabel = '', cash = null) {
     ['Рентабельность, %', fin.repairs.margin],
     ['Прочие расходы', money(fin.expenses.total)],
     ['Прочие доходы', money(fin.otherIncome.total)],
+    ...(fin.vat?.payable > 0 ? [['НДС к уплате (ориентир)', money(fin.vat.payable)]] : []),
     ['ЧИСТАЯ ПРИБЫЛЬ', money(fin.net)],
     [],
     ['Долг клиентов (неоплачено, всего)', money(cash ? cash.outstanding : fin.cash.outstanding)],

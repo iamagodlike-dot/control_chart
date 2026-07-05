@@ -134,7 +134,7 @@ export default function Finance() {
     const makePaid = !(arr.length > 0 && arr.every((i) => i.paid));
     try {
       await Promise.all(arr.map((i) => api.orderDocuments.setPaid(i.id, makePaid)));
-    } catch { /* сеть/правила — перечитаем актуальное ниже */ }
+    } catch { alert('Не удалось сохранить отметку оплаты. Проверьте соединение и попробуйте ещё раз.'); }
     loadDocs();
   }
 
@@ -150,7 +150,7 @@ export default function Finance() {
         await api.jobs.update(j.id, { prepayment_paid: true, prepayment_paid_at: Date.now(), prepayment_paid_amount: prepayAgreed });
       }
       loadJobs();
-    } catch { /* сеть/правила */ }
+    } catch { alert('Не удалось сохранить отметку предоплаты. Проверьте соединение и попробуйте ещё раз.'); }
   }
 
   async function openCosting(id) { setCostingJob(await api.jobs.get(id)); }

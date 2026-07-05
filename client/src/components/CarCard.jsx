@@ -53,6 +53,16 @@ function blankStage(posts, existing) {
   };
 }
 
+// Visual completion of a stage for the route progress bar: done = 100, planned = 0,
+// in-progress/delayed = the elapsed share of the stage's own time window.
+function progressOf(startAt, endAt, status, now) {
+  if (status === 'done') return 100;
+  if (status !== 'in_progress' && status !== 'delayed') return 0;
+  const total = dayjs(endAt).diff(dayjs(startAt), 'minute');
+  if (total <= 0) return status === 'delayed' ? 100 : 0;
+  return Math.max(0, Math.min(100, Math.round(now.diff(dayjs(startAt), 'minute') / total * 100)));
+}
+
 /**
  * One screen for both adding a car (mode="create") and viewing/editing a car
  * (mode="edit"). Same layout, same route editor — the only differences are the
@@ -69,6 +79,8 @@ export default function CarCard({
     car_model: job?.car_model || '',
     plate_number: job?.plate_number || '',
     vin: job?.vin || '',
+    mileage: job?.mileage || '',
+    color: job?.color || '',
     client_name: job?.client_name || '',
     client_phone: job?.client_phone || '',
     order_number: job?.order_number || '',
@@ -176,13 +188,7 @@ export default function CarCard({
         if (!next.order_number && data.meta?.number) next.order_number = data.meta.number;
         if (!next.claim_number && data.meta?.number) next.claim_number = data.meta.number;
         if (!next.vin && v.vin) next.vin = v.vin;
-        const extra = [];
-        if (v.mileage) extra.push(`Пробег: ${v.mileage} км`);
-        if (extra.length) {
-          const line = extra.join(' · ');
-          if (!next.notes) next.notes = line;
-          else if (!next.notes.includes('Пробег')) next.notes = `${next.notes}\n${line}`;
-        }
+        if (!next.mileage && v.mileage) next.mileage = String(v.mileage);
         return next;
       });
       setDirtyInfo(true);
@@ -198,8 +204,10 @@ export default function CarCard({
       if (Number(data.meta?.discount) > 0) bits.push(`скидка: ${Number(data.meta.discount).toLocaleString('ru-RU')} ₽`);
       if (data.meta?.repair_total > 0) bits.push(`итог: ${Number(data.meta.repair_total).toLocaleString('ru-RU')} ₽`);
       setExtractInfo(`Распознано — ${bits.join(' · ')}`);
-    } catch {
-      setExtractError('Не удалось прочитать файл. Проверьте, что это PDF из Audatex.');
+    } catch (err) {
+      console.error('Ошибка импорта Audatex:', err);
+      const detail = err?.message ? ` (${err.message})` : '';
+      setExtractError(`Не удалось прочитать файл${detail}. Проверьте, что это PDF из Audatex.`);
     } finally {
       setExtracting(false);
     }
@@ -316,6 +324,20 @@ export default function CarCard({
   async function finalize() { await flushOpenRow(); onFinalize(); }
 
   async function saveInfo() {
+    // Changing the payer after documents were issued: the счёт/акт/заказ-наряд froze
+    // the old payer and won't auto-update, while Финансы re-attribute by the live
+    // field — warn so the two don't silently disagree.
+    const payerChanged = isEdit && (
+      form.payment_type !== (job.payment_type || 'cash') ||
+      (form.insurer_name || '') !== (job.insurer_name || '')
+    );
+    if (payerChanged) {
+      try {
+        const id = job?.id || job?.job_id;
+        const docs = id ? await api.orderDocuments.listByJob(id) : [];
+        if (docs.length && !window.confirm('По машине уже выпущены документы (счёт/акт/заказ-наряд) с прежним плательщиком — они не изменятся сами. Сохранить новый тип оплаты? Документы при необходимости переоформите в «Документы».')) return;
+      } catch { /* не удалось проверить документы — не блокируем сохранение */ }
+    }
     setSavingInfo(true);
     try {
       await onSaveInfo({
@@ -337,6 +359,8 @@ export default function CarCard({
         car_model: form.car_model,
         plate_number: form.plate_number,
         vin: form.vin,
+        mileage: form.mileage || null,
+        color: form.color || null,
         client_name: form.client_name,
         client_phone: form.client_phone,
         order_number: form.order_number,
@@ -384,7 +408,7 @@ export default function CarCard({
     if (!hasInvoice || !id) return;
     const makePaid = !allPaid;
     setPayBusy(true);
-    try { await Promise.all(invoices.map((i) => api.orderDocuments.setPaid(i.id, makePaid))); } catch { /* сеть/правила */ }
+    try { await Promise.all(invoices.map((i) => api.orderDocuments.setPaid(i.id, makePaid))); } catch { alert('Не удалось сохранить отметку оплаты. Проверьте соединение и попробуйте ещё раз.'); }
     try { setInvoices(await api.orderDocuments.listByJob(id, 'invoice')); } catch { /* ignore */ }
     setPayBusy(false);
   }
@@ -401,6 +425,28 @@ export default function CarCard({
     const lastEnd = ends.reduce((m, d) => (d.isAfter(m) ? d : m), ends[0]);
     return lastEnd.isAfter(dayjs(form.deadline)) ? lastEnd : null;
   }, [form.deadline, routeSet]);
+
+  // Read-only summaries + a derived event journal (edit mode). Works/parts are the
+  // ones saved on the job; the journal is synthesised from the route (we don't store
+  // per-event timestamps) so its times are the stages' scheduled ones.
+  const works = isEdit ? (job?.services || []) : [];
+  const jobParts = isEdit ? (job?.parts || []) : [];
+  const worksSum = works.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
+  const journal = useMemo(() => {
+    if (!isEdit) return [];
+    const ev = [];
+    if (job?.created_at) ev.push({ t: job.created_at, text: 'Заказ-наряд создан', color: 'var(--color-primary)' });
+    [...(job?.stages || [])]
+      .sort((a, b) => (a.start_at > b.start_at ? 1 : -1))
+      .forEach((s, i) => {
+        const post = posts.find((p) => p.id === s.post_id);
+        const nm = post?.name || `Этап ${i + 1}`;
+        if (s.status === 'done') ev.push({ t: s.end_at, text: `${nm} — этап завершён`, color: STATUS_COLORS.done });
+        else if (s.status === 'in_progress') ev.push({ t: s.start_at, text: `${nm} — в работе`, color: STATUS_COLORS.in_progress });
+        else ev.push({ t: s.start_at, text: `${nm} — запланирован`, color: STATUS_COLORS.planned, planned: true });
+      });
+    return ev.sort((a, b) => dayjs(a.t).valueOf() - dayjs(b.t).valueOf());
+  }, [isEdit, job, posts]);
 
   return (
     <div className="modal-backdrop cc-backdrop" onClick={closeCard}>
@@ -435,6 +481,19 @@ export default function CarCard({
         </div>
 
         <div className="cc-body">
+          {isEdit && (
+            <div className="cc-spec">
+              <SpecItem label="VIN" value={form.vin} />
+              <SpecItem label="Пробег" value={form.mileage ? `${form.mileage} км` : ''} />
+              <SpecItem label="Цвет" value={form.color} />
+              <div className="cc-spec-item">
+                <span className="cc-spec-label">Дедлайн</span>
+                <span className={`cc-spec-value${!form.deadline ? ' is-empty' : (dlState === 'missed' || dlState === 'at-risk') ? ' is-risk' : ''}`}>
+                  {form.deadline ? dayjs(form.deadline).format('DD.MM.YY HH:mm') : '—'}
+                </span>
+              </div>
+            </div>
+          )}
           {isEdit && hasInvoice && (
             <div
               style={{
@@ -444,16 +503,19 @@ export default function CarCard({
                 border: `1px solid var(${allPaid ? '--color-success' : '--color-danger'})`,
               }}
             >
-              <div>
-                <div style={{ fontSize: 12, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}>
-                  {allPaid ? 'Счёт оплачен' : 'Счёт не оплачен'}
-                </div>
-                <div style={{ fontSize: 20, fontWeight: 800, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}>
-                  {allPaid ? 'Оплачено' : 'Не оплачено'} · {fmtMoney(invAmount)}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
+                <span className="cc-pay-shield" style={{ background: `color-mix(in srgb, var(${allPaid ? '--color-success' : '--color-danger'}) 16%, transparent)`, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}><Icon name="shield" size={18} /></span>
+                <div>
+                  <div style={{ fontSize: 12, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}>
+                    {allPaid ? 'Счёт оплачен' : 'Счёт не оплачен'}
+                  </div>
+                  <div style={{ fontSize: 20, fontWeight: 800, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}>
+                    {allPaid ? 'Оплачено' : 'Не оплачено'} · {fmtMoney(invAmount)}
+                  </div>
                 </div>
               </div>
-              <button className={allPaid ? '' : 'primary'} disabled={payBusy} onClick={togglePaid}>
-                {payBusy ? '…' : (allPaid ? 'Отменить оплату' : '✓ Отметить оплату')}
+              <button className={allPaid ? '' : 'primary'} disabled={payBusy} onClick={togglePaid} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                {payBusy ? '…' : (allPaid ? 'Отменить оплату' : <><Icon name="check" size={14} strokeWidth={2} />Отметить оплату</>)}
               </button>
             </div>
           )}
@@ -464,12 +526,12 @@ export default function CarCard({
             <div className="cc-audatex">
               <div className="cc-audatex-row">
                 <label className={`audatex-upload-btn${extracting ? ' is-busy' : ''}`}>
-                  {extracting ? 'Распознаём…' : '📎 Импорт из Audatex (PDF)'}
+                  {extracting ? 'Распознаём…' : <><Icon name="file" size={14} /> Импорт из Audatex (PDF)</>}
                   <input type="file" accept="application/pdf" onChange={handleAudatexUpload} disabled={extracting} hidden />
                 </label>
                 <span className="cc-audatex-hint">Подгрузит марку, гос. номер, VIN, пробег, № дела и смету в заказ-наряд</span>
               </div>
-              {extractInfo && <div className="cc-audatex-ok">✓ {extractInfo}</div>}
+              {extractInfo && <div className="cc-audatex-ok"><Icon name="check" size={13} strokeWidth={2} /> {extractInfo}</div>}
               {extractError && <div className="cc-audatex-err">{extractError}</div>}
             </div>
           )}
@@ -492,6 +554,14 @@ export default function CarCard({
               <label className="cc-field full">
                 <span>VIN</span>
                 <input placeholder="напр. LB37622Z0NX012345" value={form.vin} onChange={(e) => patchForm({ vin: e.target.value })} />
+              </label>
+              <label className="cc-field">
+                <span>Пробег, км</span>
+                <input placeholder="напр. 84000" value={form.mileage} onChange={(e) => patchForm({ mileage: e.target.value })} />
+              </label>
+              <label className="cc-field">
+                <span>Цвет</span>
+                <input placeholder="напр. чёрный / 1G3" value={form.color} onChange={(e) => patchForm({ color: e.target.value })} />
               </label>
               <label className="cc-field">
                 <span>Клиент</span>
@@ -517,8 +587,8 @@ export default function CarCard({
               </label>
               <div className="cc-field full">
                 <span>Ячейки склада</span>
-                <button type="button" className="cc-cell-btn" onClick={() => setPickerOpen(true)}>
-                  {form.cell_ids.length ? `📦 ${form.cell_ids.join(', ')} — изменить` : '📦 Выбрать ячейки'}
+                <button type="button" className="cc-cell-btn" onClick={() => setPickerOpen(true)} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name="box" size={14} />{form.cell_ids.length ? `${form.cell_ids.join(', ')} — изменить` : 'Выбрать ячейки'}
                 </button>
               </div>
             </div>
@@ -527,13 +597,13 @@ export default function CarCard({
             )}
             {isEdit && job.deadline && dlState && (
               <div className={`cc-deadline is-${dlState}`}>
-                {dlState === 'missed' && '⚠ Дедлайн просрочен'}
-                {dlState === 'at-risk' && '⚠ Маршрут не укладывается в дедлайн'}
-                {dlState === 'ok' && '✓ Укладывается в дедлайн'}
+                {dlState === 'missed' && <><Icon name="warning" size={13} /> Дедлайн просрочен</>}
+                {dlState === 'at-risk' && <><Icon name="warning" size={13} /> Маршрут не укладывается в дедлайн</>}
+                {dlState === 'ok' && <><Icon name="check" size={13} strokeWidth={2} /> Укладывается в дедлайн</>}
               </div>
             )}
             {!isEdit && deadlineWarn && (
-              <div className="deadline-warning">⚠ Последний этап заканчивается {deadlineWarn.format('DD.MM HH:mm')} — позже дедлайна {dayjs(form.deadline).format('DD.MM HH:mm')}</div>
+              <div className="deadline-warning"><Icon name="warning" size={13} /> Последний этап заканчивается {deadlineWarn.format('DD.MM HH:mm')} — позже дедлайна {dayjs(form.deadline).format('DD.MM HH:mm')}</div>
             )}
           </section>
 
@@ -586,7 +656,7 @@ export default function CarCard({
               <button type="button" className="cc-imported-head" onClick={() => setImportedOpen((o) => !o)}>
                 <span className="cc-section-icon">🧾</span>Распознанные позиции
                 <span className="cc-imported-count">работ {imported.services.length} · запчастей {imported.parts.length}</span>
-                <span className="cc-imported-chevron">{importedOpen ? '▾' : '▸'}</span>
+                <span className="cc-imported-chevron"><Icon name={importedOpen ? 'chevron-down' : 'chevron-right'} size={13} /></span>
               </button>
               {importedOpen && (
                 <div className="cc-imported-body">
@@ -642,6 +712,7 @@ export default function CarCard({
                 const post = posts.find((p) => p.id === s.post_id);
                 const master = masters.find((m) => m.id === s.master_id);
                 const status = effectiveStatus({ start_at: s.start_at, end_at: s.end_at, status: s.status }, now);
+                const pct = progressOf(s.start_at, s.end_at, status, now);
                 const expanded = editIdx === i;
                 return (
                   <div key={s.id || `draft-${i}`} className={`cc-stage${expanded ? ' is-editing' : ''}`}>
@@ -691,6 +762,10 @@ export default function CarCard({
                           <div className="cc-stage-sub">
                             {dayjs(s.start_at).format('DD.MM HH:mm')} — {dayjs(s.end_at).format('DD.MM HH:mm')}{master ? ` · ${master.name}` : ''}
                           </div>
+                          <div className="cc-stage-progress">
+                            <div className="cc-stage-progress-bar"><i style={{ width: `${pct}%`, background: STATUS_COLORS[status] }} /></div>
+                            <span className="cc-stage-pct">{pct}%</span>
+                          </div>
                         </div>
                         <span className="job-status-badge" style={{ '--badge-color': STATUS_COLORS[status] }}>{STATUS_LABELS[status]}</span>
                         {(() => {
@@ -723,6 +798,76 @@ export default function CarCard({
               </>
             )}
           </section>
+
+          {isEdit && works.length > 0 && (
+            <section className="cc-section">
+              <div className="cc-section-head"><span className="cc-section-icon" />Работы<span className="cc-section-hint">{works.length} поз.</span></div>
+              <div className="cc-sum-list">
+                {works.map((s, i) => (
+                  <div className="cc-sum-row" key={`w-${i}`}>
+                    <span className="cc-sum-ico"><Icon name="wrench" size={15} /></span>
+                    <span className="cc-sum-name">{s.name || '—'}</span>
+                    {Number(s.qty) > 1 && <span className="cc-sum-qty">{s.qty} ×</span>}
+                    <span className="cc-sum-val">{fmtMoney((Number(s.price) || 0) * (Number(s.qty) || 1))}</span>
+                  </div>
+                ))}
+              </div>
+              <div className="cc-sum-total"><span>Итого работ</span><b>{fmtMoney(worksSum)}</b></div>
+            </section>
+          )}
+
+          {isEdit && (jobParts.length > 0 || invoices.length > 0) && (
+            <section className="cc-section">
+              <div className="cc-section-head"><span className="cc-section-icon" />Запчасти и документы</div>
+              <div className="cc-2col">
+                <div>
+                  <div className="cc-section-subhead">Запчасти</div>
+                  {jobParts.length ? (
+                    <div className="cc-sum-list">
+                      {jobParts.map((p, i) => (
+                        <div className="cc-sum-row" key={`p-${i}`}>
+                          <span className="cc-sum-ico"><Icon name="box" size={15} /></span>
+                          <span className="cc-sum-name">{p.name || '—'}{p.code ? ` · ${p.code}` : ''}</span>
+                          <span className="cc-sum-qty">{p.qty ?? 1} шт.</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div className="cc-hint" style={{ marginTop: 0 }}>Не указаны</div>}
+                </div>
+                <div>
+                  <div className="cc-section-subhead">Документы</div>
+                  {invoices.length ? (
+                    <div className="cc-sum-list">
+                      {invoices.map((inv) => (
+                        <div className="cc-sum-row" key={inv.id} style={{ cursor: 'pointer' }} onClick={openDocs}>
+                          <span className="cc-sum-ico"><Icon name="file" size={15} /></span>
+                          <span className="cc-sum-name">Счёт{inv.number ? ` №${inv.number}` : ''}</span>
+                          <span className="cc-doc-pill" style={{ background: `color-mix(in srgb, var(${inv.paid ? '--color-success' : '--color-warning'}) 16%, transparent)`, color: `var(${inv.paid ? '--color-success' : '--color-warning'})` }}>{inv.paid ? 'Оплачен' : 'Не оплачен'}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : <div className="cc-hint" style={{ marginTop: 0 }}>Счёт не выставлен</div>}
+                </div>
+              </div>
+            </section>
+          )}
+
+          {isEdit && journal.length > 0 && (
+            <section className="cc-section">
+              <div className="cc-section-head"><span className="cc-section-icon" />Журнал</div>
+              <div className="cc-journal">
+                {journal.map((e, i) => (
+                  <div className="cc-journal-item" key={`j-${i}`}>
+                    <span className="cc-journal-dot" style={{ background: e.color }} />
+                    <div className="cc-journal-body">
+                      <span className="cc-journal-time">{dayjs(e.t).format('DD.MM.YY HH:mm')}{e.planned ? ' · план' : ''}</span>
+                      <span className="cc-journal-text">{e.text}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </div>
 
         <div className="cc-footer">
@@ -741,7 +886,7 @@ export default function CarCard({
           ) : (
             <>
               <span className="cc-footer-hint">
-                {routeSet.length ? '✓ Маршрут задан — встанет в график' : 'Без маршрута — попадёт в список ожидания'}
+                {routeSet.length ? <><Icon name="check" size={13} strokeWidth={2} /> Маршрут задан — встанет в график</> : 'Без маршрута — попадёт в список ожидания'}
               </span>
               <div className="cc-footer-actions">
                 <button onClick={onClose}>Отмена</button>
@@ -869,6 +1014,16 @@ function RoutePreview({ posts, draftStages, existingStages, deadline, highlightS
         </div>
       </div>
       <div className="route-preview-hint">Серые блоки — занято другими машинами, синие — этапы этого заказа, красные — конфликт по времени</div>
+    </div>
+  );
+}
+
+// One cell of the header spec-strip (VIN · Пробег · Цвет · Дедлайн).
+function SpecItem({ label, value }) {
+  return (
+    <div className="cc-spec-item">
+      <span className="cc-spec-label">{label}</span>
+      <span className={`cc-spec-value${value ? '' : ' is-empty'}`}>{value || '—'}</span>
     </div>
   );
 }

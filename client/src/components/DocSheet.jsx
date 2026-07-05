@@ -1,4 +1,5 @@
 import { computeDocTotals, money, lineTotal, formatDocDate } from '../orderDoc';
+import { numberToWordsRu } from '../rubleWords';
 
 // Presentational A4 sheet for акт выполненных работ / акт приёма-передачи / счёт.
 // Renders purely from a snapshot (never fetches, never mutates). Reuses the
@@ -285,12 +286,14 @@ function InvoiceSheet({ snapshot, qrDataUrl }) {
           {t.discount > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Скидка:</td><td className="zn-c-sum">− {money(t.discount)}</td></tr>}
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>Итого:</td><td className="zn-c-sum">{money(t.total)}</td></tr>
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>{t.vat_mode === 'vat20' ? 'В том числе НДС 20%:' : 'НДС:'}</td><td className="zn-c-sum">{t.vat_mode === 'vat20' ? money2(t.vat_amount) : 'Без НДС'}</td></tr>
+          {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Предоплата:</td><td className="zn-c-sum">− {money(t.prepayment)}</td></tr>}
+          {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>К доплате:</td><td className="zn-c-sum" style={{ fontWeight: 700 }}>{money(t.due)}</td></tr>}
         </tfoot>
       </table>
 
       <div className="zn-invoice-total">
-        Всего наименований {items.length}, на сумму <b>{money(t.total)}</b>
-        <div className="zn-words">{t.total_words}</div>
+        Всего наименований {items.length}, {t.prepayment > 0 ? <>к доплате <b>{money(t.due)}</b></> : <>на сумму <b>{money(t.total)}</b></>}
+        <div className="zn-words">{numberToWordsRu(t.prepayment > 0 ? t.due : t.total)}</div>
       </div>
 
       {snapshot.show_qr && qrDataUrl && (

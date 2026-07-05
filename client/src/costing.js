@@ -68,15 +68,22 @@ function seedLabor(job = {}, masters = []) {
 export function buildCosting(job = {}, docs = [], masters = [], prev = null) {
   const src = pickCostingSource(job, docs);
 
-  // Map previously-entered purchase prices by a stable key (code first, then name).
-  const prevCostByKey = new Map();
+  // Previously-entered purchase prices, keyed by code (else name). Parts that share a
+  // key — a blank code with an identical name, or a repeated article — are matched
+  // positionally through a FIFO queue, so several same-named rows keep their distinct
+  // costs instead of every one collapsing onto the last-seen value.
+  const prevCostQueues = new Map();
   for (const p of prev?.parts || []) {
     const key = (p.code || '').trim() || (p.name || '').trim().toLowerCase();
-    if (key) prevCostByKey.set(key, num(p.cost, 0));
+    if (!key) continue;
+    if (!prevCostQueues.has(key)) prevCostQueues.set(key, []);
+    prevCostQueues.get(key).push(num(p.cost, 0));
   }
 
   const parts = (src.parts || []).map((p) => {
     const key = (p.code || '').trim() || (p.name || '').trim().toLowerCase();
+    const q = prevCostQueues.get(key);
+    const cost = q && q.length ? q.shift() : 0;     // закупочная цена (вводит пользователь)
     return {
       id: uid(),
       code: p.code || '',
@@ -84,7 +91,7 @@ export function buildCosting(job = {}, docs = [], masters = [], prev = null) {
       qty: num(p.qty, 1),
       unit: p.unit || 'шт.',
       price: num(p.price, 0),                       // цена продажи (из ЗН, не редактируется)
-      cost: prevCostByKey.get(key) ?? 0,            // закупочная цена (вводит пользователь)
+      cost,
     };
   });
 
@@ -116,8 +123,11 @@ export function computeCosting(costing = {}, settings = {}) {
   const discount = num(costing.discount, 0);
   const revenue = Math.max(0, services_sum + parts_sale - discount);
 
-  const materials_pct = num(settings.materials_pct, DEFAULT_MATERIALS_PCT);
-  const overhead_pct = num(settings.overhead_pct, DEFAULT_OVERHEAD_PCT);
+  // Prefer the percentages frozen onto this car's costing (snapshotted at save time)
+  // so changing the global setting never retroactively re-computes closed jobs. Older
+  // costings that predate the snapshot fall back to the current global settings.
+  const materials_pct = num(costing.materials_pct != null ? costing.materials_pct : settings.materials_pct, DEFAULT_MATERIALS_PCT);
+  const overhead_pct = num(costing.overhead_pct != null ? costing.overhead_pct : settings.overhead_pct, DEFAULT_OVERHEAD_PCT);
 
   const parts_cost = round2((costing.parts || []).reduce((s, p) => s + num(p.qty, 0) * num(p.cost, 0), 0));
   const labor_cost = round2((costing.labor || []).reduce((s, l) => s + num(l.amount, 0), 0));

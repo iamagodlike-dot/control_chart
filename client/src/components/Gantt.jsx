@@ -445,6 +445,16 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
     if (overall !== 'done') {
       if (!window.confirm('Не все этапы завершены. Всё равно завершить заказ и убрать его в историю?')) return;
     }
+    // Warn before archiving a car that still has an unpaid счёт — otherwise its debt
+    // lingers in Финансы with no car to open on the active screens.
+    try {
+      const invs = await api.orderDocuments.listByJob(job.job_id, 'invoice');
+      const unpaid = invs.filter((i) => !i.paid);
+      if (unpaid.length) {
+        const sum = unpaid.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
+        if (!window.confirm(`По этой машине есть неоплаченный счёт${sum ? ` на ${sum.toLocaleString('ru-RU')} ₽` : ''}. Всё равно завершить заказ?`)) return;
+      }
+    } catch { /* если не удалось проверить счета — не блокируем завершение */ }
     if (selectedJobId === job.job_id) setSelectedJobId(null);
     const freedIds = api.warehouse.cellIds(job);
     await api.jobs.archive(job.job_id);
@@ -861,6 +871,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
       </aside>
 
       <div className="gantt">
+        <div className="gantt-watermark" aria-hidden="true"><div className="gantt-watermark-mark" /></div>
         {readOnly ? (
           <div className="gantt-toolbar gantt-toolbar--tv">
             <div className="tv-clock">
@@ -1157,9 +1168,13 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
             if (created) setSelectedStage(created);
           }}
           onOpenCar={async () => {
-            const job = await api.jobs.get(selectedStage.job_id);
+            // Go through refreshDetailJob so the job gets its `job_id` stamped —
+            // api.jobs.get returns only `id`, and every CarCard callback below
+            // reads detailJob.job_id (save/remove/finalize/docs/stages would all
+            // hit an undefined id otherwise).
+            const jobId = selectedStage.job_id;
             setSelectedStage(null);
-            setDetailJob(job);
+            await refreshDetailJob(jobId);
           }}
         />
       )}

@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import CompanySettings from './CompanySettings';
-import { iconFor } from '../postIcons';
+import Icon from './Icon';
 
 export default function PostsMasters() {
   const [posts, setPosts] = useState([]);
@@ -37,7 +37,12 @@ export default function PostsMasters() {
   }
 
   async function removePost(id) {
-    if (!confirm('Удалить пост? Все связанные этапы тоже будут удалены.')) return;
+    const used = await api.stages.listByPost(id).catch(() => []);
+    const active = used.filter((s) => s.status !== 'done').length;
+    const msg = used.length
+      ? `На этом посту запланировано этапов: ${used.length}${active ? ` (${active} ещё не завершены)` : ''}.\nОни будут удалены вместе с постом. Продолжить?`
+      : 'Удалить пост?';
+    if (!confirm(msg)) return;
     await api.posts.remove(id);
     load();
   }
@@ -80,7 +85,11 @@ export default function PostsMasters() {
   }
 
   async function removeMaster(id) {
-    if (!confirm('Удалить мастера?')) return;
+    const used = await api.stages.listByMaster(id).catch(() => []);
+    const msg = used.length
+      ? `Мастер назначен на этапов: ${used.length}. После удаления они останутся без мастера (не назначен). Удалить мастера?`
+      : 'Удалить мастера?';
+    if (!confirm(msg)) return;
     await api.masters.remove(id);
     load();
   }
@@ -178,7 +187,7 @@ export default function PostsMasters() {
                 ) : (
                   <>
                     <span className="drag-handle" title="Перетащите, чтобы изменить порядок">⠿</span>
-                    <span className="list-icon">{iconFor(p.name, '🅿️')}</span>
+                    <span className="list-icon list-icon--letter">{(p.name || '?').trim().charAt(0).toUpperCase()}</span>
                     <span className="list-label">{p.name}</span>
                     <span className="list-actions">
                       <button className="list-action-btn" title="Переименовать" onClick={() => startEditPost(p)}>✎</button>
@@ -235,7 +244,7 @@ export default function PostsMasters() {
                   </>
                 ) : (
                   <>
-                    <span className="list-icon">{iconFor(m.specialty, '👤')}</span>
+                    <span className="list-icon list-icon--letter">{(m.name || '?').trim().charAt(0).toUpperCase()}</span>
                     <span className="list-label">{m.name} {m.specialty ? <span className="list-sub">— {m.specialty}</span> : ''}</span>
                     <span className="list-actions">
                       <button className="list-action-btn" title="Редактировать" onClick={() => startEditMaster(m)}>✎</button>
@@ -283,7 +292,7 @@ export default function PostsMasters() {
                   </>
                 ) : (
                   <>
-                    <span className="list-icon">🛡️</span>
+                    <span className="list-icon"><Icon name="shield" size={15} /></span>
                     <span className="list-label">{x.name}</span>
                     <span className="list-actions">
                       <button className="list-action-btn" title="Переименовать" onClick={() => startEditInsurer(x)}>✎</button>

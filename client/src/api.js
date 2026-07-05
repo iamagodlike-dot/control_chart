@@ -1,6 +1,6 @@
 import {
   collection, doc, getDocs, getDoc, addDoc, updateDoc, deleteDoc, setDoc,
-  query, orderBy, where, writeBatch, onSnapshot,
+  query, orderBy, where, writeBatch, onSnapshot, runTransaction,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { DEFAULT_INSURERS } from './insurance';
@@ -99,8 +99,14 @@ export const api = {
       await updateDoc(doc(postsCol, id), stripUndefined(data));
       return withId(await getDoc(doc(postsCol, id)));
     },
+    // Deleting a post cascades its stages atomically — matching the confirm dialog's
+    // promise and preventing orphan stages that would vanish from the график.
     async remove(id) {
-      await deleteDoc(doc(postsCol, id));
+      const snap = await getDocs(query(stagesCol, where('post_id', '==', id)));
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => batch.delete(d.ref));
+      batch.delete(doc(postsCol, id));
+      await batch.commit();
       return { ok: true };
     },
   },
@@ -118,8 +124,14 @@ export const api = {
       await updateDoc(doc(mastersCol, id), stripUndefined(data));
       return withId(await getDoc(doc(mastersCol, id)));
     },
+    // Deleting a master unassigns them from their stages (the scheduled work stays,
+    // just «не назначен») instead of leaving a dangling master_id no one can resolve.
     async remove(id) {
-      await deleteDoc(doc(mastersCol, id));
+      const snap = await getDocs(query(stagesCol, where('master_id', '==', id)));
+      const batch = writeBatch(db);
+      snap.docs.forEach((d) => batch.update(d.ref, { master_id: null }));
+      batch.delete(doc(mastersCol, id));
+      await batch.commit();
       return { ok: true };
     },
   },
@@ -210,10 +222,17 @@ export const api = {
       job.stages = await stagesForJob(id);
       return job;
     },
+    // Delete a job with everything that belongs ONLY to it: its stages AND its
+    // issued documents (заказ-наряд/счёт/акт/ПП). Without the latter, an unpaid счёт
+    // would keep inflating «Долг клиентов» forever with no car to open. One batch.
     async remove(id) {
-      const snap = await getDocs(query(stagesCol, where('job_id', '==', id)));
+      const [stagesSnap, docsSnap] = await Promise.all([
+        getDocs(query(stagesCol, where('job_id', '==', id))),
+        getDocs(query(orderDocsCol, where('job_id', '==', id))),
+      ]);
       const batch = writeBatch(db);
-      snap.docs.forEach((d) => batch.delete(d.ref));
+      stagesSnap.docs.forEach((d) => batch.delete(d.ref));
+      docsSnap.docs.forEach((d) => batch.delete(d.ref));
       batch.delete(doc(jobsCol, id));
       await batch.commit();
       return { ok: true };
@@ -224,9 +243,66 @@ export const api = {
     async unarchive(id) {
       return api.jobs.update(id, { archived: false, archived_at: null });
     },
+
+    // Live list of active jobs — fires on any change from any device. Returns an
+    // unsubscribe fn. Used by the Запчасти screen so several users editing the
+    // same shop see each other's changes without a refresh.
+    subscribeActive(onData, onError = () => {}) {
+      return onSnapshot(jobsCol, (s) => onData(s.docs.map(withId).filter((j) => !j.archived)), onError);
+    },
+
+    // Concurrency-safe write of ONE part inside job.parts. A transaction re-reads
+    // the current array on the server and merges just this part by id, so two
+    // users editing the same car never clobber each other's parts (the old
+    // whole-array update did). Upserts: replaces the part if present, else appends.
+    async savePart(jobId, part) {
+      const ref = doc(jobsCol, jobId);
+      const clean = stripUndefined({ ...part, qty: Number(part.qty) || 1, cost: Number(part.cost) || 0, price: Number(part.price) || 0 });
+      const synced = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        const parts = (data.parts || []).slice();
+        const i = parts.findIndex((p) => p.id === part.id);
+        if (i >= 0) parts[i] = { ...parts[i], ...clean };
+        else parts.push(clean);
+        tx.update(ref, { parts });
+        return { id: jobId, ...data, parts };
+      });
+      // Keep any linked warehouse cell in step: cells hold a COPY of the car's
+      // parts, so every part edit must refresh them (else the Склад shows a stale list).
+      if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
+    },
+    // Remove ONE part by id (transaction — keeps every other part intact).
+    async removePart(jobId, partId) {
+      const ref = doc(jobsCol, jobId);
+      const synced = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        const parts = (data.parts || []).filter((p) => p.id !== partId);
+        tx.update(ref, { parts });
+        return { id: jobId, ...data, parts };
+      });
+      if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
+    },
+    // Paint is a single field (0..1 per car) — a plain field write is enough; it
+    // only ever contends paint-vs-paint, never the parts array.
+    async savePaint(jobId, paint) {
+      await updateDoc(doc(jobsCol, jobId), stripUndefined({ paint: paint ? { ...paint, cost: Number(paint.cost) || 0 } : null }));
+    },
   },
 
   stages: {
+    // Stages that reference a given post / master — used to warn before deleting one.
+    async listByPost(postId) {
+      const snap = await getDocs(query(stagesCol, where('post_id', '==', postId)));
+      return snap.docs.map(withId);
+    },
+    async listByMaster(masterId) {
+      const snap = await getDocs(query(stagesCol, where('master_id', '==', masterId)));
+      return snap.docs.map(withId);
+    },
     async create(jobId, data) {
       const ref = await addDoc(stagesCol, stripUndefined({
         job_id: jobId,
@@ -417,6 +493,21 @@ export const api = {
       const updated = { _archive: [...archive, { ...cell, freedAt: new Date().toLocaleDateString('ru-RU') }] };
       await setDoc(doc(cellsCol, id), updated);
       await api.warehouseLog.add('Освобождена', id, `${cell.car || '—'} · ${cell.orderNum || '—'}`);
+      // Also drop this cell from the linked job's cell list — otherwise the next
+      // save of that car re-opens the freed cell ("воскрешение"). Best-effort.
+      if (cell.job_id) {
+        try {
+          const jobSnap = await getDoc(doc(jobsCol, cell.job_id));
+          if (jobSnap.exists()) {
+            const jobData = { id: jobSnap.id, ...jobSnap.data() };
+            const cur = jobCellIds(jobData);
+            if (cur.includes(id)) {
+              const nextIds = cur.filter((cid) => cid !== id);
+              await updateDoc(doc(jobsCol, cell.job_id), { cell_ids: nextIds, cell_id: nextIds[0] || null });
+            }
+          }
+        } catch { /* unlink is best-effort; the cell is already freed */ }
+      }
       return updated;
     },
   },

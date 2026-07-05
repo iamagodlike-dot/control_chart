@@ -1,7 +1,11 @@
 import * as pdfjsLib from 'pdfjs-dist';
-import pdfjsWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url';
+// Load the pdf.js worker via Vite's `?worker` import so it's bundled as a real
+// .js chunk (not left as a raw .mjs). This makes the build independent of server
+// MIME config — an .mjs worker served as application/octet-stream by nginx used
+// to break the Audatex import in production (academyauto.ru).
+import PdfWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?worker';
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
+pdfjsLib.GlobalWorkerOptions.workerPort = new PdfWorker();
 
 // Audatex "РЕМОНТ-КАЛЬКУЛЯЦИЯ" is a strictly columnar report. We split each line
 // into columns by the X position of every text token (fractions of page width,

@@ -233,7 +233,10 @@ export function buildInvoiceSnapshot(job = {}, company = {}, seed = null) {
     services: mapServices(s.services),
     parts: mapParts(s.parts),
     discount: num(s.discount, 0),
-    prepayment: 0, // счёт — это счёт на полную сумму; предоплата из заказ-наряда сюда не переносится
+    // Предоплата переносится из заказ-наряда: в счёте печатаются строки «Предоплата»
+    // и «К доплате», чтобы клиент оплатил остаток, а не всю сумму повторно. Это же
+    // «к доплате» согласовано с кассой/долгом (computeCashFlow вычитает предоплату).
+    prepayment: num(s.prepayment, 0),
     vat_mode: company.vat_mode === 'vat20' ? 'vat20' : 'none',
     invoice_note: DEFAULT_INVOICE_NOTE,
     show_invoice_note: true,
@@ -280,8 +283,10 @@ export function buildPaymentQrString(snapshot = {}) {
   add('CorrespAcc', bank.corr_account);
   add('PayeeINN', c.inn);
   add('KPP', c.kpp);
-  // The счёт bills the full total; the QR must encode exactly what is printed.
-  const kopecks = Math.round((totals.total || 0) * 100);
+  // Encode the amount actually left to pay (к доплате = total − предоплата) so the
+  // client's banking app pre-fills exactly what the счёт prints as «К доплате».
+  const payable = totals.due != null ? totals.due : totals.total;
+  const kopecks = Math.round((payable || 0) * 100);
   if (kopecks > 0) add('Sum', String(kopecks));
   add('Purpose', `Оплата по счёту № ${snapshot.doc_number || ''} от ${formatDocDate(snapshot.doc_date)}`);
   return `ST00012|${fields.join('|')}`;

@@ -34,6 +34,7 @@ const PATHS = {
   car: <><path d="M19 17h2c.6 0 1-.4 1-1v-3c0-.9-.7-1.7-1.5-1.9L18.4 7.5A2 2 0 0 0 16.5 6h-9a2 2 0 0 0-1.9 1.4L4.5 11.1C3.7 11.3 3 12.1 3 13v3c0 .6.4 1 1 1h2" /><circle cx="7" cy="17" r="2" /><circle cx="17" cy="17" r="2" /></>,
   receipt: <path d="M4 2v20l2-1 2 1 2-1 2 1 2-1 2 1 2-1 2 1V2l-2 1-2-1-2 1-2-1-2 1-2-1-2 1-2-1ZM8 7h8M8 11h8M8 15h5" />,
   tv: <><rect x="2" y="7" width="20" height="13" rx="2" /><path d="m8 3 4 4 4-4" /></>,
+  wrench: <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76Z" />,
 };
 
 export default function Icon({ name, size = 16, strokeWidth = 1.7, className, style }) {

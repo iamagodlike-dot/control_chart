@@ -274,7 +274,7 @@ export default function DocEditor({ type, job, company, onClose }) {
                   <label className="oe-field">Скидка, ₽
                     <input type="number" min="0" value={snapshot.discount} onChange={(e) => patch({ discount: e.target.value })} />
                   </label>
-                  {isAct && (
+                  {(isAct || isInvoice) && (
                     <label className="oe-field">Предоплата, ₽
                       <input type="number" min="0" value={snapshot.prepayment} onChange={(e) => patch({ prepayment: e.target.value })} />
                     </label>
@@ -288,7 +288,12 @@ export default function DocEditor({ type, job, company, onClose }) {
                     </label>
                   )}
                 </div>
-                {totals && <div className="oe-hint">Итого: <b>{money(totals.total)}</b></div>}
+                {totals && (
+                  <div className="oe-hint">
+                    Итого: <b>{money(totals.total)}</b>
+                    {totals.prepayment > 0 && <> · Предоплата: {money(totals.prepayment)} · <b>К доплате: {money(totals.due)}</b></>}
+                  </div>
+                )}
               </div>
             </>
           )}

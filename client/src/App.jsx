@@ -5,6 +5,7 @@ import PostsBoard from './components/PostsBoard';
 import PostsMasters from './components/PostsMasters';
 import History from './components/History';
 import Finance from './components/Finance';
+import Parts from './components/Parts';
 import Logo from './components/Logo';
 import Icon from './components/Icon';
 import AuthGate from './components/AuthGate';
@@ -15,6 +16,7 @@ const TABS = [
   { id: 'gantt', label: 'График', icon: 'calendar' },
   { id: 'board', label: 'Загрузка', icon: 'chart' },
   { id: 'warehouse', label: 'Склад', icon: 'box' },
+  { id: 'parts', label: 'Запчасти', icon: 'wrench' },
   { id: 'finance', label: 'Финансы', icon: 'wallet' },
   { id: 'history', label: 'История', icon: 'history' },
 ];
@@ -150,6 +152,7 @@ function App() {
             )}
             {tab === 'board' && <PostsBoard />}
             {tab === 'warehouse' && <Warehouse onOpenJob={openJobFromWarehouse} />}
+            {tab === 'parts' && <Parts />}
             {tab === 'finance' && <Finance />}
             {tab === 'history' && <History />}
             {tab === 'config' && <PostsMasters />}

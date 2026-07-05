@@ -176,8 +176,10 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
       if (discount > 0) bits.push(`скидка: ${discount.toLocaleString('ru-RU')} ₽`);
       if (data.meta?.repair_total > 0) bits.push(`итог Audatex: ${Number(data.meta.repair_total).toLocaleString('ru-RU')} ₽`);
       setExtractInfo(`Распознано — ${bits.join(' · ')}`);
-    } catch {
-      setExtractError('Не удалось прочитать файл. Проверьте, что это PDF из Audatex.');
+    } catch (err) {
+      console.error('Ошибка импорта Audatex:', err);
+      const detail = err?.message ? ` (${err.message})` : '';
+      setExtractError(`Не удалось прочитать файл${detail}. Проверьте, что это PDF из Audatex.`);
     } finally {
       setExtracting(false);
     }

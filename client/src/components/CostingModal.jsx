@@ -47,6 +47,17 @@ export default function CostingModal({ job, onClose, onSaved }) {
 
   const totals = useMemo(() => (costing ? computeCosting(costing, settings) : null), [costing, settings]);
 
+  // Costing is seeded from the заказ-наряд once, then independent. If the order was
+  // edited later (its timestamp is newer than this saved costing), flag it as stale
+  // so the owner knows to press «Обновить из заказ-наряда» before trusting the profit.
+  const isStale = useMemo(() => {
+    if (!costing?.updated_at) return false;
+    const latestOrderTs = (latestDocs || [])
+      .filter((d) => d.type === 'order')
+      .reduce((mx, d) => Math.max(mx, d.updated_at || d.created_at || 0), 0);
+    return latestOrderTs > costing.updated_at;
+  }, [costing, latestDocs]);
+
   function patch(fields) {
     setCosting((c) => ({ ...c, ...fields }));
     setSaved(false);
@@ -88,6 +99,10 @@ export default function CostingModal({ job, onClose, onSaved }) {
         labor: costing.labor.map((l) => ({ ...l, amount: n(l.amount) })),
         materials: costing.materials == null ? null : n(costing.materials),
         overhead: costing.overhead == null ? null : n(costing.overhead),
+        // Freeze the auto-% at the moment of calculation, ONCE — so a later change to the
+        // global % never moves this car's numbers. Preserve an existing snapshot on re-save.
+        materials_pct: costing.materials_pct != null ? costing.materials_pct : Number(settings.materials_pct ?? 15),
+        overhead_pct: costing.overhead_pct != null ? costing.overhead_pct : Number(settings.overhead_pct ?? 0),
         updated_at: Date.now(),
       };
       await api.jobs.update(jobId, { costing: payload });
@@ -101,8 +116,10 @@ export default function CostingModal({ job, onClose, onSaved }) {
     }
   }
 
-  const materials_pct = Number(settings.materials_pct ?? 15);
-  const overhead_pct = Number(settings.overhead_pct ?? 0);
+  // Show this car's frozen % if it has one, else the current global — matches what
+  // computeCosting actually uses for the «(авто: X%)» hints.
+  const materials_pct = Number(costing?.materials_pct ?? settings.materials_pct ?? 15);
+  const overhead_pct = Number(costing?.overhead_pct ?? settings.overhead_pct ?? 0);
 
   return (
     <div className="modal-backdrop" onClick={onClose}>
@@ -139,6 +156,11 @@ export default function CostingModal({ job, onClose, onSaved }) {
                 <button className="small" onClick={reseedFromOrder}>↻ Обновить из заказ-наряда</button>
                 {reseeded && <span className="oe-saved">Обновлено ✓</span>}
               </div>
+              {isStale && !reseeded && (
+                <div className="cc-hint" style={{ marginTop: 8, color: 'var(--color-warning)', display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <Icon name="warning" size={13} /> Заказ-наряд менялся после этого расчёта — обновите, чтобы подтянуть свежие работы и запчасти.
+                </div>
+              )}
 
               {/* ЗАПЧАСТИ */}
               <section className="oe-section">

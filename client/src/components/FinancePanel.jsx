@@ -44,6 +44,7 @@ export default function FinancePanel({ fin, periodLabel }) {
         <div className="fin-hero-formula">
           прибыль с ремонтов {money(fin.repairs.profit)} − расходы {money(fin.expenses.total)}
           {fin.otherIncome.total > 0 ? ` + доходы ${money(fin.otherIncome.total)}` : ''}
+          {fin.vat?.payable > 0 ? ` − НДС ${money(fin.vat.payable)}` : ''}
         </div>
       </div>
 
@@ -72,6 +73,17 @@ export default function FinancePanel({ fin, periodLabel }) {
             <div className="hist-card-value">{money(fin.otherIncome.total)}</div>
           </div>
         )}
+        {fin.vat?.payable > 0 && (
+          <div className="hist-card hist-card-danger">
+            <div className="hist-card-label">НДС к уплате (ориентир)</div>
+            <div className="hist-card-value">{money(fin.vat.payable)}</div>
+            <div className="hist-card-sub">оценка для ОСН 20%, входящий НДС учтён приблизительно</div>
+          </div>
+        )}
+      </div>
+
+      <div style={{ fontSize: 12.5, color: 'var(--color-text-muted)', margin: '2px 2px 16px', lineHeight: 1.5 }}>
+        Прибыль считается только по машинам с заполненной себестоимостью ({fin.coverage.withCosting} за период). Оплаты и долги по счетам всех машин — во вкладке «Лента», поэтому цифры вкладок могут не совпадать.
       </div>
 
       <div className="fin-two-col">
