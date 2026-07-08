@@ -1,6 +1,7 @@
 import { Component, useEffect, useState } from 'react';
 import { api } from './api';
 import Gantt from './components/Gantt';
+import Approval from './components/Approval';
 import PostsBoard from './components/PostsBoard';
 import PostsMasters from './components/PostsMasters';
 import History from './components/History';
@@ -9,15 +10,24 @@ import Parts from './components/Parts';
 import Logo from './components/Logo';
 import Icon from './components/Icon';
 import AuthGate from './components/AuthGate';
+import RoleGate from './components/RoleGate';
 import Warehouse from './components/Warehouse';
+import PartsReceiving from './components/PartsReceiving';
+import MyExpenses from './components/MyExpenses';
+import StaffExpenses from './components/StaffExpenses';
+import { roleTabs, roleHome, roleLabel } from './roles';
 import './App.css';
 
 const TABS = [
+  { id: 'approval', label: 'Согласование', icon: 'shield' },
   { id: 'gantt', label: 'График', icon: 'calendar' },
   { id: 'board', label: 'Загрузка', icon: 'chart' },
   { id: 'warehouse', label: 'Склад', icon: 'box' },
   { id: 'parts', label: 'Запчасти', icon: 'wrench' },
+  { id: 'receiving', label: 'Приёмка', icon: 'box' },
+  { id: 'expenses', label: 'Мои траты', icon: 'receipt' },
   { id: 'finance', label: 'Финансы', icon: 'wallet' },
+  { id: 'staffexpenses', label: 'Траты', icon: 'receipt' },
   { id: 'history', label: 'История', icon: 'history' },
 ];
 
@@ -50,19 +60,7 @@ function App() {
   // Kiosk view for the shop's wall screen: ?tv=1 renders a clean, read-only,
   // self-updating График with no app chrome.
   const isTV = new URLSearchParams(window.location.search).get('tv') === '1';
-  // Deep link from a printed cell QR code (?cell=ID) should land straight on the warehouse tab.
-  const [tab, setTab] = useState(() => (new URLSearchParams(window.location.search).get('cell') ? 'warehouse' : 'gantt'));
-  const [openJobId, setOpenJobId] = useState(null);
 
-  function openJobFromWarehouse(jobId) {
-    setOpenJobId(jobId);
-    setTab('gantt');
-  }
-
-  function toggleFullscreen() {
-    if (document.fullscreenElement) document.exitFullscreen?.();
-    else document.documentElement.requestFullscreen?.();
-  }
   const [theme, setTheme] = useState(() => {
     const saved = localStorage.getItem('auto-academy-theme') || 'dark';
     document.documentElement.dataset.theme = saved;
@@ -91,75 +89,142 @@ function App() {
   return (
     <AuthGate>
       {({ user, signOut }) => (
-        <div className="app">
-          <SeedDefaults />
-          <header className="app-header">
-            <div className="app-brand">
-              <Logo size={38} />
-              <div className="app-brand-text">
-                <span className="app-brand-title">Авто Академия</span>
-                <span className="app-brand-subtitle">Кузовной ремонт — диспетчерская</span>
-              </div>
-            </div>
-            <nav className="tabs">
-              {TABS.map((t) => (
-                <button key={t.id} className={tab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
-                  <Icon name={t.icon} size={16} />{t.label}
-                </button>
-              ))}
-            </nav>
-            <div className="app-user">
-              <button
-                className={`icon-btn${tab === 'config' ? ' active' : ''}`}
-                onClick={() => setTab('config')}
-                title="Настройки — посты, мастера, страховые, реквизиты, экономика"
-              >
-                <Icon name="gear" size={17} />
-              </button>
-              <button className="icon-btn" onClick={toggleFullscreen} title="Полноэкранный режим">
-                <Icon name="maximize" size={17} />
-              </button>
-              <button
-                className="icon-btn"
-                onClick={() => window.open(`${window.location.pathname}?tv=1`, '_blank')}
-                title="Открыть режим для экрана в цехе (ТВ)"
-              >
-                <Icon name="tv" size={17} />
-              </button>
-              <button
-                className="icon-btn is-theme"
-                onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
-                title={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
-              >
-                <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
-              </button>
-              <div className="app-user-id">
-                <span className="app-user-avatar"><Icon name="user" size={17} /></span>
-                <span className="app-user-email">{user.email}</span>
-              </div>
-              <button className="app-logout" onClick={signOut}>
-                <Icon name="power" size={15} strokeWidth={1.8} />Выйти
-              </button>
-            </div>
-          </header>
-
-          <main className={`app-main${tab === 'gantt' ? ' app-main--flush' : ''}`}>
-            {tab === 'gantt' && (
-              <Gantt
-                openJobId={openJobId}
-                onOpenJobHandled={() => setOpenJobId(null)}
-              />
-            )}
-            {tab === 'board' && <PostsBoard />}
-            {tab === 'warehouse' && <Warehouse onOpenJob={openJobFromWarehouse} />}
-            {tab === 'parts' && <Parts />}
-            {tab === 'finance' && <Finance />}
-            {tab === 'history' && <History />}
-            {tab === 'config' && <PostsMasters />}
-          </main>
-        </div>
+        <RoleGate user={user} signOut={signOut}>
+          {({ role, profile }) => (
+            <Dispatcher
+              user={user}
+              signOut={signOut}
+              role={role}
+              profile={profile}
+              theme={theme}
+              setTheme={setTheme}
+            />
+          )}
+        </RoleGate>
       )}
     </AuthGate>
+  );
+}
+
+// The signed-in app, scoped to what the current role may see. Which tabs exist,
+// which one opens first, and whether the gear/ТВ buttons show are all derived
+// from `role` (see roles.js) — the owner gets everything, line staff get a
+// narrowed set. NOTE: this only hides UI; real data protection comes with the
+// per-role Firestore rules step.
+function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
+  const allowed = roleTabs(role);
+  const isOwner = role === 'owner';
+  const visibleTabs = TABS.filter((t) => allowed.includes(t.id));
+
+  // Deep link from a printed cell QR code (?cell=ID) should land on the склад
+  // tab — but only if this role may see it; otherwise fall back to the role's home.
+  const [tab, setTab] = useState(() => {
+    const cell = new URLSearchParams(window.location.search).get('cell');
+    const wanted = cell && allowed.includes('warehouse') ? 'warehouse' : roleHome(role);
+    return allowed.includes(wanted) ? wanted : allowed[0];
+  });
+  const [openJobId, setOpenJobId] = useState(null);
+  const [approvalCount, setApprovalCount] = useState(0);
+
+  // Guard against ever rendering a tab this role can't see (e.g. a stale value).
+  const effectiveTab = allowed.includes(tab) ? tab : (allowed.includes(roleHome(role)) ? roleHome(role) : allowed[0]);
+
+  // Open a car's detail card (CarCard) from any tab: remember which job and jump
+  // to the График tab — but only for roles that actually have it.
+  function openJobDetail(jobId) {
+    if (!allowed.includes('gantt')) return;
+    setOpenJobId(jobId);
+    setTab('gantt');
+  }
+
+  function toggleFullscreen() {
+    if (document.fullscreenElement) document.exitFullscreen?.();
+    else document.documentElement.requestFullscreen?.();
+  }
+
+  return (
+    <div className="app">
+      {isOwner && <SeedDefaults />}
+      {allowed.includes('approval') && <ApprovalCounter onCount={setApprovalCount} />}
+      <header className="app-header">
+        <div className="app-brand">
+          <Logo size={38} />
+          <div className="app-brand-text">
+            <span className="app-brand-title">Авто Академия</span>
+            <span className="app-brand-subtitle">Кузовной ремонт — диспетчерская</span>
+          </div>
+        </div>
+        {visibleTabs.length > 1 && (
+          <nav className="tabs">
+            {visibleTabs.map((t) => (
+              <button key={t.id} className={effectiveTab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
+                <Icon name={t.icon} size={16} />{t.label}
+                {t.id === 'approval' && approvalCount > 0 && (
+                  <span className="tab-badge">{approvalCount}</span>
+                )}
+              </button>
+            ))}
+          </nav>
+        )}
+        <div className="app-user">
+          {isOwner && (
+            <button
+              className={`icon-btn${effectiveTab === 'config' ? ' active' : ''}`}
+              onClick={() => setTab('config')}
+              title="Настройки — сотрудники, посты, мастера, страховые, реквизиты, экономика"
+            >
+              <Icon name="gear" size={17} />
+            </button>
+          )}
+          <button className="icon-btn icon-btn--hide-mobile" onClick={toggleFullscreen} title="Полноэкранный режим">
+            <Icon name="maximize" size={17} />
+          </button>
+          {isOwner && (
+            <button
+              className="icon-btn icon-btn--hide-mobile"
+              onClick={() => window.open(`${window.location.pathname}?tv=1`, '_blank')}
+              title="Открыть режим для экрана в цехе (ТВ)"
+            >
+              <Icon name="tv" size={17} />
+            </button>
+          )}
+          <button
+            className="icon-btn is-theme"
+            onClick={() => setTheme((t) => (t === 'dark' ? 'light' : 'dark'))}
+            title={theme === 'dark' ? 'Включить светлую тему' : 'Включить тёмную тему'}
+          >
+            <Icon name={theme === 'dark' ? 'sun' : 'moon'} size={17} />
+          </button>
+          <div className="app-user-id">
+            <span className="app-user-avatar"><Icon name="user" size={17} /></span>
+            <span className="app-user-email">{profile?.name || user.email}</span>
+            {!isOwner && <span className="app-user-role">{roleLabel(role)}</span>}
+          </div>
+          <button className="app-logout" onClick={signOut}>
+            <Icon name="power" size={15} strokeWidth={1.8} />Выйти
+          </button>
+        </div>
+      </header>
+
+      <main className={`app-main${effectiveTab === 'gantt' ? ' app-main--flush' : ''}`}>
+        {effectiveTab === 'gantt' && (
+          <Gantt
+            openJobId={openJobId}
+            onOpenJobHandled={() => setOpenJobId(null)}
+          />
+        )}
+        {effectiveTab === 'approval' && <Approval />}
+        {effectiveTab === 'board' && <PostsBoard />}
+        {effectiveTab === 'warehouse' && <Warehouse onOpenJob={openJobDetail} />}
+        {effectiveTab === 'parts' && <Parts />}
+        {effectiveTab === 'receiving' && <PartsReceiving />}
+        {effectiveTab === 'expenses' && <MyExpenses />}
+        {effectiveTab === 'finance' && <Finance />}
+        {effectiveTab === 'staffexpenses' && <StaffExpenses />}
+        {effectiveTab === 'history' && <History />}
+        {effectiveTab === 'config' && <PostsMasters />}
+      </main>
+    </div>
   );
 }
 
@@ -167,6 +232,16 @@ function App() {
 // rules allow the write). Runs regardless of which tab is open first.
 function SeedDefaults() {
   useEffect(() => { api.insurers.ensureSeeded().catch(() => {}); }, []);
+  return null;
+}
+
+// Live badge for the «Согласование» tab. Mounted inside <AuthGate>, so the
+// Firestore subscription starts only after sign-in (rules require auth).
+function ApprovalCounter({ onCount }) {
+  useEffect(() => {
+    const unsub = api.jobs.subscribeApproval((list) => onCount(list.length), () => {});
+    return () => unsub();
+  }, [onCount]);
   return null;
 }
 

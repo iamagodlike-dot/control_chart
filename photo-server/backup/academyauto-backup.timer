@@ -1,0 +1,11 @@
+[Unit]
+Description=Еженедельный бэкап фотографий Авто Академии
+
+[Timer]
+# Каждое воскресенье в 03:30. Persistent — если сервер был выключен в это время,
+# бэкап догонит при следующем включении.
+OnCalendar=Sun 03:30
+Persistent=true
+
+[Install]
+WantedBy=timers.target

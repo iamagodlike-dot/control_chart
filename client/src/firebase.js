@@ -2,7 +2,9 @@ import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
-const firebaseConfig = {
+// Exported so a throwaway secondary app instance (see staffAuth.js) can create
+// staff logins without disturbing the signed-in owner's session.
+export const firebaseConfig = {
   apiKey: 'AIzaSyCSgtcEIXZbyeF-pMK-1jmuRlPvl3gK7zA',
   authDomain: 'gannt-9b15d.firebaseapp.com',
   projectId: 'gannt-9b15d',

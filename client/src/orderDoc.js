@@ -1,4 +1,4 @@
-import { numberToWordsRu } from './rubleWords';
+import { numberToWordsRu } from './rubleWords.js';
 
 // Pure helpers for the заказ-наряд document. No React, no Firestore here.
 // The whole point: buildOrderSnapshot() makes a fully self-contained COPY of
@@ -22,6 +22,21 @@ export function lineTotal(item) {
   return num(item.qty, 0) * num(item.price, 0);
 }
 
+// ===== Автонумерация документов =====
+// Формат: ПРЕФИКС-ГОД-NNNN (напр. ЗН-2026-0007). У каждого типа документа — своя
+// годовая очередь; сам порядковый номер выдаёт атомарный счётчик в Firestore
+// (см. api.counters, api.jobs.create, api.orderDocuments.create). Здесь только
+// чистое форматирование — чтобы покрыть тестами без обращения к базе.
+export const DOC_PREFIX = { order: 'ЗН', act: 'АКТ', invoice: 'СЧ', handover: 'ПП' };
+
+export function pad4(n) {
+  return String(Math.max(0, Math.floor(Number(n) || 0))).padStart(4, '0');
+}
+
+export function formatDocNumber(type, year, n) {
+  return `${DOC_PREFIX[type] || 'ДОК'}-${year}-${pad4(n)}`;
+}
+
 export const DEFAULT_WARRANTY =
   'Гарантия на выполненные работы — 6 месяцев, на кузовные и окрасочные работы — ' +
   '12 месяцев с даты выдачи ТС. Гарантия не распространяется на детали и материалы, ' +
@@ -36,6 +51,31 @@ export const DEFAULT_CONSENT =
   'передачу транспортного средства в ремонт и достоверность указанных сведений. Настоящий ' +
   'заказ-наряд является основанием для выполнения работ и расчётов между сторонами; после ' +
   'подписания сторонами имеет силу договора.';
+
+// «Согласование по запчастям» — строки для заказ-наряда и акта. Письменного
+// согласия клиента в документе требуют ТОЛЬКО Б/У (used) и Замена на аналог
+// (analog). Виды «под оригинал» (used_orig / analog_orig) — это внутренняя
+// подготовка детали к товарному виду; в документ они НЕ выносятся (только
+// предупреждение в карточке авто). Возвращает готовый текст (строки через \n),
+// пустую строку — если таких запчастей нет. Требует поле p.kind у деталей.
+export function partsConsentLines(parts = []) {
+  const lines = [];
+  for (const p of parts || []) {
+    const name = String(p.name || '').trim() || 'запчасть';
+    const code = String(p.code || '').trim();
+    const repl = String(p.replArticle || '').trim();
+    if (p.kind === 'used') {
+      lines.push(`Запчасть «${name}»${code ? ` (арт. ${code})` : ''} устанавливается бывшей в употреблении (Б/У) с согласия Заказчика.`);
+    } else if (p.kind === 'analog') {
+      lines.push(`Оригинальная запчасть «${name}»${code ? ` (арт. ${code})` : ''} заменена на аналог${repl ? ` (арт. ${repl})` : ''} с согласия Заказчика.`);
+    }
+  }
+  return lines;
+}
+
+export function buildPartsConsentText(parts = []) {
+  return partsConsentLines(parts).join('\n');
+}
 
 function pad2(x) {
   return String(x).padStart(2, '0');
@@ -67,7 +107,7 @@ function insuranceFrom(job) {
     payment_type: job.payment_type || 'cash',
     insurer_name: job.insurer_name || '',
     claim_number: job.claim_number || '',
-    policy_number: job.policy_number || '',
+    policy_type: job.policy_type || '',
   };
 }
 
@@ -114,15 +154,21 @@ export function buildOrderSnapshot(job = {}, company = {}) {
       qty: num(p.qty, 1),
       unit: p.unit || 'шт.',
       price: num(p.price, 0),
+      // kind/replArticle не печатаются в таблице, но нужны, чтобы пересобрать
+      // блок «Согласование по запчастям» и чтобы он пережил перенос в акт.
+      kind: p.kind || 'new',
+      replArticle: p.replArticle || '',
     })),
     discount: num(job.discount, 0),
     prepayment: num(job.prepayment, 0),
     recommendations: job.recommendations || '',
     warranty_text: DEFAULT_WARRANTY,
     consent_text: DEFAULT_CONSENT,
+    parts_consent_text: buildPartsConsentText(job.parts),
     show_recommendations: !!(job.recommendations && String(job.recommendations).trim()),
     show_warranty: true,
     show_consent: true,
+    show_parts_consent: !!buildPartsConsentText(job.parts),
   };
 }
 
@@ -157,12 +203,16 @@ export const DEFAULT_INVOICE_NOTE =
   'Оплата настоящего счёта означает согласие с условиями оказания услуг. Счёт действителен ' +
   'к оплате в течение 5 банковских дней. Услуги/товары отпускаются по факту поступления оплаты.';
 
-function baseHead(job, company, type, prefix) {
+function baseHead(job, company, type) {
   return {
     type,
     insurance: insuranceFrom(job),
     job_id: job.id || null,
-    doc_number: job.order_number || `${prefix}-${String(job.id || '').slice(0, 6).toUpperCase()}`,
+    // Пустой номер = «присвоить автоматически при первом сохранении» (свой счётчик
+    // на тип+год, см. api.orderDocuments.create). Вручную вписанный номер сохраняется
+    // как есть. Заказ-наряд — исключение (buildOrderSnapshot): печатается под номером
+    // машины job.order_number.
+    doc_number: '',
     doc_date: todayInput(),
     company: {
       name: company.name || '', inn: company.inn || '', kpp: company.kpp || '',
@@ -181,7 +231,7 @@ function mapServices(arr) {
   return (arr || []).map((s) => ({ id: uid(), name: s.name || '', qty: num(s.qty, 1), price: num(s.price, 0) }));
 }
 function mapParts(arr) {
-  return (arr || []).map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: num(p.qty, 1), unit: p.unit || 'шт.', price: num(p.price, 0) }));
+  return (arr || []).map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: num(p.qty, 1), unit: p.unit || 'шт.', price: num(p.price, 0), kind: p.kind || 'new', replArticle: p.replArticle || '' }));
 }
 
 // Seed works/parts for act & invoice from the LAST issued заказ-наряд (docs from
@@ -204,25 +254,30 @@ export function pickSeedItems(job = {}, docs = []) {
 
 export function buildActSnapshot(job = {}, company = {}, seed = null) {
   const s = seed || pickSeedItems(job, []);
+  const parts = mapParts(s.parts);
   return {
-    ...baseHead(job, company, 'act', 'АКТ'),
+    ...baseHead(job, company, 'act'),
     order_ref: s.source_number || job.order_number || '',
     services: mapServices(s.services),
-    parts: mapParts(s.parts),
+    parts,
     discount: num(s.discount, 0),
     prepayment: num(s.prepayment, 0),
     recommendations: job.recommendations || '',
     act_text: DEFAULT_ACT_TEXT,
     warranty_text: DEFAULT_WARRANTY,
+    // Собираем из позиций акта (kind перенесён из заказ-наряда/машины) — тот же
+    // блок «Согласование по запчастям», что и в заказ-наряде.
+    parts_consent_text: buildPartsConsentText(parts),
     show_act_text: true,
     show_warranty: true,
     show_recommendations: !!(job.recommendations && String(job.recommendations).trim()),
+    show_parts_consent: !!buildPartsConsentText(parts),
   };
 }
 
 export function buildInvoiceSnapshot(job = {}, company = {}, seed = null) {
   const s = seed || pickSeedItems(job, []);
-  const head = baseHead(job, company, 'invoice', 'СЧ');
+  const head = baseHead(job, company, 'invoice');
   head.company.bank = {
     bank_name: company.bank_name || '', bik: company.bik || '',
     account: company.account || '', corr_account: company.corr_account || '',
@@ -248,7 +303,7 @@ export function buildInvoiceSnapshot(job = {}, company = {}, seed = null) {
 
 export function buildHandoverSnapshot(job = {}, company = {}) {
   return {
-    ...baseHead(job, company, 'handover', 'ПП'),
+    ...baseHead(job, company, 'handover'),
     condition: {
       mileage_in: job.mileage || '', equipment: job.equipment || '', condition_in: job.condition_in || '',
       mileage_out: job.mileage_out || '', condition_out: job.condition_out || '',

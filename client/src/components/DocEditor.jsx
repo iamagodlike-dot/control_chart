@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
+import { createPortal, flushSync } from 'react-dom';
 import QRCode from 'qrcode';
 import { api } from '../api';
 import DocSheet from './DocSheet';
 import DateTimeField from './DateTimeField';
+import { printFitted } from '../printDoc';
 import {
   buildActSnapshot, buildInvoiceSnapshot, buildHandoverSnapshot, pickSeedItems,
   computeDocTotals, buildPaymentQrString, qrIsComplete, uid, money, lineTotal,
-  formatDocDate, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT,
+  formatDocDate, buildPartsConsentText, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT,
 } from '../orderDoc';
 import '../orderDoc.css';
 
@@ -146,7 +147,16 @@ export default function DocEditor({ type, job, company, onClose }) {
         payload.paid_at = payload.paid ? (snapshot.paid_at || Date.now()) : null;
       }
       if (docId) await api.orderDocuments.update(docId, payload);
-      else { const created = await api.orderDocuments.create(payload); setDocId(created.id); }
+      else {
+        const created = await api.orderDocuments.create(payload);
+        setDocId(created.id);
+        // Показать присвоенный счётчиком номер в редакторе и на печатном листе.
+        // flushSync — чтобы номер попал в DOM до печати, когда сохранение вызвано
+        // кнопкой «Печать» для нового документа (см. printDoc).
+        if (created.doc_number && created.doc_number !== snapshot.doc_number) {
+          flushSync(() => setSnapshot((s) => ({ ...s, doc_number: created.doc_number })));
+        }
+      }
       setSaved(true);
       refresh();
     } catch {
@@ -154,6 +164,14 @@ export default function DocEditor({ type, job, company, onClose }) {
     } finally {
       setSaving(false);
     }
+  }
+
+  // Печать: у нового документа номер присваивается при сохранении, поэтому сначала
+  // сохраняем (save() сам показывает ошибку и не бросает исключение), затем печатаем —
+  // так на лист никогда не попадёт пустой номер. Уже сохранённый просто печатаем.
+  async function printDoc() {
+    if (!docId) await save();
+    printFitted();
   }
 
   const totals = hasItems ? computeDocTotals(snapshot) : null;
@@ -182,7 +200,7 @@ export default function DocEditor({ type, job, company, onClose }) {
             <h4>Документ</h4>
             <div className="oe-grid">
               <label className="oe-field">№ документа
-                <input value={snapshot.doc_number} onChange={(e) => patch({ doc_number: e.target.value })} />
+                <input value={snapshot.doc_number} onChange={(e) => patch({ doc_number: e.target.value })} placeholder="присвоится автоматически при сохранении" />
               </label>
               <label className="oe-field">Дата
                 <DateTimeField mode="date" value={snapshot.doc_date} onChange={(v) => patch({ doc_date: v })} />
@@ -380,6 +398,16 @@ export default function DocEditor({ type, job, company, onClose }) {
                 </div>
                 <textarea className="oe-textarea" value={snapshot.warranty_text} disabled={!snapshot.show_warranty} onChange={(e) => patch({ warranty_text: e.target.value })} />
               </div>
+              <div className="oe-section">
+                <div className="oe-toggle-row">
+                  <label className="oe-toggle">
+                    <input type="checkbox" checked={snapshot.show_parts_consent} onChange={(e) => patch({ show_parts_consent: e.target.checked })} />
+                    Согласование по запчастям (Б/У и замены)
+                  </label>
+                  <button className="small" onClick={() => patch({ parts_consent_text: buildPartsConsentText(snapshot.parts) })}>Собрать из запчастей</button>
+                </div>
+                <textarea className="oe-textarea" value={snapshot.parts_consent_text || ''} disabled={!snapshot.show_parts_consent} onChange={(e) => patch({ parts_consent_text: e.target.value })} placeholder="Отметки о Б/У и заменах на аналог — по одной в строке" />
+              </div>
             </>
           )}
 
@@ -455,7 +483,7 @@ export default function DocEditor({ type, job, company, onClose }) {
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
           <button onClick={saveToCar} title="Перенести марку, гос. номер, VIN, пробег и клиента в карточку машины">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
-          <button className="primary" onClick={() => window.print()}>🖨 Печать</button>
+          <button className="primary" onClick={printDoc}>🖨 Печать</button>
         </div>
       </div>
 

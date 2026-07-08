@@ -4,6 +4,10 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { DEFAULT_INSURERS } from './insurance';
+import { isRepair, isApproval } from './phase';
+import { withPartIds } from './parts';
+import { deletePhotoFile } from './photos';
+import { formatDocNumber } from './orderDoc';
 
 const postsCol = collection(db, 'posts');
 const mastersCol = collection(db, 'masters');
@@ -20,7 +24,10 @@ const cellsCol = collection(db, 'cells');
 const warehouseConfigCol = collection(db, 'warehouseConfig');
 const warehouseLogCol = collection(db, 'warehouseLog');
 const orderDocsCol = collection(db, 'orderDocuments');
+const countersCol = collection(db, 'counters');
 const transactionsCol = collection(db, 'transactions');
+const usersCol = collection(db, 'users');
+const expensesCol = collection(db, 'expenses');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -31,6 +38,12 @@ function stripUndefined(obj) {
   for (const k in obj) if (obj[k] !== undefined) out[k] = obj[k];
   return out;
 }
+
+// Access records are keyed by the login's email (lowercased) — so the owner can
+// grant a role by typing an email in Settings, before that person ever logs in,
+// and no Firebase UID juggling is needed. Keep normalization in one place so the
+// key written by the admin screen always matches the key read at sign-in.
+const normEmail = (e) => (e || '').trim().toLowerCase();
 
 async function stagesForJob(jobId) {
   const snap = await getDocs(query(stagesCol, where('job_id', '==', jobId)));
@@ -51,7 +64,9 @@ function buildGantt(posts, allStages, jobsList, mastersList) {
   }
 
   const stages = allStages
-    .filter((s) => !jobsById.get(s.job_id)?.archived)
+    // Машины на согласовании со страховой на таймлайн не попадают (этапов у них
+    // ещё нет; фильтр — страховка на случай, если этап всё же оказался назначен).
+    .filter((s) => { const j = jobsById.get(s.job_id); return !j?.archived && !isApproval(j); })
     .map((s) => {
       const job = jobsById.get(s.job_id) || {};
       const master = s.master_id ? mastersById.get(s.master_id) : null;
@@ -69,8 +84,9 @@ function buildGantt(posts, allStages, jobsList, mastersList) {
     .sort((a, b) => (a.start_at > b.start_at ? 1 : -1));
 
   // Full job list (including jobs with no stages yet, i.e. queued cars), for the sidebar.
+  // Машины на согласовании со страховой в очередь Графика не показываем.
   const jobs = jobsList
-    .filter((j) => !j.archived)
+    .filter((j) => !j.archived && isRepair(j))
     .map((j) => ({
       ...j,
       job_id: j.id,
@@ -132,6 +148,38 @@ export const api = {
       snap.docs.forEach((d) => batch.update(d.ref, { master_id: null }));
       batch.delete(doc(mastersCol, id));
       await batch.commit();
+      return { ok: true };
+    },
+  },
+
+  // Access control: one doc per login, keyed by email. { email, name, role,
+  // masterId?, active }. role ∈ owner | master | expeditor. `owner` sees the
+  // whole app; the others get a restricted set of tabs (and, later, their own
+  // personalized screens). This only decides what the UI SHOWS — it is not yet a
+  // hard wall (that comes with Firestore rules in the next step).
+  users: {
+    async list() {
+      const snap = await getDocs(usersCol);
+      return snap.docs.map(withId);
+    },
+    subscribe(onData, onError) {
+      return onSnapshot(usersCol, (s) => onData(s.docs.map(withId)), onError);
+    },
+    async get(email) {
+      const key = normEmail(email);
+      if (!key) return null;
+      const snap = await getDoc(doc(usersCol, key));
+      return snap.exists() ? withId(snap) : null;
+    },
+    // setDoc(merge) with a deterministic email key: re-granting the same email
+    // updates the existing record instead of creating a duplicate.
+    async upsert(email, data) {
+      const key = normEmail(email);
+      await setDoc(doc(usersCol, key), stripUndefined({ email: key, active: true, ...data }), { merge: true });
+      return withId(await getDoc(doc(usersCol, key)));
+    },
+    async remove(email) {
+      await deleteDoc(doc(usersCol, normEmail(email)));
       return { ok: true };
     },
   },
@@ -201,6 +249,22 @@ export const api = {
     },
     async create(data) {
       const { stages = [], ...jobFields } = data;
+      // Every part must carry a stable id (imports arrive без id) — else per-part
+      // delete/save on the Запчасти screen can't match the stored position.
+      if (Array.isArray(jobFields.parts)) jobFields.parts = withPartIds(jobFields.parts);
+      // Автономер заказ-наряда: номер не вписан вручную → берём следующий из счётчика
+      // ЗН текущего года (ЗН-2026-0001, 0002…). Массовый импорт из Splus (importOne)
+      // сюда не заходит и сохраняет свои исходные номера. Сбой счётчика (напр. правила
+      // Firestore ещё не задеплоены) НЕ должен мешать заведению машины — тогда просто
+      // оставляем номер пустым (поле и раньше было необязательным).
+      if (!String(jobFields.order_number || '').trim()) {
+        try {
+          const year = new Date().getFullYear();
+          jobFields.order_number = formatDocNumber('order', year, await api.counters.next('order', year));
+        } catch (e) {
+          console.warn('Не удалось получить номер заказ-наряда из счётчика:', e);
+        }
+      }
       const jobRef = await addDoc(jobsCol, stripUndefined({ ...jobFields, created_at: Date.now() }));
       await Promise.all(stages.map((s, i) => addDoc(stagesCol, stripUndefined({
         job_id: jobRef.id,
@@ -216,8 +280,18 @@ export const api = {
       job.stages = await stagesForJob(job.id);
       return job;
     },
+    // Массовый импорт одного заказа «как есть» (для переноса из Splus). В отличие
+    // от create(): пишет переданный created_at (чтобы сохранить исходную дату
+    // заказа) и не создаёт этапов маршрута. Возвращает id новой записи.
+    async importOne(fields) {
+      const ref = await addDoc(jobsCol, stripUndefined(fields));
+      return ref.id;
+    },
     async update(id, data) {
-      await updateDoc(doc(jobsCol, id), stripUndefined(data));
+      // Only when parts are part of this update (e.g. a fresh Audatex import) —
+      // give them ids. Plain edits omit `parts` and leave the stored array as-is.
+      const payload = Array.isArray(data.parts) ? { ...data, parts: withPartIds(data.parts) } : data;
+      await updateDoc(doc(jobsCol, id), stripUndefined(payload));
       const job = withId(await getDoc(doc(jobsCol, id)));
       job.stages = await stagesForJob(id);
       return job;
@@ -226,7 +300,8 @@ export const api = {
     // issued documents (заказ-наряд/счёт/акт/ПП). Without the latter, an unpaid счёт
     // would keep inflating «Долг клиентов» forever with no car to open. One batch.
     async remove(id) {
-      const [stagesSnap, docsSnap] = await Promise.all([
+      const [jobSnap, stagesSnap, docsSnap] = await Promise.all([
+        getDoc(doc(jobsCol, id)),
         getDocs(query(stagesCol, where('job_id', '==', id))),
         getDocs(query(orderDocsCol, where('job_id', '==', id))),
       ]);
@@ -235,6 +310,10 @@ export const api = {
       docsSnap.docs.forEach((d) => batch.delete(d.ref));
       batch.delete(doc(jobsCol, id));
       await batch.commit();
+      // Best-effort: wipe the car's photo files so the server disk doesn't keep
+      // orphans. Never blocks the delete — a server hiccup just leaves stray files.
+      const photos = jobSnap.exists() ? (jobSnap.data().photos || []) : [];
+      await Promise.all(photos.map((p) => deletePhotoFile(p.path).catch(() => {})));
       return { ok: true };
     },
     async archive(id) {
@@ -249,6 +328,12 @@ export const api = {
     // same shop see each other's changes without a refresh.
     subscribeActive(onData, onError = () => {}) {
       return onSnapshot(jobsCol, (s) => onData(s.docs.map(withId).filter((j) => !j.archived)), onError);
+    },
+
+    // Live list of cars currently in the «Согласование со страховой» phase — used
+    // by the Approval board. Same shape as subscribeActive, filtered to phase.
+    subscribeApproval(onData, onError = () => {}) {
+      return onSnapshot(jobsCol, (s) => onData(s.docs.map(withId).filter((j) => !j.archived && isApproval(j))), onError);
     },
 
     // Concurrency-safe write of ONE part inside job.parts. A transaction re-reads
@@ -273,6 +358,25 @@ export const api = {
       // parts, so every part edit must refresh them (else the Склад shows a stale list).
       if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
     },
+    // One-shot backfill for cars imported before parts carried ids. Without an id
+    // the Запчасти screen minted a throwaway id per snapshot that never matched
+    // the stored part, so delete/edit silently no-op'd. Transaction-safe and
+    // idempotent: writes only if a part is missing an id, and touches ids only —
+    // every other field (unit/price/…) stays exactly as stored. Returns the
+    // synced job (or null if nothing to do / job gone) so callers can react.
+    async ensurePartIds(jobId) {
+      const ref = doc(jobsCol, jobId);
+      return runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        const parts = data.parts || [];
+        if (!parts.length || parts.every((p) => p && p.id)) return null; // already consistent
+        const next = withPartIds(parts);
+        tx.update(ref, { parts: next });
+        return { id: jobId, ...data, parts: next };
+      });
+    },
     // Remove ONE part by id (transaction — keeps every other part intact).
     async removePart(jobId, partId) {
       const ref = doc(jobsCol, jobId);
@@ -290,6 +394,38 @@ export const api = {
     // only ever contends paint-vs-paint, never the parts array.
     async savePaint(jobId, paint) {
       await updateDoc(doc(jobsCol, jobId), stripUndefined({ paint: paint ? { ...paint, cost: Number(paint.cost) || 0 } : null }));
+    },
+
+    // Append ONE photo to job.photos (transaction — same reason as savePart: two
+    // users adding photos to the same car must not clobber each other's array).
+    // The file itself already lives on the server; here we only record its
+    // metadata { id, url, path, size, w, h, uploaded_at, uploaded_by }.
+    async addPhoto(jobId, photo) {
+      const ref = doc(jobsCol, jobId);
+      const clean = stripUndefined(photo);
+      return runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        const photos = (data.photos || []).slice();
+        photos.push(clean);
+        tx.update(ref, { photos });
+        return { id: jobId, ...data, photos };
+      });
+    },
+    // Remove ONE photo by id from job.photos. The caller deletes the file from the
+    // server separately (best-effort) — the DB record is the source of truth for
+    // what the card shows, so we drop it here regardless of file cleanup.
+    async removePhoto(jobId, photoId) {
+      const ref = doc(jobsCol, jobId);
+      return runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        const photos = (data.photos || []).filter((p) => p.id !== photoId);
+        tx.update(ref, { photos });
+        return { id: jobId, ...data, photos };
+      });
     },
   },
 
@@ -400,6 +536,24 @@ export const api = {
     },
   },
 
+  // Атомарная выдача порядковых номеров документов. На каждую пару (тип, год) —
+  // свой документ-счётчик counters/{тип}-{год} с полем value. Транзакция читает и
+  // увеличивает его на сервере, поэтому даже одновременное создание с двух устройств
+  // никогда не выдаёт один номер дважды. Возвращает НОВОЕ значение (1, 2, 3…).
+  // Год в ключе → 1 января очередь сама начинается заново (…-2027-0001).
+  counters: {
+    async next(typeKey, year) {
+      const ref = doc(countersCol, `${typeKey}-${year}`);
+      return runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        const current = snap.exists() ? (Number(snap.data().value) || 0) : 0;
+        const value = current + 1;
+        tx.set(ref, { value, type: typeKey, year, updated_at: Date.now() }, { merge: true });
+        return value;
+      });
+    },
+  },
+
   // Issued documents (заказ-наряд, and later акт / акт приёма-передачи). Each is a
   // self-contained frozen snapshot. Writing here NEVER touches jobs/stages/warehouse —
   // that is what keeps document edits isolated from the service data.
@@ -424,8 +578,24 @@ export const api = {
     },
     async create(data) {
       const now = Date.now();
+      const payload = { ...data };
+      // Свой номер для выданных клиентских документов — акт (АКТ), счёт (СЧ),
+      // приём-передача (ПП): каждый на своём счётчике типа+года. Присваивается ОДИН
+      // раз, при первом сохранении, поэтому брошенные черновики не «сжигают» номера.
+      // Заказ-наряд (type 'order') свой номер не получает — он печатается под номером
+      // машины (job.order_number). Вписанный вручную номер уважается. Сбой счётчика не
+      // блокирует сохранение: откатываемся на номер основания (заказ-наряда), как было.
+      if (['act', 'invoice', 'handover'].includes(payload.type) && !String(payload.doc_number || '').trim()) {
+        try {
+          const year = new Date().getFullYear();
+          payload.doc_number = formatDocNumber(payload.type, year, await api.counters.next(payload.type, year));
+        } catch (e) {
+          console.warn('Не удалось получить номер документа из счётчика:', e);
+          if (payload.order_ref) payload.doc_number = payload.order_ref;
+        }
+      }
       const ref = await addDoc(orderDocsCol, stripUndefined({
-        ...data,
+        ...payload,
         created_at: now,
         updated_at: now,
         created_by: auth.currentUser?.email || null,
@@ -471,6 +641,40 @@ export const api = {
     },
   },
 
+  // Траты, которые вносит линейный сотрудник (экспедитор: запчасти за нал,
+  // бензин на поездки…). Отдельно от денежной ленты transactions, которая заперта
+  // на управленцев — сотрудник видит и правит ТОЛЬКО свои записи (created_by),
+  // управленец видит все через listAll(). created_by пишется в нижнем регистре,
+  // чтобы совпасть с проверкой в правилах (request.auth.token.email.lower()).
+  expenses: {
+    async listMine(email) {
+      const key = normEmail(email);
+      if (!key) return [];
+      const snap = await getDocs(query(expensesCol, where('created_by', '==', key)));
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async listAll() {
+      const snap = await getDocs(expensesCol);
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async create(data) {
+      const ref = await addDoc(expensesCol, stripUndefined({
+        amount: Number(data.amount) || 0,
+        category: data.category || 'Прочее',
+        note: data.note || '',
+        date: data.date || new Date().toLocaleDateString('ru-RU'),
+        created_at: Date.now(),
+        created_by: normEmail(auth.currentUser?.email),
+        created_by_name: data.created_by_name || null,
+      }));
+      return withId(await getDoc(ref));
+    },
+    async remove(id) {
+      await deleteDoc(doc(expensesCol, id));
+      return { ok: true };
+    },
+  },
+
   cells: {
     async list() {
       const snap = await getDocs(cellsCol);
@@ -489,26 +693,23 @@ export const api = {
     async free(id) {
       const cell = await api.cells.get(id);
       if (!cell) return null;
-      const archive = cell._archive || [];
-      const updated = { _archive: [...archive, { ...cell, freedAt: new Date().toLocaleDateString('ru-RU') }] };
-      await setDoc(doc(cellsCol, id), updated);
-      await api.warehouseLog.add('Освобождена', id, `${cell.car || '—'} · ${cell.orderNum || '—'}`);
-      // Also drop this cell from the linked job's cell list — otherwise the next
-      // save of that car re-opens the freed cell ("воскрешение"). Best-effort.
+      // Pre-read the linked job so the cell archive, the log entry and the job's
+      // cell-list unlink all land in ONE batch — freeing a cell can't half-happen
+      // and leave the car pointing at a slot it no longer holds ("воскрешение").
+      let jobRef = null;
+      let nextIds = null;
       if (cell.job_id) {
-        try {
-          const jobSnap = await getDoc(doc(jobsCol, cell.job_id));
-          if (jobSnap.exists()) {
-            const jobData = { id: jobSnap.id, ...jobSnap.data() };
-            const cur = jobCellIds(jobData);
-            if (cur.includes(id)) {
-              const nextIds = cur.filter((cid) => cid !== id);
-              await updateDoc(doc(jobsCol, cell.job_id), { cell_ids: nextIds, cell_id: nextIds[0] || null });
-            }
-          }
-        } catch { /* unlink is best-effort; the cell is already freed */ }
+        const jobSnap = await getDoc(doc(jobsCol, cell.job_id));
+        if (jobSnap.exists()) {
+          const cur = jobCellIds({ id: jobSnap.id, ...jobSnap.data() });
+          if (cur.includes(id)) { jobRef = doc(jobsCol, cell.job_id); nextIds = cur.filter((cid) => cid !== id); }
+        }
       }
-      return updated;
+      const batch = writeBatch(db);
+      batchFreeCell(batch, id, cell);
+      if (jobRef) batch.update(jobRef, { cell_ids: nextIds, cell_id: nextIds[0] || null });
+      await batch.commit();
+      return { _archive: [...(cell._archive || []), { ...cell, freedAt: new Date().toLocaleDateString('ru-RU') }] };
     },
   },
 
@@ -546,28 +747,35 @@ export const api = {
 
     async assignCell(cellId, job) {
       const existing = await api.cells.get(cellId);
-      const updated = {
-        ...(existing || {}),
-        job_id: job.id,
-        car: job.car_model,
-        plate: job.plate_number,
-        orderNum: job.order_number,
-        parts: partsForCell(job),
-        openedAt: existing?.openedAt || new Date().toLocaleDateString('ru-RU'),
-      };
-      await api.cells.save(cellId, updated);
-      await api.warehouseLog.add(existing?.orderNum ? 'Изменена' : 'Открыта', cellId, `${updated.car || '—'} · ${updated.orderNum || '—'}`);
+      const batch = writeBatch(db);
+      batchAssignCell(batch, cellId, job, existing);
+      await batch.commit();
     },
 
-    // Replaces the full set of cells linked to a job in one go: frees cells
-    // that were removed, assigns newly picked ones, leaves the rest as-is.
+    // Replaces the full set of cells linked to a job in one go: frees cells that
+    // were removed, assigns newly picked ones, and updates the job's own cell list
+    // — ALL in a single writeBatch, so a mid-way failure can't leave the job and its
+    // cells disagreeing about who holds what.
     async setJobCells(job, newCellIds) {
       const current = jobCellIds(job);
       const toAdd = newCellIds.filter((id) => !current.includes(id));
       const toRemove = current.filter((id) => !newCellIds.includes(id));
-      for (const id of toRemove) await api.cells.free(id);
-      for (const id of toAdd) await api.warehouse.assignCell(id, job);
-      return api.jobs.update(job.id, { cell_ids: newCellIds, cell_id: newCellIds[0] || null });
+      const patch = { cell_ids: newCellIds, cell_id: newCellIds[0] || null };
+      if (!toAdd.length && !toRemove.length) {
+        // Only the (possibly reordered) list changed — no cell writes needed.
+        return api.jobs.update(job.id, patch);
+      }
+      // Reads can't live inside a writeBatch, so pre-fetch every cell we'll touch.
+      const [removeCells, addCells] = await Promise.all([
+        Promise.all(toRemove.map((id) => api.cells.get(id))),
+        Promise.all(toAdd.map((id) => api.cells.get(id))),
+      ]);
+      const batch = writeBatch(db);
+      toRemove.forEach((id, i) => { if (removeCells[i]) batchFreeCell(batch, id, removeCells[i]); });
+      toAdd.forEach((id, i) => batchAssignCell(batch, id, job, addCells[i]));
+      batch.update(doc(jobsCol, job.id), patch);
+      await batch.commit();
+      return { ok: true, ...patch };
     },
 
     // Attach one more free cell to a job that already exists, without
@@ -592,8 +800,17 @@ export const api = {
       }
     },
 
+    // Free every cell a job holds AND clear the job's own cell list, atomically —
+    // so an archived job that is later «возвращён в работу» doesn't reclaim cells
+    // that are now free or taken by other cars.
     async freeJobCells(job) {
-      for (const id of jobCellIds(job)) await api.cells.free(id);
+      const ids = jobCellIds(job);
+      if (!ids.length) return;
+      const cells = await Promise.all(ids.map((id) => api.cells.get(id)));
+      const batch = writeBatch(db);
+      ids.forEach((id, i) => { if (cells[i]) batchFreeCell(batch, id, cells[i]); });
+      if (job.id) batch.update(doc(jobsCol, job.id), { cell_ids: [], cell_id: null });
+      await batch.commit();
     },
   },
 };
@@ -604,4 +821,30 @@ function jobCellIds(job) {
 
 function partsForCell(job) {
   return (job.parts || []).map((p) => ({ name: p.name || '', code: p.code || '', qty: p.qty ?? 1 }));
+}
+
+// ---- warehouse batch primitives -------------------------------------------
+// Queue the cell + log writes for freeing/assigning ONE cell into a caller's
+// writeBatch, so a whole re-link (free some, assign others, update the job's
+// cell list) commits all-or-nothing instead of desyncing on a mid-way failure.
+function warehouseLogId() {
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+function batchFreeCell(batch, cellId, cell) {
+  const archive = cell._archive || [];
+  batch.set(doc(cellsCol, cellId), { _archive: [...archive, { ...cell, freedAt: new Date().toLocaleDateString('ru-RU') }] });
+  batch.set(doc(warehouseLogCol, warehouseLogId()), { action: 'Освобождена', cellId, details: `${cell.car || '—'} · ${cell.orderNum || '—'}`, ts: Date.now() });
+}
+function batchAssignCell(batch, cellId, job, existing) {
+  const updated = {
+    ...(existing || {}),
+    job_id: job.id,
+    car: job.car_model,
+    plate: job.plate_number,
+    orderNum: job.order_number,
+    parts: partsForCell(job),
+    openedAt: existing?.openedAt || new Date().toLocaleDateString('ru-RU'),
+  };
+  batch.set(doc(cellsCol, cellId), updated);
+  batch.set(doc(warehouseLogCol, warehouseLogId()), { action: existing?.orderNum ? 'Изменена' : 'Открыта', cellId, details: `${updated.car || '—'} · ${updated.orderNum || '—'}`, ts: Date.now() });
 }

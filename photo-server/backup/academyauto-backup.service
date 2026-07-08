@@ -1,0 +1,6 @@
+[Unit]
+Description=Academy Auto — бэкап фотографий автомобилей
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/academyauto-backup-uploads.sh

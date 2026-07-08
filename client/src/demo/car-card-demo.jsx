@@ -1,0 +1,106 @@
+/* eslint-disable react-refresh/only-export-components */
+// Standalone visual harness for <CarCard>. The real card only appears deep inside
+// the auth-gated app, so this mounts it with in-memory mock data purely to check
+// the two-column layout at desktop + phone widths. No writes happen; the api
+// reads it fires on mount are read-only and swallowed by their own .catch().
+import { StrictMode, useState } from 'react';
+import { createRoot } from 'react-dom/client';
+import dayjs from 'dayjs';
+import 'dayjs/locale/ru';
+import '../index.css';
+import '../App.css';
+import CarCard from '../components/CarCard';
+import { api } from '../api';
+
+dayjs.locale('ru');
+
+// Demo-only: feed the card a mock invoice so the payment banner renders (the real
+// one comes from Firestore, which this credential-free harness can't reach). The
+// card's «Отметить оплату» button flips it live between не оплачено / оплачено.
+let DEMO_INVOICES = [{ id: 'inv-1', number: '44', paid: false, totals: { total: 128400 } }];
+api.orderDocuments.listByJob = async (_jobId, type) => (type === 'invoice' ? DEMO_INVOICES : DEMO_INVOICES);
+api.orderDocuments.setPaid = async (id, paid) => { DEMO_INVOICES = DEMO_INVOICES.map((i) => (i.id === id ? { ...i, paid } : i)); };
+api.gantt = async () => ({ stages: [] });
+api.insurers.list = async () => [];
+
+const ph = (c) => `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='90'%3E%3Crect width='120' height='90' fill='%23${c}'/%3E%3C/svg%3E`;
+
+const POSTS = [
+  { id: 'p1', name: 'Разборка' },
+  { id: 'p2', name: 'Кузовной цех' },
+  { id: 'p3', name: 'Покраска' },
+  { id: 'p4', name: 'Сборка' },
+];
+const MASTERS = [
+  { id: 'm1', name: 'Иванов А.' },
+  { id: 'm2', name: 'Петров С.' },
+];
+
+const now = dayjs('2026-07-06T13:00:00');
+const iso = (d) => d.toISOString();
+
+const JOB = {
+  id: 'demo-1', job_id: 'demo-1',
+  car_model: 'Geely Atlas Pro', plate_number: 'А123ВС 96', vin: 'LB37622Z0NX012345',
+  mileage: '84000', color: 'чёрный', client_name: 'Иванов Иван Иванович', client_phone: '+7 912 000-00-00',
+  order_number: '1506/1',
+  expected_at: iso(now.subtract(1, 'day')), deadline: iso(now.add(45, 'day').hour(18)),
+  notes: 'Клиент просил сохранить оригинальный передний бампер. Согласовать цвет перед покраской.',
+  payment_type: 'insurance', insurer_name: 'Ингосстрах', claim_number: 'PVU-1234567', policy_type: 'osago',
+  cell_ids: ['A-12', 'B-03'],
+  created_at: iso(now.subtract(2, 'day')),
+  photos: [
+    { id: 'ph1', category: 'before', url: ph('3a4250') },
+    { id: 'ph2', category: 'before', url: ph('44506a') },
+    { id: 'ph3', category: 'after', url: ph('2f5a44') },
+  ],
+  services: [
+    { name: 'Замена бампера переднего', qty: 1, price: 4200 },
+    { name: 'Окраска бампера', qty: 1, price: 8500 },
+    { name: 'Полировка фары', qty: 2, price: 1500 },
+  ],
+  parts: [
+    { id: 'pt1', name: 'Бампер передний', code: '5701A123', qty: 1, kind: 'new' },
+    { id: 'pt2', name: 'Крыло переднее правое', code: '5300B77', qty: 1, kind: 'used' },
+    { id: 'pt3', name: 'Фара левая', code: 'DEPO-212', qty: 1, kind: 'analog' },
+  ],
+  stages: [
+    { id: 's1', sequence: 0, post_id: 'p1', master_id: 'm1', status: 'done', start_at: iso(now.subtract(1, 'day').hour(10)), end_at: iso(now.subtract(1, 'day').hour(14)) },
+    { id: 's2', sequence: 1, post_id: 'p2', master_id: 'm2', status: 'in_progress', start_at: iso(now.subtract(2, 'hour')), end_at: iso(now.add(3, 'hour')) },
+    { id: 's3', sequence: 2, post_id: 'p3', master_id: '', status: 'planned', start_at: iso(now.add(2, 'day').hour(10)), end_at: iso(now.add(2, 'day').hour(16)) },
+  ],
+};
+
+const noop = () => {};
+const asyncNoop = async () => {};
+
+function Demo() {
+  const [mode, setMode] = useState('edit');
+  return (
+    <div>
+      <div style={{ position: 'fixed', top: 12, left: 12, zIndex: 100, display: 'flex', gap: 8 }}>
+        <button className={mode === 'edit' ? 'primary' : ''} onClick={() => setMode('edit')}>Просмотр (edit)</button>
+        <button className={mode === 'create' ? 'primary' : ''} onClick={() => setMode('create')}>Добавление (create)</button>
+      </div>
+      <CarCard
+        key={mode}
+        mode={mode}
+        job={mode === 'edit' ? JOB : null}
+        posts={POSTS}
+        masters={MASTERS}
+        now={now}
+        onClose={noop}
+        onCreate={asyncNoop}
+        onSaveInfo={asyncNoop}
+        onAddStage={async () => ({ id: `new-${Math.round(Math.random() * 1e6)}` })}
+        onUpdateStage={asyncNoop}
+        onRemoveStage={asyncNoop}
+        onOpenDocs={noop}
+        onFinalize={noop}
+        onRemove={noop}
+      />
+    </div>
+  );
+}
+
+createRoot(document.getElementById('root')).render(<StrictMode><Demo /></StrictMode>);

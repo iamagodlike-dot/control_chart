@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
 import { isInsurance, PAYMENT_SHORT } from '../insurance';
+import { PHASE, DEFAULT_APPROVAL_STATUS } from '../phase';
 import DocumentsModal from './DocumentsModal';
 import CarCard from './CarCard';
 import AlertStrip from './AlertStrip';
@@ -871,7 +872,6 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
       </aside>
 
       <div className="gantt">
-        <div className="gantt-watermark" aria-hidden="true"><div className="gantt-watermark-mark" /></div>
         {readOnly ? (
           <div className="gantt-toolbar gantt-toolbar--tv">
             <div className="tv-clock">
@@ -996,7 +996,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
               </svg>
             )}
 
-            {rows.map((row) => {
+            {rows.map((row, rowIdx) => {
               const rowStages = stagesByRow[row.id] || [];
               const occupiedMin = rowStages.reduce((sum, s) => {
                 const st = dayjs(s.start_at), en = dayjs(s.end_at);
@@ -1008,7 +1008,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
               const { laneOf, laneCount } = computeLanes(rowStages);
               const rowHeight = Math.max(ROW_HEIGHT, laneCount * LANE_HEIGHT + (laneCount - 1) * LANE_GAP + 16);
               return (
-                <div className="gantt-row" key={row.id} style={{ width: LABEL_WIDTH + totalWidth }}>
+                <div className={`gantt-row${rowIdx % 2 === 1 ? ' gantt-row--alt' : ''}`} key={row.id} style={{ width: LABEL_WIDTH + totalWidth }}>
                   <div className="gantt-row-label">
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{row.name}</span>
                     {rowStages.length > 0 && (
@@ -1238,6 +1238,14 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
           onRemoveStage={async (id) => {
             await api.stages.remove(id);
             await refreshDetailJob(detailJob.job_id);
+            load();
+          }}
+          onReturnToApproval={async () => {
+            await api.jobs.update(detailJob.job_id, {
+              phase: PHASE.APPROVAL,
+              approval_status: detailJob.approval_status || DEFAULT_APPROVAL_STATUS,
+            });
+            setDetailJob(null);
             load();
           }}
         />

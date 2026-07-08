@@ -1,0 +1,26 @@
+{
+  "name": "autoservice-telegram-bot",
+  "version": "1.0.0",
+  "description": "Telegram-бот для сервиса «Авто Академия»: машины, статусы, сводки для управляющих",
+  "type": "commonjs",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "dayjs": "^1.11.13",
+    "dotenv": "^16.4.7",
+    "firebase-admin": "^13.0.2",
+    "jspdf": "^4.2.1",
+    "jspdf-autotable": "^5.0.8",
+    "node-cron": "^3.0.3",
+    "puppeteer": "^25.3.0",
+    "qrcode": "^1.5.4",
+    "telegraf": "^4.16.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.1",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7"
+  }
+}

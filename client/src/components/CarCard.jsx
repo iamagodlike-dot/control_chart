@@ -1,8 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
+import { auth } from '../firebase';
+import { uploadPhoto, deletePhotoFile } from '../photos';
 import { parseAudatexPdf } from '../audatexParse';
-import { PAYMENT_TYPES, isInsurance } from '../insurance';
+import { PAYMENT_TYPES, POLICY_TYPES, isInsurance, OSAGO_MAX_REPAIR_WORKDAYS, OSAGO_PENALTY_PER_DAY, workdaysBetween, addWorkdays } from '../insurance';
+import { PHASE, DEFAULT_APPROVAL_STATUS, isRepair } from '../phase';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState, nextStatusAction } from './Gantt';
 import { CellPickerModal } from './Warehouse';
 import CostingModal from './CostingModal';
@@ -12,6 +15,13 @@ import DateTimeField from './DateTimeField';
 const FMT = 'YYYY-MM-DDTHH:mm';
 const PREVIEW_HOUR_WIDTH = 16;
 const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
+
+// Детали «под оригинал» (Б/У или аналог, ставящиеся вместо оригинала) требуют
+// отдельного внимания — их надо подготовить к должному (товарному) виду перед
+// установкой. Карточка авто подсвечивает такие детали (см. origPrepParts ниже).
+const ORIG_PREP_KINDS = { used_orig: 'Б/У под ориг.', analog_orig: 'Аналог под ориг.' };
+// Ярлык вида запчасти для списка в карточке (кроме «Новое» — его не помечаем).
+const KIND_BADGES = { used: 'Б/У', used_orig: 'Б/У под ориг.', analog: 'Замена', analog_orig: 'Аналог под ориг.' };
 
 function toLocalInput(iso) {
   return iso ? dayjs(iso).format(FMT) : '';
@@ -71,7 +81,7 @@ function progressOf(startAt, endAt, status, now) {
 export default function CarCard({
   mode, job, posts, masters, now, onClose,
   onCreate,                                   // create
-  onSaveInfo, onAddStage, onUpdateStage, onRemoveStage, onOpenDocs, onFinalize, onRemove, // edit
+  onSaveInfo, onAddStage, onUpdateStage, onRemoveStage, onOpenDocs, onFinalize, onRemove, onReturnToApproval, // edit
 }) {
   const isEdit = mode === 'edit';
 
@@ -92,7 +102,7 @@ export default function CarCard({
     insurer_id: job?.insurer_id || '',
     insurer_name: job?.insurer_name || '',
     claim_number: job?.claim_number || '',
-    policy_number: job?.policy_number || '',
+    policy_type: job?.policy_type || '',
   }));
   const [stages, setStages] = useState(() => seedStages(job));
   const [editIdx, setEditIdx] = useState(null);
@@ -113,6 +123,15 @@ export default function CarCard({
   const [extracting, setExtracting] = useState(false);
   const [extractInfo, setExtractInfo] = useState('');
   const [extractError, setExtractError] = useState('');
+
+  // Photos of the car (edit mode only — need a saved job id to attach files to).
+  // Split into two zones by `category`: 'before' (до ремонта) / 'after' (после).
+  const [photos, setPhotos] = useState(() => job?.photos || []);
+  const [uploadingCat, setUploadingCat] = useState(null); // 'before' | 'after' | null
+  const [photoErr, setPhotoErr] = useState('');
+  const [photoErrCat, setPhotoErrCat] = useState(null); // под какой зоной показать ошибку
+  const [photoProgress, setPhotoProgress] = useState(0); // 0..100 during upload
+  const [viewer, setViewer] = useState(null); // фото, открытое на весь экран (объект), или null
 
   // Other cars' stages, for the mini-gantt conflict preview.
   useEffect(() => {
@@ -212,6 +231,104 @@ export default function CarCard({
       setExtracting(false);
     }
   }
+
+  // Add one or several photos: each is compressed on the phone, uploaded to the
+  // server, then its record is appended to job.photos. Sequential (not parallel)
+  // so the progress bar reflects one clear upload at a time on weak mobile links.
+  async function handlePhotoAdd(e, category) {
+    const files = Array.from(e.target.files || []);
+    e.target.value = '';
+    const jobId = job?.id || job?.job_id;
+    if (!files.length || !isEdit || !jobId) return;
+    setPhotoErr('');
+    setPhotoErrCat(null);
+    setUploadingCat(category);
+    try {
+      for (const file of files) {
+        setPhotoProgress(0);
+        const up = await uploadPhoto(jobId, file, setPhotoProgress);
+        const photo = {
+          id: crypto.randomUUID?.() || `${Date.now()}-${Math.round(Math.random() * 1e9)}`,
+          category, // 'before' | 'after' — в какой зоне показывать
+          url: up.url,
+          path: up.path,
+          size: up.size || 0,
+          w: up.w || 0,
+          h: up.h || 0,
+          uploaded_at: Date.now(),
+          uploaded_by: auth.currentUser?.email || null,
+        };
+        await api.jobs.addPhoto(jobId, photo);
+        setPhotos((prev) => [...prev, photo]);
+      }
+    } catch (err) {
+      console.error('Ошибка загрузки фото:', err);
+      setPhotoErr(err?.message || 'Не удалось загрузить фото');
+      setPhotoErrCat(category);
+    } finally {
+      setUploadingCat(null);
+      setPhotoProgress(0);
+    }
+  }
+
+  async function handlePhotoDelete(photo) {
+    const jobId = job?.id || job?.job_id;
+    if (!jobId || !window.confirm('Удалить это фото?')) return;
+    setPhotoErr('');
+    try {
+      await api.jobs.removePhoto(jobId, photo.id);
+      setPhotos((prev) => prev.filter((p) => p.id !== photo.id));
+      deletePhotoFile(photo.path).catch(() => {}); // file cleanup is best-effort
+    } catch (err) {
+      console.error('Ошибка удаления фото:', err);
+      setPhotoErr('Не удалось удалить фото');
+    }
+  }
+
+  // Одна зона фотографий (до / после). Старые снимки без category считаем «до».
+  function renderPhotoZone(category, icon, title, hint) {
+    const list = photos.filter((p) => (p.category || 'before') === category);
+    const busy = uploadingCat === category;
+    return (
+      <section className="cc-section">
+        <div className="cc-section-head"><span className="cc-section-icon">{icon}</span>{title}</div>
+        <div className="cc-photos">
+          {list.map((p) => (
+            <div className="cc-photo" key={p.id}>
+              <img src={p.url} alt={title} loading="lazy" onClick={() => setViewer(p)} />
+              <button
+                type="button"
+                className="cc-photo-del"
+                onClick={() => handlePhotoDelete(p)}
+                aria-label="Удалить фото"
+              >
+                <Icon name="trash" size={14} strokeWidth={2} />
+              </button>
+            </div>
+          ))}
+          <label className={`cc-photo-add${busy ? ' is-busy' : ''}`}>
+            {busy ? (
+              <span className="cc-photo-progress">{photoProgress ? `${photoProgress}%` : '…'}</span>
+            ) : (
+              <><Icon name="camera" size={22} /><span>Добавить</span></>
+            )}
+            <input
+              type="file"
+              accept="image/*"
+              capture="environment"
+              multiple
+              onChange={(e) => handlePhotoAdd(e, category)}
+              disabled={uploadingCat != null}
+              hidden
+            />
+          </label>
+        </div>
+        {photoErrCat === category && photoErr && <div className="cc-audatex-err">{photoErr}</div>}
+        {!list.length && !busy && <div className="cc-hint">{hint}</div>}
+      </section>
+    );
+  }
+
   function patchStageRow(i, patch) {
     setStages((prev) => prev.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
   }
@@ -322,6 +439,10 @@ export default function CarCard({
   async function openDocs() { await flushOpenRow(); onOpenDocs(); }
   async function openCosting() { await flushOpenRow(); setCostingOpen(true); }
   async function finalize() { await flushOpenRow(); onFinalize(); }
+  async function returnToApproval() {
+    if (!window.confirm('Вернуть машину на согласование со страховой? Она уедет с графика на доску «Согласование».')) return;
+    await onReturnToApproval();
+  }
 
   async function saveInfo() {
     // Changing the payer after documents were issued: the счёт/акт/заказ-наряд froze
@@ -353,6 +474,8 @@ export default function CarCard({
 
   async function submitCreate() {
     if (!form.car_model.trim()) { alert('Укажите марку и модель автомобиля'); return; }
+    // Страховая машина заводится сразу на «Согласование»; наличные/юрлицо — в ремонт.
+    const toApproval = isInsurance(form);
     setSavingInfo(true);
     try {
       const payload = {
@@ -366,10 +489,13 @@ export default function CarCard({
         order_number: form.order_number,
         notes: form.notes,
         payment_type: form.payment_type,
+        phase: toApproval ? PHASE.APPROVAL : PHASE.REPAIR,
+        approval_status: toApproval ? DEFAULT_APPROVAL_STATUS : undefined,
+        approval_since: toApproval ? Date.now() : undefined,
         insurer_id: form.insurer_id,
         insurer_name: form.insurer_name,
         claim_number: form.claim_number,
-        policy_number: form.policy_number,
+        policy_type: form.policy_type,
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
         // From an Audatex import — carried onto the job so the заказ-наряд + warehouse cell auto-fill.
@@ -426,12 +552,74 @@ export default function CarCard({
     return lastEnd.isAfter(dayjs(form.deadline)) ? lastEnd : null;
   }, [form.deadline, routeSet]);
 
+  // ОСАГО: срок восстановительного ремонта по закону — не более 30 рабочих дней.
+  // Отсчёт от заезда (а если он не заполнен — от даты создания заказ-наряда, т.е.
+  // машина уже на СТОА) до дедлайна. Если по плану выходит больше — предупреждаем:
+  // просрочка грозит неустойкой 0,5%/день от стоимости ремонта. Считаем «вживую»,
+  // чтобы предупреждение появлялось сразу при выборе ОСАГО или правке дат.
+  const osagoStart = form.expected_at || (isEdit ? job?.created_at : null);
+  const osagoTermWorkdays = useMemo(() => {
+    if (!(isInsurance(form) && form.policy_type === 'osago')) return 0;
+    if (!osagoStart || !form.deadline) return 0;
+    const wd = workdaysBetween(osagoStart, form.deadline);
+    return wd > OSAGO_MAX_REPAIR_WORKDAYS ? wd : 0;
+  }, [form.payment_type, form.policy_type, osagoStart, form.deadline]);
+
   // Read-only summaries + a derived event journal (edit mode). Works/parts are the
   // ones saved on the job; the journal is synthesised from the route (we don't store
   // per-event timestamps) so its times are the stages' scheduled ones.
   const works = isEdit ? (job?.services || []) : [];
   const jobParts = isEdit ? (job?.parts || []) : [];
+  // Предупреждения по видам запчастей (см. блок ниже). Три категории:
+  //  • Б/У и Замена — нужно согласие клиента; оно попадает в заказ-наряд и акт
+  //    (блок «Согласование по запчастям», см. orderDoc.buildPartsConsentText).
+  //  • «под оригинал» (Б/У/аналог под ориг.) — в документы НЕ идёт, но деталь
+  //    надо подготовить к товарному виду перед установкой.
+  const origPrepParts = jobParts.filter((p) => ORIG_PREP_KINDS[p.kind]);
+  const usedParts = jobParts.filter((p) => p.kind === 'used');
+  const analogParts = jobParts.filter((p) => p.kind === 'analog');
+  const names = (arr) => arr.map((p) => p.name || '—').join(', ');
+  const partNotices = [];
+  if (usedParts.length) partNotices.push({
+    key: 'used', icon: 'history', tag: 'Б/У',
+    title: 'Б/У запчасти — нужно согласие клиента',
+    names: names(usedParts),
+    text: `В заказ-наряд и акт добавлена отметка о согласии клиента на установку Б/У: ${names(usedParts)}.`,
+  });
+  if (analogParts.length) partNotices.push({
+    key: 'analog', icon: 'refresh', tag: 'Аналог',
+    title: 'Замена на аналог — нужно согласие клиента',
+    names: names(analogParts),
+    text: `В заказ-наряд и акт добавлена отметка о замене оригинала на аналог с согласия клиента: ${names(analogParts)}.`,
+  });
+  if (origPrepParts.length) partNotices.push({
+    key: 'orig', icon: 'wrench', tag: 'Под ориг.',
+    title: 'Детали «под оригинал» — требуют отдельного внимания',
+    names: names(origPrepParts),
+    text: `Подготовьте к должному (товарному) виду перед установкой: ${names(origPrepParts)}.`,
+  });
   const worksSum = works.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
+  const jobPartsSum = jobParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+  // Ориентировочная неустойка по ОСАГО за просрочку ремонта: 0,5% в день от суммы
+  // возмещения за каждый календарный день сверх законного срока (но не более самой
+  // суммы возмещения). База возмещения: счёт → работы+запчасти → распознанная смета.
+  const osagoPenalty = useMemo(() => {
+    if (!osagoTermWorkdays || !osagoStart || !form.deadline) return null;
+    const legal = addWorkdays(osagoStart, OSAGO_MAX_REPAIR_WORKDAYS);
+    const d = new Date(form.deadline);
+    const overrunDays = Math.max(1, Math.round(
+      (Date.UTC(d.getFullYear(), d.getMonth(), d.getDate())
+        - Date.UTC(legal.getFullYear(), legal.getMonth(), legal.getDate())) / 86400000,
+    ));
+    const worksParts = worksSum + jobPartsSum;
+    const estimate = svcSum + partsSum;
+    const [base, baseLabel] = hasInvoice ? [invAmount, 'счёта']
+      : worksParts > 0 ? [worksParts, 'работ и запчастей']
+        : estimate > 0 ? [estimate, 'сметы']
+          : [0, ''];
+    const amount = base ? Math.round(Math.min(base, base * OSAGO_PENALTY_PER_DAY * overrunDays)) : 0;
+    return { overrunDays, base, baseLabel, amount };
+  }, [osagoTermWorkdays, osagoStart, form.deadline, hasInvoice, invAmount, worksSum, jobPartsSum, svcSum, partsSum]);
   const journal = useMemo(() => {
     if (!isEdit) return [];
     const ev = [];
@@ -475,14 +663,33 @@ export default function CarCard({
             </div>
           </div>
           <div className="cc-header-right">
+            {isEdit && hasInvoice && (
+              <button
+                className={`cc-pay-chip${allPaid ? ' is-paid' : ''}`}
+                disabled={payBusy}
+                onClick={togglePaid}
+                title={allPaid ? 'Счёт оплачен — нажмите, чтобы отменить отметку' : 'Отметить счёт оплаченным'}
+              >
+                <Icon name={allPaid ? 'check' : 'wallet'} size={13} strokeWidth={allPaid ? 2 : 1.7} />
+                <span>{allPaid ? 'Оплачено' : 'Не оплачено'}</span>
+                {!allPaid && <span className="cc-pay-chip-amt">· {fmtMoney(invAmount)}</span>}
+              </button>
+            )}
+            {isEdit && !hasInvoice && (
+              <button className="cc-pay-chip is-none" onClick={openDocs} title="Счёт ещё не выставлен — оформить в «Документы»">
+                <Icon name="file" size={13} />
+                <span>Счёт не выставлен</span>
+              </button>
+            )}
             {isEdit && <span className="cc-status-pill" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>}
             <button className="cc-close" onClick={closeCard} aria-label="Закрыть"><Icon name="x" size={18} strokeWidth={2} /></button>
           </div>
         </div>
 
         <div className="cc-body">
+         <div className="cc-cols">
           {isEdit && (
-            <div className="cc-spec">
+            <div className="cc-spec cc-full">
               <SpecItem label="VIN" value={form.vin} />
               <SpecItem label="Пробег" value={form.mileage ? `${form.mileage} км` : ''} />
               <SpecItem label="Цвет" value={form.color} />
@@ -494,36 +701,21 @@ export default function CarCard({
               </div>
             </div>
           )}
-          {isEdit && hasInvoice && (
-            <div
-              style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12,
-                padding: '12px 16px', borderRadius: 10, marginBottom: 4,
-                background: `color-mix(in srgb, var(${allPaid ? '--color-success' : '--color-danger'}) 14%, transparent)`,
-                border: `1px solid var(${allPaid ? '--color-success' : '--color-danger'})`,
-              }}
-            >
-              <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0 }}>
-                <span className="cc-pay-shield" style={{ background: `color-mix(in srgb, var(${allPaid ? '--color-success' : '--color-danger'}) 16%, transparent)`, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}><Icon name="shield" size={18} /></span>
-                <div>
-                  <div style={{ fontSize: 12, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}>
-                    {allPaid ? 'Счёт оплачен' : 'Счёт не оплачен'}
-                  </div>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: `var(${allPaid ? '--color-success' : '--color-danger'})` }}>
-                    {allPaid ? 'Оплачено' : 'Не оплачено'} · {fmtMoney(invAmount)}
+          {isEdit && partNotices.length > 0 && (
+            <div className="cc-notices cc-full">
+              {partNotices.map((n) => (
+                <div key={n.key} className={`cc-notice cc-notice--${n.key}`} title={n.text}>
+                  <span className="cc-notice-ico"><Icon name={n.icon} size={16} /></span>
+                  <div className="cc-notice-body">
+                    <div className="cc-notice-title">{n.title}</div>
+                    <div className="cc-notice-parts">{n.names}</div>
                   </div>
                 </div>
-              </div>
-              <button className={allPaid ? '' : 'primary'} disabled={payBusy} onClick={togglePaid} style={{ flexShrink: 0, display: 'inline-flex', alignItems: 'center', gap: 6 }}>
-                {payBusy ? '…' : (allPaid ? 'Отменить оплату' : <><Icon name="check" size={14} strokeWidth={2} />Отметить оплату</>)}
-              </button>
+              ))}
             </div>
           )}
-          {isEdit && !hasInvoice && (
-            <div className="cc-hint" style={{ marginBottom: 4 }}>Счёт ещё не выставлен — оформите его в «Документы».</div>
-          )}
           {!isEdit && (
-            <div className="cc-audatex">
+            <div className="cc-audatex cc-full">
               <div className="cc-audatex-row">
                 <label className={`audatex-upload-btn${extracting ? ' is-busy' : ''}`}>
                   {extracting ? 'Распознаём…' : <><Icon name="file" size={14} /> Импорт из Audatex (PDF)</>}
@@ -549,7 +741,7 @@ export default function CarCard({
               </label>
               <label className="cc-field">
                 <span>№ заказ-наряда</span>
-                <input placeholder="напр. 1506/1" value={form.order_number} onChange={(e) => patchForm({ order_number: e.target.value })} />
+                <input placeholder="оставьте пустым — присвоится сам" value={form.order_number} onChange={(e) => patchForm({ order_number: e.target.value })} />
               </label>
               <label className="cc-field full">
                 <span>VIN</span>
@@ -573,6 +765,9 @@ export default function CarCard({
               </label>
             </div>
           </section>
+
+          {isEdit && renderPhotoZone('before', '📷', 'Фото — до ремонта', 'Снимите машину при приёмке: повреждения, общий вид, VIN.')}
+          {isEdit && renderPhotoZone('after', '✨', 'Фото — после ремонта', 'Снимите готовую машину перед выдачей клиенту.')}
 
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">⏱️</span>Сроки и хранение</div>
@@ -605,6 +800,27 @@ export default function CarCard({
             {!isEdit && deadlineWarn && (
               <div className="deadline-warning"><Icon name="warning" size={13} /> Последний этап заканчивается {deadlineWarn.format('DD.MM HH:mm')} — позже дедлайна {dayjs(form.deadline).format('DD.MM HH:mm')}</div>
             )}
+            {osagoTermWorkdays > 0 && (
+              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--color-danger-bg)', border: '1px solid var(--color-danger)' }}>
+                <span style={{ color: 'var(--color-danger-text)', flexShrink: 0, display: 'inline-flex', marginTop: 1 }}><Icon name="warning" size={16} /></span>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-danger-text)' }}>Превышен срок ремонта по ОСАГО</div>
+                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 3, lineHeight: 1.4 }}>
+                    От заезда до дедлайна {osagoTermWorkdays} раб. дн., по закону — не более {OSAGO_MAX_REPAIR_WORKDAYS}{osagoPenalty ? `, просрочка ~${osagoPenalty.overrunDays} дн` : ''}.
+                  </div>
+                  {osagoPenalty && osagoPenalty.amount > 0 ? (
+                    <div style={{ fontSize: 12.5, marginTop: 4, color: 'var(--color-danger-text)' }}>
+                      Ориентировочная неустойка: <b>≈ {fmtMoney(osagoPenalty.amount)}</b>
+                      <span style={{ color: 'var(--color-text-muted)' }}> — 0,5%/день от суммы {osagoPenalty.baseLabel} ({fmtMoney(osagoPenalty.base)})</span>
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12, marginTop: 4, color: 'var(--color-text-muted)' }}>
+                      Неустойка — 0,5%/день от стоимости ремонта; сумма появится, когда будет счёт или смета.
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
           </section>
 
           <section className="cc-section">
@@ -636,8 +852,11 @@ export default function CarCard({
               )}
               {form.payment_type === 'insurance' && (
                 <label className="cc-field">
-                  <span>№ полиса (ОСАГО/КАСКО)</span>
-                  <input placeholder="серия и номер" value={form.policy_number} onChange={(e) => patchForm({ policy_number: e.target.value })} />
+                  <span>Тип полиса</span>
+                  <select value={form.policy_type} onChange={(e) => patchForm({ policy_type: e.target.value })}>
+                    <option value="">— выберите —</option>
+                    {POLICY_TYPES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
+                  </select>
                 </label>
               )}
             </div>
@@ -652,7 +871,7 @@ export default function CarCard({
           </section>
 
           {!isEdit && imported && (imported.services.length > 0 || imported.parts.length > 0) && (
-            <section className="cc-section">
+            <section className="cc-section cc-full">
               <button type="button" className="cc-imported-head" onClick={() => setImportedOpen((o) => !o)}>
                 <span className="cc-section-icon">🧾</span>Распознанные позиции
                 <span className="cc-imported-count">работ {imported.services.length} · запчастей {imported.parts.length}</span>
@@ -697,7 +916,7 @@ export default function CarCard({
             </section>
           )}
 
-          <section className="cc-section">
+          <section className="cc-section cc-full">
             <div className="cc-section-head">
               <span className="cc-section-icon">🛠️</span>Маршрут по постам
               <span className="cc-section-hint">необязательно — можно запланировать позже</span>
@@ -822,12 +1041,23 @@ export default function CarCard({
               <div className="cc-2col">
                 <div>
                   <div className="cc-section-subhead">Запчасти</div>
+                  {partNotices.map((n) => (
+                    <div key={n.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, margin: '0 0 8px', padding: '7px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.35, background: 'color-mix(in srgb, var(--color-warning) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--color-warning) 55%, transparent)', color: 'var(--color-warning)' }}>
+                      <span style={{ flexShrink: 0, display: 'inline-flex', marginTop: 1 }}><Icon name={n.icon} size={13} /></span>
+                      <span>{n.title}</span>
+                    </div>
+                  ))}
                   {jobParts.length ? (
                     <div className="cc-sum-list">
                       {jobParts.map((p, i) => (
                         <div className="cc-sum-row" key={`p-${i}`}>
                           <span className="cc-sum-ico"><Icon name="box" size={15} /></span>
-                          <span className="cc-sum-name">{p.name || '—'}{p.code ? ` · ${p.code}` : ''}</span>
+                          <span className="cc-sum-name">
+                            {p.name || '—'}{p.code ? ` · ${p.code}` : ''}
+                            {KIND_BADGES[p.kind] && (
+                              <span style={{ marginLeft: 6, padding: '1px 6px', borderRadius: 5, fontSize: 10, fontWeight: 700, whiteSpace: 'nowrap', background: 'color-mix(in srgb, var(--color-warning) 18%, transparent)', color: 'var(--color-warning)' }}>{KIND_BADGES[p.kind]}</span>
+                            )}
+                          </span>
                           <span className="cc-sum-qty">{p.qty ?? 1} шт.</span>
                         </div>
                       ))}
@@ -868,6 +1098,7 @@ export default function CarCard({
               </div>
             </section>
           )}
+         </div>
         </div>
 
         <div className="cc-footer">
@@ -875,6 +1106,9 @@ export default function CarCard({
             <>
               <button className="danger cc-btn-ico" onClick={onRemove}><Icon name="trash" size={15} />Удалить</button>
               <div className="cc-footer-actions">
+                {isRepair(job) && !job.stages?.length && (
+                  <button className="cc-btn-ico" onClick={returnToApproval}><Icon name="shield" size={15} />Вернуть в согласование</button>
+                )}
                 <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
                 <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>
                 {routeSet.length > 0 && <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>}
@@ -911,6 +1145,22 @@ export default function CarCard({
           onSaved={(c) => setLocalCosting(c)}
           onClose={() => setCostingOpen(false)}
         />
+      )}
+
+      {viewer && (
+        // stopPropagation ОБЯЗАТЕЛЕН: просмотрщик — прямой ребёнок cc-backdrop, у
+        // которого onClick закрывает карточку. Без остановки всплытия закрытие
+        // фото заодно роняло бы всю карточку. Закрываем только сам просмотрщик.
+        <div className="cc-viewer" onClick={(e) => { e.stopPropagation(); setViewer(null); }}>
+          <button
+            className="cc-viewer-close"
+            onClick={(e) => { e.stopPropagation(); setViewer(null); }}
+            aria-label="Закрыть"
+          >
+            <Icon name="x" size={24} strokeWidth={2} />
+          </button>
+          <img src={viewer.url} alt="Фото автомобиля" onClick={(e) => e.stopPropagation()} />
+        </div>
       )}
     </div>
   );

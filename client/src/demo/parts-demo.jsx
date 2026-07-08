@@ -13,7 +13,7 @@ const SUPPLIERS = ['Exist', 'Emex', 'Разборка', 'Химснаб'];
 
 const SEED_JOBS = [
   {
-    id: 'gag', car_model: 'GAG trumchi', plate_number: 'B122MM24', order_number: '98', client_name: 'Сергеев А. П.',
+    id: 'gag', car_model: 'GAG trumchi', plate_number: 'B122MM24', order_number: '98', client_name: 'Сергеев А. П.', discount: 8000,
     paint: { code: '676 Чёрный', type: 'Металлик', volume: '1.2 кг', status: 'mixing', cost: 4200 },
     parts: [
       { id: 'p1', name: 'Лонжерон передний правый', code: '50710-TVA', qty: 1, supplier: 'Exist', cost: 24500, price: 34000, status: 'in', kind: 'new', orderedAt: '26.06', eta: '29.06' },

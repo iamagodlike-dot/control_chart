@@ -1,4 +1,5 @@
 import { computeOrderTotals, money, lineTotal, formatDocDate } from '../orderDoc';
+import { policyTypeLabel } from '../insurance';
 
 // Presentational A4 sheet. Renders purely from a snapshot — never fetches,
 // never mutates. Used both for the on-screen preview and for printing.
@@ -58,7 +59,7 @@ export default function OrderDocument({ snapshot }) {
                 <>
                   <KV k="Оплата" v={`Страховая${ins.insurer_name ? ` — ${ins.insurer_name}` : ''}`} />
                   {ins.claim_number && <KV k="№ убытка" v={ins.claim_number} />}
-                  {ins.policy_number && <KV k="№ полиса" v={ins.policy_number} />}
+                  {ins.policy_type && <KV k="Тип полиса" v={policyTypeLabel(ins.policy_type)} />}
                 </>
               )}
               {ins.payment_type === 'legal' && <KV k="Оплата" v="Юридическое лицо" />}
@@ -166,6 +167,15 @@ export default function OrderDocument({ snapshot }) {
             {t.prepayment > 0 && <div className="zn-tr"><span className="zn-tl">К доплате</span><span className="zn-tv">{money(t.due)}</span></div>}
           </div>
         </div>
+
+        {snapshot.show_parts_consent && snapshot.parts_consent_text && (
+          <div className="zn-legal">
+            <span className="zn-lh">Согласование по запчастям</span>
+            {snapshot.parts_consent_text.split('\n').filter(Boolean).map((line, i) => (
+              <p key={i}>• {line}</p>
+            ))}
+          </div>
+        )}
 
         {(snapshot.show_warranty || snapshot.show_consent) && (
           <div className="zn-legal">

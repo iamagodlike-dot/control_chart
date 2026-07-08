@@ -1,5 +1,6 @@
 import { computeDocTotals, money, lineTotal, formatDocDate } from '../orderDoc';
 import { numberToWordsRu } from '../rubleWords';
+import { policyTypeLabel } from '../insurance';
 
 // Presentational A4 sheet for акт выполненных работ / акт приёма-передачи / счёт.
 // Renders purely from a snapshot (never fetches, never mutates). Reuses the
@@ -18,7 +19,7 @@ function InsuranceRows({ ins }) {
     <>
       <KV k="Оплата" v={`Страховая${i.insurer_name ? ` — ${i.insurer_name}` : ''}`} />
       {i.claim_number && <KV k="№ убытка" v={i.claim_number} />}
-      {i.policy_number && <KV k="№ полиса" v={i.policy_number} />}
+      {i.policy_type && <KV k="Тип полиса" v={policyTypeLabel(i.policy_type)} />}
     </>
   );
 }
@@ -173,6 +174,14 @@ function ActSheet({ snapshot }) {
         </div>
         <TotalsBox totals={t} showPrepayment />
       </div>
+      {snapshot.show_parts_consent && snapshot.parts_consent_text && (
+        <div className="zn-legal">
+          <span className="zn-lh">Согласование по запчастям</span>
+          {snapshot.parts_consent_text.split('\n').filter(Boolean).map((line, i) => (
+            <p key={i}>• {line}</p>
+          ))}
+        </div>
+      )}
       {(snapshot.show_act_text || snapshot.show_warranty) && (
         <div className="zn-legal">
           {snapshot.show_act_text && <p>{snapshot.act_text}</p>}

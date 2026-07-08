@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api';
 import CompanySettings from './CompanySettings';
+import SplusImport from './SplusImport';
+import UsersAdmin from './UsersAdmin';
 import Icon from './Icon';
 
 export default function PostsMasters() {
@@ -18,6 +20,7 @@ export default function PostsMasters() {
   const [editMasterForm, setEditMasterForm] = useState({ name: '', specialty: '', default_post_id: '' });
   const [editingInsurerId, setEditingInsurerId] = useState(null);
   const [editInsurerName, setEditInsurerName] = useState('');
+  const [showImport, setShowImport] = useState(false);
 
   const load = async () => {
     const [p, m, ins] = await Promise.all([api.posts.list(), api.masters.list(), api.insurers.list()]);
@@ -155,6 +158,8 @@ export default function PostsMasters() {
 
   return (
     <div className="panel-grid">
+      <UsersAdmin />
+
       <div className="panel">
         <h3>Посты</h3>
         {posts.length === 0 ? (
@@ -311,6 +316,18 @@ export default function PostsMasters() {
       </div>
 
       <CompanySettings />
+
+      <div className="panel">
+        <h3>Импорт из Splus</h3>
+        <p style={{ color: 'var(--text2, #667)', marginTop: 0, fontSize: 14 }}>
+          Перенос заказ-нарядов из старого сервиса Splus. Выгрузите там раздел «Заказ-наряды»
+          в CSV и загрузите его здесь — заказы добавятся к существующим (номер, дата, клиент,
+          машина с госномером, сумма — в заметку). Дубли по номеру пропускаются.
+        </p>
+        <button className="primary" onClick={() => setShowImport(true)}>Импортировать заказы</button>
+      </div>
+
+      {showImport && <SplusImport onClose={() => setShowImport(false)} onImported={load} />}
     </div>
   );
 }

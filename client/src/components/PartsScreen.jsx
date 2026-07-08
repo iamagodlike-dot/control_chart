@@ -62,6 +62,7 @@ export default function PartsScreen(props) {
     orderPrompt, onOrderDraft, confirmOrder, cancelOrder,
     etaPrompt, onEtaDraft, confirmEta, cancelEta,
     replPrompt, onReplDraft, confirmRepl, cancelRepl,
+    onOpenCar,
     banner,
   } = props;
 
@@ -76,6 +77,9 @@ export default function PartsScreen(props) {
         .psx input:focus,.psx select:focus{border-color:var(--brand)!important}
         .psx button{transition:all .15s}
         .psx *{box-sizing:border-box}
+        .psx .ps-carhead{cursor:pointer;padding:8px 12px;margin:-8px -12px;border-radius:10px;transition:background .15s}
+        .psx .ps-carhead:hover{background:var(--brand-soft)}
+        .psx .ps-carhead:active{background:color-mix(in srgb,var(--brand) 24%,transparent)}
       `}</style>
       {banner}
       <div style={css('flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:var(--bg)')}>
@@ -118,10 +122,20 @@ export default function PartsScreen(props) {
             <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3)")}>Сумма по ЗН</span>
             <div style={css('display:flex;align-items:baseline;gap:7px')}><span style={css("font-family:'JetBrains Mono',monospace;font-size:23px;font-weight:800;color:var(--brand);line-height:1")}>{vm.totalOrderStr}</span><span style={css('font-size:11px;color:var(--text3)')}>выставлено клиенту</span></div>
           </div>
+          {vm.hasDiscountTotal && (
+            <>
+              <div style={css('width:1px;background:var(--line);flex:0 0 auto')} />
+              <div style={css('display:flex;flex-direction:column;gap:4px;padding:0 26px')}>
+                <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3)")}>Скидка з/ч</span>
+                <div style={css('display:flex;align-items:baseline;gap:7px')}><span style={css("font-family:'JetBrains Mono',monospace;font-size:23px;font-weight:800;color:var(--wait);line-height:1")}>− {vm.discountTotalStr}</span><span style={css('font-size:11px;color:var(--text3)')}>учтена в марже</span></div>
+              </div>
+            </>
+          )}
           <div style={css('width:1px;background:var(--line);flex:0 0 auto')} />
           <div style={css('display:flex;flex-direction:column;gap:4px;padding:0 26px')}>
-            <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3)")}>Рентабельность</span>
-            <div style={css('display:flex;align-items:baseline;gap:7px')}><span style={{ ...css("font-family:'JetBrains Mono',monospace;font-size:23px;font-weight:800;line-height:1"), color: vm.rentabColor }}>{vm.rentabStr}</span><span style={css("font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3)")}>маржа {vm.totalMarginStr}</span></div>
+            <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3)")}>Рентабельность{vm.hasDiscountTotal ? ' со скидкой' : ''}</span>
+            <div style={css('display:flex;align-items:baseline;gap:7px')}><span style={{ ...css("font-family:'JetBrains Mono',monospace;font-size:23px;font-weight:800;line-height:1"), color: vm.hasDiscountTotal ? vm.netRentabColor : vm.rentabColor }}>{vm.hasDiscountTotal ? vm.netRentabStr : vm.rentabStr}</span><span style={css("font-family:'JetBrains Mono',monospace;font-size:11px;color:var(--text3)")}>маржа {vm.hasDiscountTotal ? vm.netTotalMarginStr : vm.totalMarginStr}</span></div>
+            {vm.hasDiscountTotal && <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--text3)")}>до скидки {vm.rentabStr} · маржа {vm.totalMarginStr}</span>}
             {vm.rentCountedStr && <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;color:var(--delay)")}>{vm.rentCountedStr}</span>}
           </div>
           <div title="Показатели бара считаются по позициям, видимым в текущем фильтре/поиске — ровно те же, что суммируются в карточках авто ниже" style={vm.scopeStyle}>
@@ -149,10 +163,17 @@ export default function PartsScreen(props) {
             <div key={g.carId} style={css('background:var(--panel);border:1px solid var(--line);border-radius:14px;overflow:hidden;flex:0 0 auto')}>
               {/* group head */}
               <div style={css('display:flex;align-items:center;gap:12px;padding:15px 18px;border-bottom:1px solid var(--line);background:var(--panel2);flex-wrap:wrap')}>
-                <Ico size={17} sw={1.7} stroke="var(--brand)" style={{ flex: '0 0 auto' }} paths={I.car} />
-                <span style={css('font-weight:700;font-size:16px')}>{g.model}</span>
-                <span style={css("font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--text2);padding:3px 9px;border:1px solid var(--line2);border-radius:6px")}>{g.plate}</span>
-                <span style={css("font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text3)")}>№{g.num} · {g.client}</span>
+                <div
+                  className={onOpenCar ? 'ps-carhead' : undefined}
+                  onClick={onOpenCar ? () => onOpenCar(g.carId) : undefined}
+                  title={onOpenCar ? 'Открыть карточку автомобиля' : undefined}
+                  style={css('display:flex;align-items:center;gap:12px;flex-wrap:wrap')}
+                >
+                  <Ico size={17} sw={1.7} stroke="var(--brand)" style={{ flex: '0 0 auto' }} paths={I.car} />
+                  <span style={css('font-weight:700;font-size:16px')}>{g.model}</span>
+                  <span style={css("font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--text2);padding:3px 9px;border:1px solid var(--line2);border-radius:6px")}>{g.plate}</span>
+                  <span style={css("font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text3)")}>№{g.num} · {g.client}</span>
+                </div>
                 {g.hasCells && (
                   <div style={css('display:flex;align-items:center;gap:6px;flex-wrap:wrap')}>
                     <Ico size={14} sw={1.7} stroke="var(--text3)" style={{ flex: '0 0 auto' }} paths={I.warehouse} />
@@ -165,8 +186,11 @@ export default function PartsScreen(props) {
                 )}
                 <div style={css('margin-left:auto;display:flex;align-items:center;gap:18px')}>
                   <div style={css('text-align:right')}><div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)")}>По ЗН</div><div style={css("font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--brand)")}>{g.orderSumStr}</div></div>
-                  <div title={g.grentabTitle} style={css('text-align:right')}><div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)")}>Рентаб.</div><div style={{ ...css("font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700"), color: g.grentabColor }}>{g.grentabStr}</div></div>
-                  <div style={css('text-align:right')}><div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)")}>Маржа</div><div style={{ ...css("font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700"), color: g.marginColor }}>{g.marginStr}</div></div>
+                  {g.hasDiscount && (
+                    <div title={g.discountTitle} style={css('text-align:right;cursor:help')}><div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)")}>Скидка</div><div style={css("font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700;color:var(--wait)")}>− {g.discountStr}</div></div>
+                  )}
+                  <div title={g.hasDiscount ? ('До скидки: ' + g.grentabStr + ' · маржа ' + g.marginStr) : g.grentabTitle} style={css('text-align:right')}><div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)")}>Рентаб.{g.hasDiscount ? ' ✓' : ''}</div><div style={{ ...css("font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700"), color: g.hasDiscount ? g.netRentabColor : g.grentabColor }}>{g.hasDiscount ? g.netRentabStr : g.grentabStr}</div></div>
+                  <div title={g.hasDiscount ? ('Со скидкой. До скидки: ' + g.marginStr) : undefined} style={css('text-align:right')}><div style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3)")}>Маржа{g.hasDiscount ? ' ✓' : ''}</div><div style={{ ...css("font-family:'JetBrains Mono',monospace;font-size:14px;font-weight:700"), color: g.hasDiscount ? g.netMarginColor : g.marginColor }}>{g.hasDiscount ? g.netMarginStr : g.marginStr}</div></div>
                 </div>
               </div>
 

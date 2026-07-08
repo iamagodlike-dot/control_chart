@@ -1,0 +1,557 @@
+'use strict';
+const { Telegraf, Markup } = require('telegraf');
+const cron = require('node-cron');
+const config = require('./config');
+const { isReady, reason } = require('./firebase');
+const views = require('./views');
+const { startNotifier } = require('./notify');
+
+if (!config.botToken) {
+  console.error('❌ Не задан BOT_TOKEN в файле .env');
+  process.exit(1);
+}
+
+const bot = new Telegraf(config.botToken);
+
+// ─── Кнопки меню ───
+const BTN = {
+  find: 'Найти авто',
+  cars: 'Машины в работе',
+  masters: 'Загрузка мастеров',
+  upcoming: 'Скоро выдача',
+  debts: 'Долги',
+  revenue: 'Выручка',
+  analytics: 'Аналитика',
+  summary: 'Сводка за день',
+};
+
+function menuFor(isManager) {
+  const rows = [[BTN.find], [BTN.cars, BTN.masters], [BTN.upcoming]];
+  if (isManager) {
+    rows.push([BTN.debts, BTN.revenue]);
+    rows.push([BTN.analytics, BTN.summary]);
+  }
+  return Markup.keyboard(rows).resize();
+}
+
+// Кнопки выбора периода для «Выручки».
+const periodKb = Markup.inlineKeyboard([
+  [Markup.button.callback('Сегодня', 'rev:today'), Markup.button.callback('Неделя', 'rev:week')],
+  [Markup.button.callback('Месяц', 'rev:month'), Markup.button.callback('Год', 'rev:year')],
+]);
+
+async function send(ctx, text, isManager) {
+  return ctx.reply(text, { parse_mode: 'HTML', ...menuFor(isManager) });
+}
+
+// Аккуратно выполняем запрос к данным и не роняем бота на ошибке.
+async function safe(ctx, fn) {
+  const isManager = config.isManager(ctx.from.id);
+  try {
+    const text = await fn();
+    await send(ctx, text, isManager);
+  } catch (e) {
+    if (!isReady()) {
+      await send(ctx, '⚙️ База ещё не подключена — идёт настройка. Загляните чуть позже.', isManager);
+    } else {
+      console.error('Ошибка запроса:', e);
+      await send(ctx, '⚠️ Не удалось получить данные. Попробуйте ещё раз.', isManager);
+    }
+  }
+}
+
+// ─── Доступ ───
+bot.use((ctx, next) => {
+  ctx.state.uid = String(ctx.from?.id || '');
+  ctx.state.allowed = config.isAllowed(ctx.state.uid);
+  ctx.state.manager = config.isManager(ctx.state.uid);
+  return next();
+});
+
+function denyMessage(uid) {
+  return (
+    'Похоже, у вас пока нет доступа к боту.\n\n' +
+    `Ваш Telegram ID: <code>${uid}</code>\n\n` +
+    'Передайте этот номер администратору — он добавит вас в список.'
+  );
+}
+
+// ─── /start и /whoami — доступны всем (чтобы узнать свой ID) ───
+bot.start(async (ctx) => {
+  const { uid, allowed, manager } = ctx.state;
+  if (!allowed) {
+    return ctx.reply(denyMessage(uid), { parse_mode: 'HTML' });
+  }
+  await send(
+    ctx,
+    [
+      '<b>Авто Академия</b>',
+      'Показываю машины, статусы, запчасти, фото и финансы прямо в Telegram.',
+      '',
+      '• Нажмите «Найти авто» или просто введите госномер, имя клиента или № заказа.',
+      '• Все команды — в меню ☰ у поля ввода.',
+    ].join('\n'),
+    manager,
+  );
+});
+
+bot.command('whoami', (ctx) => {
+  ctx.reply(`Ваш Telegram ID: <code>${ctx.state.uid}</code>`, { parse_mode: 'HTML' });
+});
+
+// ─── Кнопки (только для своих) ───
+function guard(handler) {
+  return async (ctx) => {
+    if (!ctx.state.allowed) return ctx.reply(denyMessage(ctx.state.uid), { parse_mode: 'HTML' });
+    return handler(ctx);
+  };
+}
+
+const HELP_TEXT = [
+  '<b>Что я умею</b>',
+  '',
+  '<b>Найти авто</b> — список машин кнопками или поиск: введите госномер, имя клиента или № заказа.',
+  'В карточке машины: запчасти со статусами, фото «до/после», документы (управляющим).',
+  '',
+  '<b>Машины в работе</b> — кто на каком посту.',
+  '<b>Загрузка мастеров</b> — у кого что в работе.',
+  '<b>Скоро выдача</b> — что сдаём в ближайшие дни.',
+  '',
+  '<i>Управляющим также:</i> Долги, Выручка, Аналитика, Сводка за день.',
+  '',
+  'Команды — в меню ☰ у поля ввода.',
+].join('\n');
+
+// ─── Действия меню (общие для кнопок-меню и одноимённых слэш-команд) ───
+async function actFind(ctx) {
+  try {
+    const data = await views.carsBrowse(0);
+    if (!data.total) return send(ctx, 'Введите госномер, имя клиента или № заказа:', ctx.state.manager);
+    await ctx.reply(browseText(data), { parse_mode: 'HTML', ...browseKeyboard(data) });
+  } catch (e) {
+    if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — идёт настройка.', ctx.state.manager);
+    console.error('Список машин:', e);
+    await send(ctx, '⚠️ Не удалось получить список. Введите госномер вручную:', ctx.state.manager);
+  }
+}
+const actCars = (ctx) => safe(ctx, () => views.carsInWork());
+const actMasters = (ctx) => safe(ctx, () => views.mastersLoad());
+const actHelp = (ctx) => send(ctx, HELP_TEXT, ctx.state.manager);
+async function actUpcoming(ctx) {
+  try {
+    await sendList(ctx, await views.upcoming());
+  } catch (e) {
+    if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — идёт настройка.', ctx.state.manager);
+    console.error('Скоро выдача:', e);
+    await send(ctx, '⚠️ Не удалось получить данные. Попробуйте ещё раз.', ctx.state.manager);
+  }
+}
+async function actSummary(ctx) {
+  if (!ctx.state.manager) return send(ctx, 'Сводка доступна только управляющим.', false);
+  return safe(ctx, () => views.dailySummary());
+}
+async function actDebts(ctx) {
+  if (!ctx.state.manager) return send(ctx, 'Раздел доступен только управляющим.', false);
+  try {
+    await sendList(ctx, await views.debts());
+  } catch (e) {
+    if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — идёт настройка.', ctx.state.manager);
+    console.error('Долги:', e);
+    await send(ctx, '⚠️ Не удалось получить данные. Попробуйте ещё раз.', ctx.state.manager);
+  }
+}
+async function actRevenue(ctx) {
+  if (!ctx.state.manager) return send(ctx, 'Раздел доступен только управляющим.', false);
+  return ctx.reply('Выручка — выберите период:', { parse_mode: 'HTML', ...periodKb });
+}
+async function actAnalytics(ctx) {
+  if (!ctx.state.manager) return send(ctx, 'Раздел доступен только управляющим.', false);
+  return safe(ctx, () => views.analytics());
+}
+
+// Кнопки нижнего меню + одноимённые слэш-команды (для меню ☰ у поля ввода).
+// В hears указываем и СТАРЫЕ подписи с эмодзи — чтобы у тех, у кого нижнее меню
+// ещё не обновилось, кнопки продолжали работать (после ответа меню обновится).
+bot.hears([BTN.find, '🔎 Найти авто'], guard(actFind));            bot.command('find', guard(actFind));
+bot.hears([BTN.cars, '🚗 Машины в работе'], guard(actCars));       bot.command('cars', guard(actCars));
+bot.hears([BTN.masters, '👨‍🔧 Загрузка мастеров'], guard(actMasters)); bot.command('masters', guard(actMasters));
+bot.hears([BTN.upcoming, '📅 Скоро выдача'], guard(actUpcoming));   bot.command('upcoming', guard(actUpcoming));
+bot.hears([BTN.summary, '📊 Сводка за день'], guard(actSummary));   bot.command('summary', guard(actSummary));
+bot.hears([BTN.debts, '💰 Долги'], guard(actDebts));               bot.command('debts', guard(actDebts));
+bot.hears([BTN.revenue, '📈 Выручка'], guard(actRevenue));         bot.command('revenue', guard(actRevenue));
+bot.hears([BTN.analytics, '🧭 Аналитика'], guard(actAnalytics));   bot.command('analytics', guard(actAnalytics));
+bot.command('help', guard(actHelp));
+
+bot.action(/^rev:(today|week|month|year)$/, async (ctx) => {
+  if (!config.isManager(ctx.from.id)) return ctx.answerCbQuery('Только управляющим');
+  const period = ctx.match[1];
+  try {
+    const text = await views.revenue(period);
+    await ctx.editMessageText(text, { parse_mode: 'HTML', ...periodKb });
+    await ctx.answerCbQuery();
+  } catch (e) {
+    const desc = (e && (e.description || e.message)) || '';
+    if (/message is not modified/i.test(desc)) return ctx.answerCbQuery('Уже показано');
+    if (!isReady()) return ctx.answerCbQuery('База ещё не подключена');
+    console.error('Ошибка выручки:', e);
+    return ctx.answerCbQuery('Ошибка, попробуйте ещё раз');
+  }
+});
+
+// ─── Документы по машине (только управляющим) ───
+// Присылаем ИМЕННО сохранённые в сервисе документы (заказ-наряд, счёт, акты),
+// напечатанные в PDF теми же компонентами и стилями, что на сайте.
+const docpdf = require('./docpdf');
+const { getDocById } = require('./data');
+
+// Кнопки под карточкой машины. Запчасти и фото — всем сотрудникам; документы —
+// только управляющим (как и было).
+function cardButtons(jobId, isManager) {
+  const rows = [[
+    Markup.button.callback('Запчасти', `parts:${jobId}`),
+    Markup.button.callback('Фото', `photos:${jobId}`),
+  ]];
+  const last = [];
+  if (isManager) last.push(Markup.button.callback('Документы', `docs:${jobId}`));
+  last.push(Markup.button.callback('Обновить', `refresh:${jobId}`));
+  rows.push(last);
+  return Markup.inlineKeyboard(rows);
+}
+
+// Прислать карточку машины: есть фото — шлём фото с карточкой в подписи, нет —
+// обычным текстом. Подпись к фото у Telegram ограничена 1024 символами; если
+// карточка длиннее — шлём фото отдельно, а карточку текстом (кнопки — на ней).
+async function sendCard(ctx, text, jobId, isManager, photoUrl) {
+  const kb = cardButtons(jobId, isManager);
+  if (photoUrl && text.length <= 1024) {
+    try {
+      return await ctx.replyWithPhoto(photoUrl, { caption: text, parse_mode: 'HTML', ...kb });
+    } catch (e) {
+      console.error('Фото в карточке не отправилось, шлю текстом:', e.message);
+    }
+  } else if (photoUrl) {
+    await ctx.replyWithPhoto(photoUrl).catch(() => {});
+  }
+  return ctx.reply(text, { parse_mode: 'HTML', ...kb });
+}
+
+// ─── Выбор машины кнопками (список + листание) ───
+function browseText(data) {
+  if (!data.total) return 'Сейчас в работе нет машин.';
+  return `<b>Выберите машину</b> — в работе ${data.total}\nСтраница ${data.page + 1} из ${data.pages}. Нажмите на машину или просто введите госномер:`;
+}
+
+function browseKeyboard(data) {
+  const rows = data.cars.map((c) => [Markup.button.callback(c.label, `car:${c.id}`)]);
+  const nav = [];
+  if (data.page > 0) nav.push(Markup.button.callback('‹ Назад', `browse:${data.page - 1}`));
+  if (data.page < data.pages - 1) nav.push(Markup.button.callback('Дальше ›', `browse:${data.page + 1}`));
+  if (nav.length) rows.push(nav);
+  return Markup.inlineKeyboard(rows);
+}
+
+// Клавиатура из нескольких найденных машин (несколько совпадений поиска).
+function carsKeyboard(matches) {
+  return Markup.inlineKeyboard(matches.map((m) => [Markup.button.callback(m.label, `car:${m.id}`)]));
+}
+
+// Кнопки-номера (по 3 в ряд) под короткими списками — нажал номер, открылась карточка.
+function plateButtons(cars) {
+  const rows = [];
+  for (let i = 0; i < cars.length; i += 3) {
+    rows.push(cars.slice(i, i + 3).map((c) => Markup.button.callback(c.plate, `car:${c.id}`)));
+  }
+  return Markup.inlineKeyboard(rows);
+}
+
+// Отправить список вида {text, cars}: с кнопками-номерами, если машины есть.
+async function sendList(ctx, res) {
+  if (res && res.cars && res.cars.length) {
+    return ctx.reply(res.text, { parse_mode: 'HTML', ...plateButtons(res.cars) });
+  }
+  return send(ctx, res.text, ctx.state.manager);
+}
+
+// Список сохранённых документов машины.
+bot.action(/^docs:(.+)$/, async (ctx) => {
+  if (!config.isManager(ctx.from.id)) return ctx.answerCbQuery('Только управляющим');
+  const jobId = ctx.match[1];
+  try {
+    await ctx.answerCbQuery();
+    const { text, docs } = await views.jobDocuments(jobId);
+    if (!docs.length) return ctx.reply('По этой машине сохранённых документов пока нет.');
+    const kb = Markup.inlineKeyboard(docs.map((d) => [Markup.button.callback(d.label, `getdoc:${d.id}`)]));
+    await ctx.reply(`${text}\nВыберите — пришлю PDF:`, { parse_mode: 'HTML', ...kb });
+  } catch (e) {
+    console.error('Список документов:', e);
+    await ctx.reply(isReady() ? '⚠️ Не удалось получить документы.' : '⚙️ База ещё не подключена.');
+  }
+});
+
+// Прислать конкретный документ как PDF (точно как на сайте).
+bot.action(/^getdoc:(.+)$/, async (ctx) => {
+  if (!config.isManager(ctx.from.id)) return ctx.answerCbQuery('Только управляющим');
+  const docId = ctx.match[1];
+  try {
+    await ctx.answerCbQuery('Готовлю документ…');
+    const snapshot = await getDocById(docId);
+    if (!snapshot) return ctx.reply('Документ не найден.');
+    const { buffer, filename } = await docpdf.renderPdf(snapshot);
+    await ctx.replyWithDocument({ source: buffer, filename });
+  } catch (e) {
+    console.error('Документ:', e);
+    await ctx.reply(isReady() ? '⚠️ Не удалось сформировать документ.' : '⚙️ База ещё не подключена.');
+  }
+});
+
+// ─── Запчасти по машине (всем; поставщики и цены — только управляющим) ───
+bot.action(/^parts:(.+)$/, async (ctx) => {
+  if (!config.isAllowed(ctx.from.id)) return ctx.answerCbQuery('Нет доступа');
+  const jobId = ctx.match[1];
+  try {
+    await ctx.answerCbQuery();
+    const text = await views.partsView(jobId, { isManager: config.isManager(ctx.from.id) });
+    try {
+      await ctx.reply(text, { parse_mode: 'HTML' });
+    } catch (e) {
+      // Подстраховка: если клиент/сервер не понял «сворачиваемую цитату» — без неё.
+      if (/parse entities|blockquote|unsupported/i.test(e.description || e.message || '')) {
+        await ctx.reply(text.replace(/<\/?blockquote[^>]*>/g, ''), { parse_mode: 'HTML' });
+      } else { throw e; }
+    }
+  } catch (e) {
+    console.error('Запчасти:', e);
+    await ctx.reply(isReady() ? '⚠️ Не удалось получить запчасти.' : '⚙️ База ещё не подключена.');
+  }
+});
+
+// Отправить альбом фото. В Telegram один альбом — от 2 до 10 снимков, поэтому
+// одиночные шлём обычным фото, а длинные списки бьём на группы по 10.
+async function sendAlbum(ctx, urls, caption) {
+  if (!urls || !urls.length) return;
+  for (let i = 0; i < urls.length; i += 10) {
+    const chunk = urls.slice(i, i + 10);
+    const cap = i === 0 ? caption : undefined;
+    if (chunk.length === 1) {
+      await ctx.replyWithPhoto(chunk[0], cap ? { caption: cap } : undefined);
+    } else {
+      await ctx.replyWithMediaGroup(chunk.map((url, idx) => ({
+        type: 'photo', media: url, ...(idx === 0 && cap ? { caption: cap } : {}),
+      })));
+    }
+  }
+}
+
+// ─── Фото машины: до/после (всем) ───
+bot.action(/^photos:(.+)$/, async (ctx) => {
+  if (!config.isAllowed(ctx.from.id)) return ctx.answerCbQuery('Нет доступа');
+  const jobId = ctx.match[1];
+  try {
+    await ctx.answerCbQuery('Загружаю фото…');
+    const ph = await views.jobPhotos(jobId);
+    if (!ph || ph.total === 0) return ctx.reply('Фото по этой машине пока нет.');
+    await sendAlbum(ctx, ph.before, `${ph.car} — до ремонта`);
+    await sendAlbum(ctx, ph.after, `${ph.car} — после ремонта`);
+  } catch (e) {
+    console.error('Фото:', e);
+    await ctx.reply(isReady() ? '⚠️ Не удалось получить фото.' : '⚙️ База ещё не подключена.');
+  }
+});
+
+// Открыть карточку машины по нажатию на кнопку из списка/поиска.
+bot.action(/^car:(.+)$/, async (ctx) => {
+  if (!config.isAllowed(ctx.from.id)) return ctx.answerCbQuery('Нет доступа');
+  const jobId = ctx.match[1];
+  const isManager = config.isManager(ctx.from.id);
+  try {
+    await ctx.answerCbQuery();
+    const card = await views.openCar(jobId, { isManager });
+    if (!card) return ctx.reply('Машина не найдена (возможно, уже выдана).');
+    await sendCard(ctx, card.text, jobId, isManager, card.photo);
+  } catch (e) {
+    console.error('Открытие машины:', e);
+    await ctx.reply(isReady() ? '⚠️ Не удалось открыть карточку.' : '⚙️ База ещё не подключена.');
+  }
+});
+
+// Обновить карточку машины на месте (кнопка 🔄). Само фото не меняем — только
+// текст/подпись (статусы, полосы прогресса, финансы). Если карточка была без фото —
+// правим текст, если с фото — подпись.
+bot.action(/^refresh:(.+)$/, async (ctx) => {
+  if (!config.isAllowed(ctx.from.id)) return ctx.answerCbQuery('Нет доступа');
+  const jobId = ctx.match[1];
+  const isManager = config.isManager(ctx.from.id);
+  try {
+    const card = await views.openCar(jobId, { isManager });
+    if (!card) return ctx.answerCbQuery('Машина не найдена');
+    const kb = cardButtons(jobId, isManager);
+    const hasPhoto = !!(ctx.callbackQuery.message && ctx.callbackQuery.message.photo);
+    if (hasPhoto && card.text.length <= 1024) {
+      await ctx.editMessageCaption(card.text, { parse_mode: 'HTML', ...kb });
+    } else if (hasPhoto) {
+      await ctx.reply(card.text, { parse_mode: 'HTML', ...kb }); // подпись не влезает — новым сообщением
+    } else {
+      await ctx.editMessageText(card.text, { parse_mode: 'HTML', ...kb });
+    }
+    await ctx.answerCbQuery('Обновлено');
+  } catch (e) {
+    const desc = (e && (e.description || e.message)) || '';
+    if (/message is not modified/i.test(desc)) return ctx.answerCbQuery('Без изменений');
+    console.error('Обновление карточки:', e);
+    await ctx.answerCbQuery('Не удалось обновить');
+  }
+});
+
+// Листание списка машин (кнопки ⬅️/➡️) — обновляем то же сообщение.
+bot.action(/^browse:(\d+)$/, async (ctx) => {
+  if (!config.isAllowed(ctx.from.id)) return ctx.answerCbQuery('Нет доступа');
+  try {
+    await ctx.answerCbQuery();
+    const data = await views.carsBrowse(Number(ctx.match[1]));
+    await ctx.editMessageText(browseText(data), { parse_mode: 'HTML', ...browseKeyboard(data) });
+  } catch (e) {
+    const desc = (e && (e.description || e.message)) || '';
+    if (/message is not modified/i.test(desc)) return; // та же страница — не страшно
+    console.error('Листание списка:', e);
+  }
+});
+
+// ─── Любой другой текст — это поиск ───
+bot.on('text', guard(async (ctx) => {
+  const isManager = ctx.state.manager;
+  try {
+    const res = await views.search(ctx.message.text, { isManager });
+    if (res.jobId) {
+      // Одна машина найдена — карточка с фото и кнопками (документы — управляющим).
+      await sendCard(ctx, res.text, res.jobId, isManager, res.photo);
+    } else if (res.matches && res.matches.length) {
+      // Несколько машин — показываем кнопками, выбирается нажатием.
+      await ctx.reply(res.text, { parse_mode: 'HTML', ...carsKeyboard(res.matches) });
+    } else {
+      await send(ctx, res.text, isManager);
+    }
+  } catch (e) {
+    if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — идёт настройка.', isManager);
+    console.error('Поиск:', e);
+    await send(ctx, '⚠️ Не удалось получить данные. Попробуйте ещё раз.', isManager);
+  }
+}));
+
+// ─── Утренняя сводка по расписанию — только управляющим ───
+function scheduleSummary() {
+  cron.schedule(config.summary.cron, async () => {
+    if (!isReady()) return;
+    let text;
+    try {
+      text = await views.dailySummary();
+    } catch (e) {
+      console.error('Не удалось собрать сводку:', e);
+      return;
+    }
+    for (const id of config.managers) {
+      try {
+        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' });
+      } catch (e) {
+        console.error(`Не удалось отправить сводку ${id}:`, e.message);
+      }
+    }
+  }, { timezone: config.summary.tz });
+}
+
+// Вечернее напоминание управляющим: что выдать завтра и что «горит» сегодня.
+function scheduleReminder() {
+  cron.schedule(config.reminder.cron, async () => {
+    if (!isReady()) return;
+    let text;
+    try {
+      text = await views.eveningReminder();
+    } catch (e) {
+      console.error('Не удалось собрать напоминание:', e);
+      return;
+    }
+    if (!text) return; // напоминать не о чем
+    for (const id of config.managers) {
+      try {
+        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' });
+      } catch (e) {
+        console.error(`Не удалось отправить напоминание ${id}:`, e.message);
+      }
+    }
+  }, { timezone: config.reminder.tz });
+}
+
+// ─── Запуск ───
+// В этой версии Telegraf промис bot.launch() резолвится только при ОСТАНОВКЕ,
+// поэтому расписание и логи ставим до запуска, а сам launch не «ждём».
+// Ошибки в обработчиках не должны ронять бота.
+bot.catch((err, ctx) => {
+  console.error(`Ошибка обработчика (${ctx?.updateType || '?'}):`, err.message);
+});
+
+// Меню команд (кнопка ☰ у поля ввода). Всем — базовый набор; управляющим в их
+// личных чатах — расширенный (с финансами). Ошибки не критичны — просто у кого-то
+// не появится меню (например, если управляющий ещё не открывал бот).
+async function setupCommands() {
+  const base = [
+    { command: 'find', description: 'Найти авто — список и поиск' },
+    { command: 'cars', description: 'Машины в работе' },
+    { command: 'masters', description: 'Загрузка мастеров' },
+    { command: 'upcoming', description: 'Скоро выдача' },
+    { command: 'help', description: 'Что умеет бот' },
+  ];
+  const managerCmds = [
+    { command: 'find', description: 'Найти авто — список и поиск' },
+    { command: 'cars', description: 'Машины в работе' },
+    { command: 'masters', description: 'Загрузка мастеров' },
+    { command: 'upcoming', description: 'Скоро выдача' },
+    { command: 'debts', description: 'Долги по машинам' },
+    { command: 'revenue', description: 'Выручка за период' },
+    { command: 'analytics', description: 'Аналитика' },
+    { command: 'summary', description: 'Сводка за день' },
+    { command: 'help', description: 'Что умеет бот' },
+  ];
+  try {
+    await bot.telegram.setMyCommands(base);
+  } catch (e) { console.error('Меню команд (общее):', e.message); }
+  for (const id of config.managers) {
+    try {
+      await bot.telegram.setMyCommands(managerCmds, { scope: { type: 'chat', chat_id: Number(id) } });
+    } catch (e) { console.error(`Меню команд (управляющий ${id}):`, e.message); }
+  }
+}
+
+// Подключение к Telegram с повторами: сразу после загрузки сервера сеть может
+// быть ещё не готова — не сдаёмся после первой осечки, а пробуем снова.
+async function connectAndLaunch() {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const me = await bot.telegram.getMe();
+      console.log(`✅ Telegram на связи: @${me.username}`);
+      await setupCommands();
+      break;
+    } catch (e) {
+      const wait = Math.min(60, attempt * 5);
+      console.error(`Telegram недоступен (попытка ${attempt}): ${e.message}. Повтор через ${wait}с…`);
+      await new Promise((r) => setTimeout(r, wait * 1000));
+    }
+  }
+  // launch() у Telegraf резолвится только при остановке; на ошибке — перезапуск.
+  bot.launch().catch((e) => {
+    console.error('Опрос прервался:', e.message, '— перезапуск через 10с');
+    setTimeout(connectAndLaunch, 10000);
+  });
+}
+
+scheduleSummary();
+scheduleReminder();
+startNotifier(bot);
+console.log('🤖 Бот запускается…');
+console.log(isReady() ? '✅ База подключена.' : `⚠️  База не подключена: ${reason()}`);
+console.log(`⏰ Утренняя сводка: ${config.summary.hour}:${String(config.summary.minute).padStart(2, '0')} · напоминание: ${config.reminder.hour}:${String(config.reminder.minute).padStart(2, '0')} (${config.summary.tz}), получатели: ${config.managers.length || 'пока никого'}`);
+connectAndLaunch();
+
+function stop(sig) {
+  try { bot.stop(sig); } catch { /* ещё не запущен — не страшно */ }
+}
+process.once('SIGINT', () => stop('SIGINT'));
+process.once('SIGTERM', () => stop('SIGTERM'));

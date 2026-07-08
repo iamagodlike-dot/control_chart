@@ -27,6 +27,7 @@ const jobShell = (rj) => ({
   plate_number: rj.plate_number || '',
   order_number: rj.order_number || '',
   client_name: rj.client_name || '',
+  discount: Number(rj.discount) || 0,
 });
 
 export function usePartsController({ remoteJobs, cells = {}, ops = {}, rentabTarget = 40 }) {
@@ -284,7 +285,7 @@ export function usePartsController({ remoteJobs, cells = {}, ops = {}, rentabTar
   const onClearFilter = useCallback(() => { resetFreeze(); setFilter('all'); setSearch(''); }, [resetFreeze]);
 
   // ---- view model ----------------------------------------------------------
-  const cars = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, { model: j.car_model, plate: j.plate_number, num: j.order_number, client: j.client_name || '—' }])), [jobs]);
+  const cars = useMemo(() => Object.fromEntries(jobs.map((j) => [j.id, { model: j.car_model, plate: j.plate_number, num: j.order_number, client: j.client_name || '—', discount: j.discount || 0 }])), [jobs]);
   const paintMap = useMemo(() => Object.fromEntries(jobs.filter((j) => j.paint).map((j) => [j.id, j.paint])), [jobs]);
   const partsFlat = useMemo(() => jobs.flatMap((j) => (j.parts || []).map((p) => ({ ...p, carId: j.id }))), [jobs]);
   const vm = useMemo(() => buildPartsVM({ parts: partsFlat, cars, paint: paintMap, cells, filter, search, rentabTarget, frozenOrder, flashId }), [partsFlat, cars, paintMap, cells, filter, search, rentabTarget, frozenOrder, flashId]);

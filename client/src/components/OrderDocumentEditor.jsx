@@ -4,9 +4,10 @@ import { api } from '../api';
 import { parseAudatexPdf } from '../audatexParse';
 import OrderDocument from './OrderDocument';
 import DateTimeField from './DateTimeField';
+import { printFitted } from '../printDoc';
 import {
   buildOrderSnapshot, computeOrderTotals, uid, money, lineTotal, formatDocDate,
-  DEFAULT_WARRANTY, DEFAULT_CONSENT,
+  buildPartsConsentText, DEFAULT_WARRANTY, DEFAULT_CONSENT,
 } from '../orderDoc';
 import '../orderDoc.css';
 
@@ -383,6 +384,17 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
         </div>
 
         <div className="oe-section">
+          <div className="oe-toggle-row">
+            <label className="oe-toggle">
+              <input type="checkbox" checked={snapshot.show_parts_consent} onChange={(e) => patch({ show_parts_consent: e.target.checked })} />
+              Согласование по запчастям (Б/У и замены)
+            </label>
+            <button className="small" onClick={() => patch({ parts_consent_text: buildPartsConsentText(snapshot.parts) })}>Собрать из запчастей</button>
+          </div>
+          <textarea className="oe-textarea" value={snapshot.parts_consent_text || ''} disabled={!snapshot.show_parts_consent} onChange={(e) => patch({ parts_consent_text: e.target.value })} placeholder="Отметки о Б/У и заменах на аналог — по одной в строке" />
+        </div>
+
+        <div className="oe-section">
           <h4>Реквизиты компании (для этого документа)</h4>
           <div className="oe-hint">По умолчанию берутся из «Посты и мастера → Реквизиты». Правки здесь остаются только в этом документе.</div>
           <div className="oe-grid">
@@ -423,7 +435,7 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
           <button onClick={saveToCar} title="Перенести марку, гос. номер, VIN, пробег и клиента в карточку машины">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
-          <button className="primary" onClick={() => window.print()}>🖨 Печать</button>
+          <button className="primary" onClick={() => printFitted()}>🖨 Печать</button>
         </div>
       </div>
 

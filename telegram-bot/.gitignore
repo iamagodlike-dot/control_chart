@@ -1,0 +1,6 @@
+# Секреты — НИКОГДА не коммитить
+.env
+service-account.json
+*.serviceaccount.json
+
+node_modules

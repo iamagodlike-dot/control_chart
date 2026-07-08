@@ -1,0 +1,18 @@
+[Unit]
+Description=Academy Auto — приёмник фотографий автомобилей
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/academyauto-photos
+ExecStart=/usr/bin/node /opt/academyauto-photos/index.js
+Environment=PORT=4300
+Environment=UPLOAD_DIR=/var/www/academyauto-uploads
+Environment=FIREBASE_PROJECT_ID=gannt-9b15d
+Restart=on-failure
+RestartSec=3
+User=www-data
+Group=www-data
+
+[Install]
+WantedBy=multi-user.target

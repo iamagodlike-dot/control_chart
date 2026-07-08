@@ -8,6 +8,7 @@ import {
   periodRange, inRange, jobDate,
 } from '../finance';
 import { PAYMENT_SHORT, isInsurance } from '../insurance';
+import { isRepair } from '../phase';
 import FinancePanel from './FinancePanel';
 import MoneyFeed from './MoneyFeed';
 import CostingModal from './CostingModal';
@@ -40,6 +41,7 @@ export default function Finance() {
   const [allJobs, setAllJobs] = useState([]);
   const [docs, setDocs] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [staffExpenses, setStaffExpenses] = useState([]);
   const [company, setCompany] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -49,19 +51,23 @@ export default function Finance() {
 
   const load = async () => {
     setLoading(true);
-    const [all, d, tx, comp] = await Promise.all([
+    const [all, d, tx, exp, comp] = await Promise.all([
       api.jobs.listAllBrief().catch(() => []),
       api.orderDocuments.listAll().catch(() => []),
       api.transactions.list().catch(() => []),
+      api.expenses.listAll().catch(() => []),
       api.settings.getCompany().catch(() => ({})),
     ]);
-    setAllJobs(all);
+    // В финансах учитываем только машины в ремонте (в т.ч. выданные/архивные);
+    // машины на согласовании со страховой — ещё не выручка, их исключаем.
+    setAllJobs(all.filter(isRepair));
     setDocs(d);
     setTransactions(tx);
+    setStaffExpenses(exp);
     setCompany(comp);
     setLoading(false);
   };
-  const loadJobs = async () => setAllJobs(await api.jobs.listAllBrief().catch(() => []));
+  const loadJobs = async () => setAllJobs((await api.jobs.listAllBrief().catch(() => [])).filter(isRepair));
   const loadDocs = async () => setDocs(await api.orderDocuments.listAll().catch(() => []));
   const loadTx = async () => setTransactions(await api.transactions.list().catch(() => []));
 
@@ -85,9 +91,27 @@ export default function Finance() {
     return m;
   }, [docs]);
 
+  // Траты сотрудников (экспедитор и др. из коллекции expenses) учитываются в
+  // прибыли (P&L) как прочие расходы: приводим к форме транзакции-расхода и
+  // подмешиваем в расчёт. Дата — по created_at, чтобы попадали в нужный период.
+  // В «Ленту» их НЕ добавляем: там удаление идёт через api.transactions, а это
+  // другая коллекция — иначе появилась бы «мёртвая» кнопка удаления.
+  const financeTx = useMemo(() => {
+    const staff = staffExpenses.map((e) => ({
+      id: `staff-${e.id}`,
+      direction: 'expense',
+      category: e.category || 'Прочее',
+      amount: Number(e.amount) || 0,
+      date: e.created_at,
+      note: (e.created_by_name || e.created_by || 'сотрудник') + (e.note ? ` — ${e.note}` : ''),
+      created_at: e.created_at,
+    }));
+    return [...transactions, ...staff];
+  }, [transactions, staffExpenses]);
+
   const fin = useMemo(
-    () => computeFinance({ jobs: allJobs, invoices, transactions, company, period }),
-    [allJobs, invoices, transactions, company, period],
+    () => computeFinance({ jobs: allJobs, invoices, transactions: financeTx, company, period }),
+    [allJobs, invoices, financeTx, company, period],
   );
   const cash = useMemo(
     () => computeCashFlow({ jobs: allJobs, invoices, transactions, period }),

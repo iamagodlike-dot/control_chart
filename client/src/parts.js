@@ -66,9 +66,27 @@ export function parseDay(d, year) {
 }
 export const parseEta = parseDay;
 
+// Stable id for a part. Parts live inside job.parts[]; their id is the ONLY key
+// used to delete/save a single position (api.jobs.removePart/savePart) and to
+// dirty-guard live snapshots. It MUST be persisted with the part — an id minted
+// on the client at render time changes on every snapshot and never matches the
+// stored part, so delete/edit silently no-op. See withPartIds / ensurePartIds.
+export function genPartId() {
+  return `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`;
+}
+
+// Give every part in an array a stable id WITHOUT touching any other field
+// (unit/price from an Audatex import are preserved). Idempotent — a part that
+// already has an id is returned untouched. Run at every job write so the stored
+// array and the on-screen rows always agree on ids.
+export function withPartIds(parts) {
+  if (!Array.isArray(parts)) return parts;
+  return parts.map((p) => (p && typeof p === 'object' && !p.id ? { ...p, id: genPartId() } : p));
+}
+
 export function normalizePart(p = {}) {
   return {
-    id: p.id || `p_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+    id: p.id || genPartId(),
     name: p.name || '',
     code: p.code || '',            // артикул — kept as `code` (existing field)
     replArticle: p.replArticle || '',
@@ -98,7 +116,9 @@ export function partRentab(p = {}) {
 
 // Money model for a set of parts (one car group or the whole visible list).
 // Margin & rentability use ONLY costed positions (cost>0), per §12.2.
-export function partsFin(parts = [], paintCost = 0) {
+// `discount` — единая скидка заказа, отнесённая на запчасти: размазывается по
+// ВСЕЙ выручке (totalOrder), в маржу берётся доля, приходящаяся на costed-базу.
+export function partsFin(parts = [], paintCost = 0, discount = 0) {
   const list = parts || [];
   const totalCost = list.reduce((a, p) => a + num(p.cost) * num(p.qty), 0);
   const totalOrder = list.reduce((a, p) => a + num(p.price) * num(p.qty), 0);
@@ -107,8 +127,11 @@ export function partsFin(parts = [], paintCost = 0) {
   const rentCost = costed.reduce((a, p) => a + num(p.cost) * num(p.qty), 0) + (paintCost > 0 ? paintCost : 0);
   const margin = rentBase - rentCost;
   const rentab = rentBase > 0 ? Math.round((margin / rentBase) * 100) : null;
+  const discountApplied = (num(discount) > 0 && totalOrder > 0) ? (num(discount) * rentBase / totalOrder) : 0;
+  const netMargin = margin - discountApplied;
+  const netRentab = rentBase > 0 ? Math.round((netMargin / rentBase) * 100) : null;
   const missingCost = list.filter((p) => !(num(p.cost) > 0) && p.status !== 'need').length;
-  return { totalCost, totalOrder, rentBase, rentCost, margin, rentab, costedCount: costed.length, missingCost };
+  return { totalCost, totalOrder, rentBase, rentCost, margin, rentab, discountApplied, netMargin, netRentab, costedCount: costed.length, missingCost };
 }
 
 // ---- style builders (mirror the reference inline styles) ---------------------
@@ -149,6 +172,13 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
   const counts = { need: 0, ordered: 0, in: 0, issued: 0 };
   P.forEach((p) => { counts[p.status] = (counts[p.status] || 0) + 1; });
 
+  // Полная выручка по ЗН каждой машины (ВСЕ её позиции, до фильтра). Это база,
+  // по которой единая скидка заказа (cars[cid].discount, §авто) размазывается на
+  // запчасти: в маржу попадает лишь доля скидки, приходящаяся на позиции с
+  // введённой себестоимостью — иначе незаполненные закупки давали бы ложный минус.
+  const fullPartsOrderByCar = {};
+  P.forEach((p) => { fullPartsOrderByCar[p.carId] = (fullPartsOrderByCar[p.carId] || 0) + num(p.price) * num(p.qty); });
+
   const scopeFiltered = (filter !== 'all' || !!q);
   const carsInList = {}; list.forEach((p) => { carsInList[p.carId] = true; });
   const totalCost = list.reduce((a, p) => a + num(p.cost) * num(p.qty), 0);
@@ -186,6 +216,7 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
   const frozenPartIdx = {};
   if (frozenOrder) for (const cid in frozenOrder.parts) frozenPartIdx[cid] = new Map(frozenOrder.parts[cid].map((id, i) => [id, i]));
 
+  let totalDiscApplied = 0; // сумма скидки, фактически отнесённой на видимые costed-позиции
   const groups = order.map((cid) => {
     const c = cars[cid] || {};
     const fp = frozenPartIdx[cid];
@@ -208,6 +239,18 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
     const cRentCost = cItems.reduce((a, p) => a + num(p.cost) * num(p.qty), 0) + ((pt && num(pt.cost) > 0) ? num(pt.cost) : 0);
     const margin = cRentBase - cRentCost;
     const cardMissing = items.filter((p) => !num(p.cost) && p.status !== 'need').length;
+
+    // Скидка заказа → на запчасти. Доля, приходящаяся на costed-выручку (см.
+    // fullPartsOrderByCar). При полностью заполненных закупках вычитается вся
+    // скидка; при незаполненных — только её costed-часть (остальное «висит» на
+    // позициях без себестоимости, которые и так исключены из рентабельности).
+    const gDiscount = num(c.discount);
+    const gFullOrder = fullPartsOrderByCar[cid] || 0;
+    const gDiscApplied = (gDiscount > 0 && gFullOrder > 0) ? (gDiscount * cRentBase / gFullOrder) : 0;
+    const gNetMargin = margin - gDiscApplied;
+    const gNetRentabPct = cRentBase > 0 ? (gNetMargin / cRentBase * 100) : null;
+    const gDiscPartial = gDiscount > 0 && (gDiscount - gDiscApplied) > 1;
+    totalDiscApplied += gDiscApplied;
 
     const groupCells = Object.keys(cells).filter((id) => { const d = cells[id]; return d && d.plate && c.plate && d.plate === c.plate; })
       .map((id) => { const d = cells[id]; const n = (d.parts || []).reduce((a, x) => a + (num(x.qty) || 1), 0); return { id, count: n, title: 'Ячейка ' + id + ' · ' + (d.orderNum || '') + ' · ' + n + ' поз.' }; });
@@ -262,6 +305,19 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
       marginStr: (margin >= 0 ? '+ ' : '− ') + money(Math.abs(margin)), marginColor: margin >= 0 ? 'var(--done)' : 'var(--delay)',
       grentabStr: cRentBase > 0 ? ((margin >= 0 ? '' : '−') + Math.abs(Math.round(margin / cRentBase * 100)) + '%') : '—',
       grentabColor: cRentBase > 0 ? rentColor(margin / cRentBase * 100, rentabTarget) : 'var(--text3)',
+      // Скидка + «чистая» (со скидкой) маржа/рентаб — показываются, когда у машины есть скидка.
+      hasDiscount: gDiscount > 0,
+      discountStr: money(gDiscApplied),
+      discountFullStr: money(gDiscount),
+      netMarginStr: (gNetMargin >= 0 ? '+ ' : '− ') + money(Math.abs(gNetMargin)), netMarginColor: gNetMargin >= 0 ? 'var(--done)' : 'var(--delay)',
+      netRentabStr: (gNetRentabPct != null) ? ((gNetMargin >= 0 ? '' : '−') + Math.abs(Math.round(gNetRentabPct)) + '%') : '—',
+      netRentabColor: (gNetRentabPct != null) ? rentColor(gNetRentabPct, rentabTarget) : 'var(--text3)',
+      discountTitle: gDiscount > 0
+        ? ('Скидка по заказу −' + money(gDiscount) + ' отнесена на запчасти. '
+          + (gDiscPartial
+            ? ('В марже учтено −' + money(gDiscApplied) + ' (доля на запчасти с введённой себестоимостью); остальное приходится на позиции без закупки, исключённые из рентабельности.')
+            : 'Маржа и рентабельность показаны уже за вычетом скидки.'))
+        : '',
       cardMissing, grentabTitle: cardMissing > 0 ? ('Рентаб. и маржа — по ' + cItems.length + ' поз. с себестоимостью; ' + cardMissing + ' без закупки исключены') : '',
       count: items.length, rows, paint: paintVM,
     };
@@ -278,6 +334,12 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
     groups.sort((a, b) => a.minPr - b.minPr || String(a.model).localeCompare(String(b.model), 'ru'));
   }
 
+  // Итог со скидкой: сумма долей скидки, отнесённых на видимые costed-позиции
+  // (Σ по машинам). netTotalMargin = «грязная» маржа − эта скидка.
+  const netTotalMargin = totalMargin - totalDiscApplied;
+  const netRentabPct = rentBase > 0 ? Math.round(netTotalMargin / rentBase * 100) : 0;
+  const hasDiscountTotal = totalDiscApplied > 0;
+
   return {
     groups, isEmpty: groups.length === 0, statusChips, overdueChip,
     hasFilter: scopeFiltered,
@@ -285,6 +347,11 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
     totalMarginStr: (totalMargin >= 0 ? '+ ' : '− ') + money(Math.abs(totalMargin)),
     rentabStr: rentBase > 0 ? ((totalMargin >= 0 ? '' : '−') + Math.abs(rentab) + '%') : '—',
     rentabColor: rentBase > 0 ? rentColor(rentab, rentabTarget) : 'var(--text3)',
+    // «Чистые» итоги со скидкой (показываются, когда есть скидка хоть у одной машины в срезе).
+    hasDiscountTotal, discountTotalStr: money(totalDiscApplied),
+    netTotalMarginStr: (netTotalMargin >= 0 ? '+ ' : '− ') + money(Math.abs(netTotalMargin)),
+    netRentabStr: rentBase > 0 ? ((netTotalMargin >= 0 ? '' : '−') + Math.abs(netRentabPct) + '%') : '—',
+    netRentabColor: rentBase > 0 ? rentColor(netRentabPct, rentabTarget) : 'var(--text3)',
     rentCountedStr: missingCost > 0 ? ('по ' + costedParts.length + ' с себест.') : '',
     missingHint: missingCost > 0 ? (missingCost + ' поз. без себестоимости исключены из расчёта рентабельности и маржи — заполните закупку, чтобы учесть их') : '',
     scopeFiltered, scopeLabel, scopeStyle, searchStyle,
