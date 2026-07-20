@@ -186,6 +186,11 @@ label.oe-toggle, .modal label.oe-toggle { display:flex; flex-direction:row; alig
 .oe-total-grand { display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; }
 .oe-total-grand .oe-total-cap { font-size:13px; font-weight:700; text-transform:uppercase; letter-spacing:.04em; color:var(--color-text); }
 .oe-total-grand .oe-total-val { font-family:var(--font-mono); font-variant-numeric:tabular-nums; font-size:29px; font-weight:800; line-height:1; color:var(--color-primary); white-space:nowrap; }
+/* Строки расшифровки НАД главной цифрой (стоимость ремонта / франшиза) */
+.oe-total-line { display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-bottom:7px; }
+.oe-total-line .oe-total-cap { font-size:12.5px; font-weight:600; color:var(--color-text-muted); }
+.oe-total-line .oe-total-val { font-family:var(--font-mono); font-variant-numeric:tabular-nums; font-size:15px; font-weight:600; color:var(--color-text); white-space:nowrap; }
+.oe-total-line + .oe-total-grand { margin-top:3px; padding-top:10px; border-top:1px solid color-mix(in srgb, var(--color-primary) 22%, transparent); }
 .oe-total-due { display:flex; align-items:baseline; justify-content:space-between; gap:14px; flex-wrap:wrap; margin-top:10px; padding-top:10px; border-top:1px solid color-mix(in srgb, var(--color-primary) 22%, transparent); }
 .oe-total-due .oe-total-cap { font-size:12.5px; font-weight:600; color:var(--color-text-muted); }
 .oe-total-due .oe-total-val { font-family:var(--font-mono); font-variant-numeric:tabular-nums; font-size:19px; font-weight:700; color:var(--color-text); white-space:nowrap; }
@@ -277,12 +282,20 @@ label.oe-toggle, .modal label.oe-toggle { display:flex; flex-direction:row; alig
    которая идёт отдельным механизмом). Печатный лист .zn-* НЕ трогаем.
    ============================================================================ */
 @media (max-width: 640px) {
-  .modal.modal-order { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
-  .order-editor { flex-direction: column; overflow: visible; gap: 12px; }
+  /* padding-bottom:0 — чтобы прилипшая панель кнопок доставала до самого низа,
+     без щели (нижний отступ даёт сама панель) */
+  .modal.modal-order { width: 100vw; max-width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; padding: 14px 14px 0; }
+  /* Контейнерам — естественная высота (flex:none), прокручивает сама модалка.
+     Иначе root/editor зажимаются в высоту экрана, контент с overflow:visible
+     вылезает из их коробки и КНОПКИ ДЕЙСТВИЙ РИСУЮТСЯ ПОВЕРХ ПОЛЕЙ ФОРМЫ. */
+  .order-editor-root { flex: none; min-height: auto; }
+  .order-editor { flex: none; min-height: auto; flex-direction: column; overflow: visible; gap: 12px; }
   .order-editor-left { flex: 1 1 auto; overflow-y: visible; padding-right: 0; }
   .order-editor-right { display: none; }         /* лист A4 на телефоне скрыт — печать отдельно */
   .oe-grid { grid-template-columns: 1fr; }
   .oe-toggle input { width: 20px; height: 20px; }
-  .order-editor-actions { flex-direction: column; align-items: stretch; }
+  /* Кнопки — прилипшая нижняя панель внутри прокрутки модалки: всегда под рукой
+     и никогда не поверх полей */
+  .order-editor-actions { flex-direction: column; align-items: stretch; position: sticky; bottom: 0; z-index: 5; background: var(--color-bg); margin-top: 8px; padding-bottom: 10px; }
   .order-editor-actions > div { flex-wrap: wrap; }
 }

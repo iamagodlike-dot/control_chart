@@ -28,6 +28,11 @@ const JOB = {
   client_phone: '+7 902 123-45-67',
   order_number: '110',
   discount: 8000,
+  // Страховая машина с франшизой — для проверки: счёт страховой уходит БЕЗ франшизы
+  payment_type: 'insurance',
+  insurer_name: 'СОГАЗ',
+  claim_number: 'PVU-1234567',
+  franchise: 15000,
   services: [
     { id: 's1', name: 'Окраска двери передней правой', qty: 1, price: 12500 },
     { id: 's2', name: 'Ремонт и окраска крыла заднего левого', qty: 1, price: 18900 },

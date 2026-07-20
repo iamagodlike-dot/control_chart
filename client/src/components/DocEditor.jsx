@@ -317,7 +317,7 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
                     </label>
                   )}
                 </div>
-                {totals && <DocTotal totals={totals} />}
+                {totals && <DocTotal totals={totals} insurer={isInvoice} />}
               </div>
             </>
           )}

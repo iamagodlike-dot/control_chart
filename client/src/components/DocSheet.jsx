@@ -310,16 +310,18 @@ function InvoiceSheet({ snapshot, qrDataUrl }) {
           {t.discount > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Скидка{t.discount_mode === 'pct' ? ` ${t.discount_pct}%` : ''}:</td><td className="zn-c-sum">− {money(t.discount)}</td></tr>}
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>Итого:</td><td className="zn-c-sum">{money(t.total)}</td></tr>
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>{t.vat_mode === 'vat20' ? 'В том числе НДС 20%:' : 'НДС:'}</td><td className="zn-c-sum">{t.vat_mode === 'vat20' ? money2(t.vat_amount) : 'Без НДС'}</td></tr>
-          {t.franchise > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Франшиза (оплачивает клиент):</td><td className="zn-c-sum">{money(t.franchise)}</td></tr>}
-          {t.franchise > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Оплачивает страховая:</td><td className="zn-c-sum">{money(t.insurer_pays)}</td></tr>}
+          {/* Счёт страховой: франшизу вычитаем из суммы счёта — её клиент платит сам.
+              Строка «Итого» выше остаётся полной стоимостью ремонта (для сверки с ЗН). */}
+          {t.franchise > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Франшиза (оплачивает клиент отдельно):</td><td className="zn-c-sum">− {money(t.franchise)}</td></tr>}
+          {t.franchise > 0 && <tr><td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>К оплате по счёту:</td><td className="zn-c-sum" style={{ fontWeight: 700 }}>{money(t.payable)}</td></tr>}
           {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Предоплата:</td><td className="zn-c-sum">− {money(t.prepayment)}</td></tr>}
-          {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>К доплате:</td><td className="zn-c-sum" style={{ fontWeight: 700 }}>{money(t.due)}</td></tr>}
+          {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>К доплате:</td><td className="zn-c-sum" style={{ fontWeight: 700 }}>{money(t.payable_due)}</td></tr>}
         </tfoot>
       </table>
 
       <div className="zn-invoice-total">
-        Всего наименований {items.length}, {t.prepayment > 0 ? <>к доплате <b>{money(t.due)}</b></> : <>на сумму <b>{money(t.total)}</b></>}
-        <div className="zn-words">{numberToWordsRu(t.prepayment > 0 ? t.due : t.total)}</div>
+        Всего наименований {items.length}, {t.prepayment > 0 ? <>к доплате <b>{money(t.payable_due)}</b></> : <>на сумму <b>{money(t.payable)}</b></>}
+        <div className="zn-words">{numberToWordsRu(t.prepayment > 0 ? t.payable_due : t.payable)}</div>
       </div>
 
       {snapshot.show_qr && qrDataUrl && (

@@ -354,7 +354,12 @@ export function computeOrderTotals(snapshot = {}) {
   const isIns = (snapshot.insurance || {}).payment_type === 'insurance';
   const franchise = isIns ? Math.min(total, num((snapshot.insurance || {}).franchise, 0)) : 0;
   const insurer_pays = isIns ? Math.max(0, total - franchise) : 0;
-  return { services_sum, parts_sum, subtotal, discount, discount_mode: d.mode, discount_pct: d.pct, total, prepayment, due, franchise, insurer_pays, total_words: numberToWordsRu(total) };
+  // Сумма К ОПЛАТЕ ПО СЧЁТУ: счёт страховому уходит БЕЗ франшизы (её клиент платит
+  // сам), поэтому payable = total − франшиза; для обычных машин payable = total.
+  // total при этом остаётся ПОЛНОЙ стоимостью ремонта (ЗН/акт печатают её).
+  const payable = isIns && franchise > 0 ? insurer_pays : total;
+  const payable_due = Math.max(0, payable - prepayment);
+  return { services_sum, parts_sum, subtotal, discount, discount_mode: d.mode, discount_pct: d.pct, total, prepayment, due, franchise, insurer_pays, payable, payable_due, total_words: numberToWordsRu(total) };
 }
 
 // ===== Акт выполненных работ / Акт приёма-передачи / Счёт на оплату =====
@@ -539,9 +544,9 @@ export function buildPaymentQrString(snapshot = {}) {
   add('CorrespAcc', bank.corr_account);
   add('PayeeINN', c.inn);
   add('KPP', c.kpp);
-  // Encode the amount actually left to pay (к доплате = total − предоплата) so the
-  // client's banking app pre-fills exactly what the счёт prints as «К доплате».
-  const payable = totals.due != null ? totals.due : totals.total;
+  // Encode the amount actually left to pay so the banking app pre-fills exactly
+  // what the счёт prints: payable_due = (total − франшиза, если страховая) − предоплата.
+  const payable = totals.payable_due != null ? totals.payable_due : (totals.due != null ? totals.due : totals.total);
   const kopecks = Math.round((payable || 0) * 100);
   if (kopecks > 0) add('Sum', String(kopecks));
   add('Purpose', `Оплата по счёту № ${snapshot.doc_number || ''} от ${formatDocDate(snapshot.doc_date)}`);

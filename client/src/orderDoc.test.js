@@ -4,7 +4,7 @@
 // (used_orig / analog_orig) and «Новое» (new) must produce NO lines.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPartsConsentText, buildOrderSnapshot, buildActSnapshot, computeOrderTotals, formatDocNumber, pad4, DOC_PREFIX, itemsForRecipient, orderMatchesRecipient, pickSeedItems, buildInvoiceSnapshot, planDocItemsToCar } from './orderDoc.js';
+import { buildPartsConsentText, buildOrderSnapshot, buildActSnapshot, computeOrderTotals, formatDocNumber, pad4, DOC_PREFIX, itemsForRecipient, orderMatchesRecipient, pickSeedItems, buildInvoiceSnapshot, planDocItemsToCar, buildPaymentQrString } from './orderDoc.js';
 import { streamOf } from './billing.js';
 
 test('Б/У → строка о согласии на установку Б/У с артикулом', () => {
@@ -88,6 +88,43 @@ test('computeOrderTotals — не страховая: франшиза игно�
   });
   assert.equal(t.franchise, 0);
   assert.equal(t.insurer_pays, 0);
+});
+
+// ===== Счёт страховой: франшиза исключается из суммы к оплате =====
+test('computeOrderTotals — payable: счёт страховой без франшизы, total остаётся полным', () => {
+  const t = computeOrderTotals({
+    services: [{ qty: 1, price: 60000 }],
+    parts: [{ qty: 1, price: 40000 }],
+    insurance: { payment_type: 'insurance', franchise: 15000 },
+  });
+  assert.equal(t.total, 100000);   // полная стоимость ремонта (для ЗН/акта)
+  assert.equal(t.payable, 85000);  // к оплате по счёту = total − франшиза
+  assert.equal(t.payable_due, 85000);
+});
+
+test('computeOrderTotals — payable_due: предоплата вычитается из суммы без франшизы', () => {
+  const t = computeOrderTotals({
+    services: [{ qty: 1, price: 100000 }],
+    prepayment: 10000,
+    insurance: { payment_type: 'insurance', franchise: 15000 },
+  });
+  assert.equal(t.payable, 85000);
+  assert.equal(t.payable_due, 75000);
+});
+
+test('computeOrderTotals — не страховая: payable = total (ничего не меняется)', () => {
+  const t = computeOrderTotals({ services: [{ qty: 1, price: 50000 }] });
+  assert.equal(t.payable, 50000);
+  assert.equal(t.payable_due, 50000);
+});
+
+test('buildPaymentQrString — QR счёта страховой несёт сумму БЕЗ франшизы', () => {
+  const qr = buildPaymentQrString({
+    company: { name: 'ИП Тест', inn: '123', bank: { account: '408', bank_name: 'Банк', bik: '040', corr_account: '301' } },
+    services: [{ qty: 1, price: 100000 }],
+    insurance: { payment_type: 'insurance', franchise: 15000 },
+  });
+  assert.ok(qr.includes('Sum=8500000'), `ожидали 85 000 ₽ в копейках, получили: ${qr}`); // (100000−15000) × 100
 });
 
 // ===== Скидка: рубли / проценты =====
