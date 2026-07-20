@@ -4,7 +4,7 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { DEFAULT_INSURERS } from './insurance';
-import { isRepair, isApproval } from './phase';
+import { PHASE, isRepair, isApproval } from './phase';
 import { withPartIds } from './parts';
 import { deletePhotoFile } from './photos';
 import { formatDocNumber } from './orderDoc';
@@ -94,6 +94,25 @@ function appendReceivingLog(prevLog, prevStatus, nextStatus, by, at) {
     log.push(stripUndefined({ status: nextStatus, at, by: by || null }));
   }
   return log;
+}
+
+// ─── Дневник переходов машины (job.status_log) — Этап 2 «Монитора» ─────────
+// С этого момента КАЖДАЯ смена этапа/статуса машины дописывается в её
+// status_log: [{ kind, from, to, at(ms), by }], kind ∈ 'approval' (под-статус
+// согласования) | 'phase' (согласование↔ремонт, архивация) | 'stage' (этап
+// маршрута; несёт ещё stage_title). Пишется ЦЕНТРАЛИЗОВАННО здесь — UI-код не
+// меняется. Не деструктивно: у старых машин поля нет, «Монитор» (Этап 1)
+// продолжает считать простой приблизительно; Этап 3 перейдёт на точную историю.
+// Ключи job-документа, смена которых считается событием жизни машины.
+const STATUS_LOG_JOB_KEYS = ['approval_status', 'phase', 'archived'];
+
+// Близнец appendReceivingLog: дописать одно событие, если статус реально
+// сменился. Возвращает ПРЕЖНИЙ массив (по ссылке), когда писать нечего, — так
+// вызывающий отличает «есть что сохранять» простым сравнением ссылок.
+function appendStatusLog(prevLog, { kind, from, to, at, by, stage_title }) {
+  const log = Array.isArray(prevLog) ? prevLog : [];
+  if (to === undefined || to === from) return log;
+  return [...log, stripUndefined({ kind, from: from ?? null, to, at, by: by || null, stage_title })];
 }
 
 // Access records are keyed by the login's email (lowercased) — so the owner can
@@ -465,20 +484,48 @@ export const api = {
       // не срабатывает вообще: update ведёт себя ровно как раньше. Плюс это делает
       // правку убытка №1 самолечащейся — карточке не нужно особого случая для него.
       const touchesMirror = CLAIM_MIRROR_KEYS.some((k) => k in payload);
-      if (touchesMirror) {
+      // Дневник переходов: смена под-статуса согласования, фазы или архивация —
+      // событие жизни машины, дописываем в job.status_log. Прежнее значение
+      // берём из ХРАНИМОГО документа внутри транзакции (не из снапшота вызывающего).
+      const touchesLog = STATUS_LOG_JOB_KEYS.some((k) => k in payload);
+      if (touchesMirror || touchesLog) {
         const ref = doc(jobsCol, id);
+        // Кто/когда — один раз ВНЕ транзакции, чтобы ретрай не сдвигал время
+        // (тот же приём, что в savePart).
+        const by = auth.currentUser?.email || null;
+        const at = Date.now();
         await runTransaction(db, async (tx) => {
           const snap = await tx.get(ref);
           if (!snap.exists()) throw new Error('Машина не найдена');
           const stored = snap.data();
           const clean = stripUndefined(payload);
-          if (Array.isArray(stored.claims) && stored.claims.length) {
+          const update = { ...clean };
+          if (touchesMirror && Array.isArray(stored.claims) && stored.claims.length) {
             const claims = stored.claims.map((c) => ({ ...c }));
             for (const k of CLAIM_MIRROR_KEYS) if (k in clean) claims[0][k] = clean[k];
-            tx.update(ref, { ...clean, claims, ...claimMirror(claims) });
-          } else {
-            tx.update(ref, clean);
+            Object.assign(update, { claims, ...claimMirror(claims) });
           }
+          if (touchesLog) {
+            let log = Array.isArray(stored.status_log) ? stored.status_log : [];
+            if ('approval_status' in clean) {
+              log = appendStatusLog(log, { kind: 'approval', from: stored.approval_status, to: clean.approval_status, at, by });
+            }
+            if ('phase' in clean) {
+              // Отсутствие phase у старых машин = ремонт (см. phase.js) — так и логируем.
+              log = appendStatusLog(log, { kind: 'phase', from: stored.phase || PHASE.REPAIR, to: clean.phase, at, by });
+            }
+            if ('archived' in clean) {
+              log = appendStatusLog(log, {
+                kind: 'phase',
+                from: stored.archived ? 'archived' : 'active',
+                to: clean.archived ? 'archived' : 'active',
+                at,
+                by,
+              });
+            }
+            if (log !== stored.status_log && log.length) update.status_log = log;
+          }
+          tx.update(ref, update);
         });
       } else {
         await updateDoc(doc(jobsCol, id), stripUndefined(payload));
@@ -764,7 +811,31 @@ export const api = {
       return withId(await getDoc(ref));
     },
     async update(id, data) {
-      await updateDoc(doc(stagesCol, id), stripUndefined(data));
+      const clean = stripUndefined(data);
+      // Дневник переходов («Монитор», Этап 2): одно-тапное продвижение этапа
+      // (Запланировано → В работе → Готово) — событие жизни машины. Прежний
+      // статус и job_id читаем ДО правки, чтобы взять честный from.
+      let prev = null;
+      if ('status' in clean) {
+        const snap = await getDoc(doc(stagesCol, id));
+        prev = snap.exists() ? snap.data() : null;
+      }
+      await updateDoc(doc(stagesCol, id), clean);
+      if (prev && prev.job_id && clean.status !== prev.status) {
+        const by = auth.currentUser?.email || null;
+        const at = Date.now();
+        const jref = doc(jobsCol, prev.job_id);
+        // Журнал — best-effort: его сбой не должен ронять основную правку этапа.
+        await runTransaction(db, async (tx) => {
+          const js = await tx.get(jref);
+          if (!js.exists()) return;
+          const storedLog = js.data().status_log;
+          const log = appendStatusLog(storedLog, {
+            kind: 'stage', from: prev.status, to: clean.status, at, by, stage_title: prev.title || null,
+          });
+          if (log !== storedLog && log.length) tx.update(jref, { status_log: log });
+        }).catch(() => {});
+      }
       return withId(await getDoc(doc(stagesCol, id)));
     },
     async remove(id) {
@@ -811,6 +882,28 @@ export const api = {
       onSnapshot(orderDocsCol, (s) => { raw.docs = s.docs.map(withId); emit(); }, onError),
     ];
     return () => subs.forEach((unsub) => unsub());
+  },
+
+  // Живой поток для «Монитора»: ВСЕ не-архивные машины (согласование + ремонт),
+  // у каждой прикреплены её stages (parts уже лежат в самом документе машины).
+  // subscribeGantt не подходит: buildGantt отфильтровывает машины на согласовании.
+  subscribeMonitor(onData, onError = () => {}) {
+    const raw = { jobs: null, stages: null };
+    const emit = () => {
+      if (!raw.jobs || !raw.stages) return;
+      const byJob = new Map();
+      for (const s of raw.stages) {
+        if (!byJob.has(s.job_id)) byJob.set(s.job_id, []);
+        byJob.get(s.job_id).push(s);
+      }
+      const jobs = raw.jobs
+        .filter((j) => !j.archived)
+        .map((j) => ({ ...j, stages: (byJob.get(j.id) || []).sort((a, b) => (a.sequence - b.sequence)) }));
+      onData(jobs);
+    };
+    const u1 = onSnapshot(jobsCol, (s) => { raw.jobs = s.docs.map(withId); emit(); }, onError);
+    const u2 = onSnapshot(stagesCol, (s) => { raw.stages = s.docs.map(withId); emit(); }, onError);
+    return () => { u1(); u2(); };
   },
 
   async history() {

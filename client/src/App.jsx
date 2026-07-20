@@ -23,6 +23,7 @@ import StaffExpenses from './components/StaffExpenses';
 import Requests from './components/Requests';
 import Purchasing from './components/Purchasing';
 import SupplierInvoices from './components/SupplierInvoices';
+import Monitor from './components/Monitor';
 import { GroupedTabs } from './components/NavGroup';
 import { roleTabs, roleHome, roleLabel } from './roles';
 import './App.css';
@@ -33,6 +34,7 @@ const TABS = [
   { id: 'approval', label: 'Согласование', icon: 'shield' },
   { id: 'gantt', label: 'График', icon: 'calendar' },
   { id: 'board', label: 'Загрузка', icon: 'chart' },
+  { id: 'monitor', label: 'Монитор', icon: 'clock' },
   { id: 'warehouse', label: 'Склад', icon: 'box' },
   { id: 'parts', label: 'Запчасти', icon: 'wrench' },
   { id: 'receiving', label: 'Приёмка', icon: 'box' },
@@ -250,6 +252,7 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
         )}
         {effectiveTab === 'approval' && <Approval isOwner={isOwner} />}
         {effectiveTab === 'board' && <PostsBoard />}
+        {effectiveTab === 'monitor' && <Monitor isOwner={isOwner} />}
         {effectiveTab === 'warehouse' && <Warehouse onOpenJob={openJobDetail} />}
         {effectiveTab === 'parts' && <Parts role={role} profile={profile} />}
         {effectiveTab === 'receiving' && <PartsReceiving />}

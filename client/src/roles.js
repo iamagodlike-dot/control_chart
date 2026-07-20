@@ -13,7 +13,7 @@ export const ROLES = {
   owner: {
     label: 'Управленец',
     hint: 'Полный доступ ко всей системе',
-    tabs: ['approval', 'gantt', 'board', 'warehouse', 'parts', 'receiving-history', 'requests', 'purchasing', 'supplier-invoices', 'finance', 'payroll', 'staffexpenses', 'history', 'config'],
+    tabs: ['approval', 'gantt', 'board', 'monitor', 'warehouse', 'parts', 'receiving-history', 'requests', 'purchasing', 'supplier-invoices', 'finance', 'payroll', 'staffexpenses', 'history', 'config'],
     home: 'gantt',
   },
   master: {
