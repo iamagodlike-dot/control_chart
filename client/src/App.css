@@ -2375,9 +2375,28 @@ textarea { width: 100%; min-height: 50px; }
 }
 .cc-ov-done-btn { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
 
+/* ─── ЭКОНОМИКА (только управленец) ────────────────────────────────────── */
+.cc-ov-fin-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.cc-ov-fin-cell { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.cc-ov-fin-label {
+  font-family: var(--font-mono); font-size: 10.5px; letter-spacing: .08em;
+  text-transform: uppercase; color: var(--color-text-muted); white-space: nowrap;
+}
+.cc-ov-fin-val {
+  font-family: var(--font-mono); font-variant-numeric: tabular-nums;
+  font-size: 17px; font-weight: 800; line-height: 1.1; color: var(--color-text);
+  overflow: hidden; text-overflow: ellipsis;
+}
+.cc-ov-fin-val.is-loss { color: var(--color-danger-text); }
+.cc-ov-fin-val.is-gain { color: var(--done); }
+.cc-ov-fin-empty { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.cc-ov-fin-empty .cc-ov-edit-btn { margin-left: auto; }
+
 /* Телефон: маршрут и пара «деньги/запчасти» в один столбец — в ряд они не
    помещаются (текст обрезался и появлялся горизонтальный скролл). */
 @media (max-width: 640px) {
+  /* Экономика: 4 колонки на телефоне не читаются — в две. */
+  .cc-ov-fin-row { grid-template-columns: 1fr 1fr; gap: 12px 10px; }
   .cc-ov-route { flex-direction: column; gap: 12px; }
   .cc-ov-route-node { padding-right: 0; }
   .cc-ov-route-node:not(:last-child)::after { content: none; }

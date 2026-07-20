@@ -8,12 +8,13 @@ import { PAYMENT_TYPES, POLICY_TYPES, isInsurance, OSAGO_MAX_REPAIR_WORKDAYS, OS
 import { genPartId, partStatusMeta, psMeta } from '../parts';
 import {
   STREAM_INSURANCE, STREAM_CLIENT, STREAM_ALL,
-  claimsOf, streamsOf, itemsForStream, defaultStream, claimLabel, streamOf,
+  claimsOf, streamsOf, itemsForStream, defaultStream, claimLabel, streamOf, orderMatchesStream,
 } from '../billing';
 import { PHASE, DEFAULT_APPROVAL_STATUS, isRepair } from '../phase';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState, nextStatusAction } from './Gantt';
 import { CellPickerModal } from './Warehouse';
 import CostingModal from './CostingModal';
+import { computeCosting } from '../costing';
 import MasterPayModal from './MasterPayModal';
 import Icon from './Icon';
 import DateTimeField from './DateTimeField';
@@ -135,6 +136,18 @@ function clientPartsFromJob(job) {
   return (job?.parts || []).filter((p) => p.payer === 'client')
     .map((p) => ({ id: p.id || genPartId(), code: p.code || '', name: p.name || '', qty: p.qty ?? 1, unit: p.unit || 'шт.', price: p.price ?? 0 }));
 }
+// Редактируемые копии позиций АКТИВНОГО потока (убыток №1 / 'cl_*' / вся машина у
+// наличной). Допродажи клиента живут своим списком выше — здесь их нет.
+// id проставляем всегда: без стабильного id правка и удаление на экране
+// «Запчасти» молча ломаются.
+function streamServicesFromJob(job, streamId) {
+  return itemsForStream(job?.services || [], streamId)
+    .map((s) => ({ id: s.id || genPartId(), name: s.name || '', qty: s.qty ?? 1, price: s.price ?? 0 }));
+}
+function streamPartsFromJob(job, streamId) {
+  return itemsForStream(job?.parts || [], streamId)
+    .map((p) => ({ id: p.id || genPartId(), code: p.code || '', name: p.name || '', qty: p.qty ?? 1, unit: p.unit || 'шт.', price: p.price ?? 0 }));
+}
 
 /**
  * One screen for both adding a car (mode="create") and viewing/editing a car
@@ -160,6 +173,7 @@ export default function CarCard({
   const [busyStage, setBusyStage] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [costingOpen, setCostingOpen] = useState(false);
+  const [company, setCompany] = useState({});
   const [payOpen, setPayOpen] = useState(false);
   const [localCosting, setLocalCosting] = useState(job?.costing || null);
   const [existingStages, setExistingStages] = useState([]);
@@ -180,6 +194,15 @@ export default function CarCard({
   // ТОЛЬКО клиентских позиций; страховые остаются как есть. Сидируется один раз.
   const [extraServices, setExtraServices] = useState(() => clientServicesFromJob(job));
   const [extraParts, setExtraParts] = useState(() => clientPartsFromJob(job));
+  // Работы и запчасти ОСНОВНОГО ремонта (активный убыток) — теперь правятся прямо в
+  // карточке, а не только через заказ-наряд. Список пере-сидируется при смене
+  // вкладки убытка, см. эффект ниже.
+  const [ownServices, setOwnServices] = useState(() => streamServicesFromJob(job, defaultStream(job)));
+  const [ownParts, setOwnParts] = useState(() => streamPartsFromJob(job, defaultStream(job)));
+  const [orders, setOrders] = useState([]);
+  // id позиций в том виде, в каком их ПОКАЗАЛИ пользователю. Только их разрешено
+  // удалять при сохранении — см. комментарий в saveInfo.
+  const [ownPartsSeed, setOwnPartsSeed] = useState(() => streamPartsFromJob(job, defaultStream(job)).map((p) => p.id));
 
   // ===== Убытки (страховые дела) =====
   // По одной машине страховая может завести несколько дел. Вкладка = поток биллинга:
@@ -216,11 +239,22 @@ export default function CarCard({
   const activeClaim = onExtrasTab ? null : (claims[activeClaimIdx] || claims[0] || null);
 
   function addExtraService() { setExtraServices((a) => [...a, { id: genPartId(), name: '', qty: 1, price: 0 }]); setDirtyInfo(true); }
+  // Правка основного ремонта. Пустые строки отбрасываются при сохранении, поэтому
+  // «добавить и передумать» ничего не пишет в базу.
+  function addOwnService() { setOwnServices((a) => [...a, { id: genPartId(), name: '', qty: 1, price: 0 }]); setDirtyInfo(true); }
+  function updateOwnService(id, f) { setOwnServices((a) => a.map((s) => (s.id === id ? { ...s, ...f } : s))); setDirtyInfo(true); }
+  function removeOwnService(id) { setOwnServices((a) => a.filter((s) => s.id !== id)); setDirtyInfo(true); }
+  function addOwnPart() { setOwnParts((a) => [...a, { id: genPartId(), code: '', name: '', qty: 1, unit: 'шт.', price: 0 }]); setDirtyInfo(true); }
+  function updateOwnPart(id, f) { setOwnParts((a) => a.map((p) => (p.id === id ? { ...p, ...f } : p))); setDirtyInfo(true); }
+  function removeOwnPart(id) { setOwnParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
+
   function updateExtraService(id, f) { setExtraServices((a) => a.map((s) => (s.id === id ? { ...s, ...f } : s))); setDirtyInfo(true); }
   function removeExtraService(id) { setExtraServices((a) => a.filter((s) => s.id !== id)); setDirtyInfo(true); }
   function addExtraPart() { setExtraParts((a) => [...a, { id: genPartId(), code: '', name: '', qty: 1, unit: 'шт.', price: 0 }]); setDirtyInfo(true); }
   function updateExtraPart(id, f) { setExtraParts((a) => a.map((p) => (p.id === id ? { ...p, ...f } : p))); setDirtyInfo(true); }
   function removeExtraPart(id) { setExtraParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
+  const ownServicesSum = ownServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
+  const ownPartsSum = ownParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
   const extraServicesSum = extraServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
   const extraPartsSum = extraParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
 
@@ -299,6 +333,27 @@ export default function CarCard({
     return () => { alive = false; };
   }, [isEdit, job?.id, job?.job_id]);
 
+  // Заказ-наряды машины — нужны, чтобы поймать расхождение «в карточке поправили,
+  // а ЗН остался старым». Деньги считаются ПО ЗАКАЗ-НАРЯДУ (см. pickCostingSource),
+  // поэтому молча разойтись им нельзя.
+  useEffect(() => {
+    const id = job?.id || job?.job_id;
+    if (!isEdit || !id) return undefined;
+    let alive = true;
+    api.orderDocuments.listByJob(id, 'order').then((list) => { if (alive) setOrders(list || []); }).catch(() => {});
+    return () => { alive = false; };
+  }, [isEdit, job?.id, job?.job_id]);
+
+  // Проценты материалов/накладных для сводки «Обзора». Их ОБЯЗАТЕЛЬНО брать те же,
+  // что и окно «Себестоимость», иначе одна и та же машина покажет две разные маржи.
+  // Грузим только управленцу — остальным финансовый блок не рисуется вовсе.
+  useEffect(() => {
+    if (!isEdit || !isOwner) return undefined;
+    let alive = true;
+    api.settings.getCompany().then((c) => { if (alive) setCompany(c || {}); }).catch(() => {});
+    return () => { alive = false; };
+  }, [isEdit, isOwner]);
+
   // Re-seed local rows when the saved stages change underneath us — e.g. a status
   // advanced on the график or via the undo toast (Gantt refreshes the job prop but
   // React keeps this same instance). Skipped while a row is open for editing so
@@ -348,6 +403,18 @@ export default function CarCard({
       }));
     }
   }, [jobSyncSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Позиции основного ремонта пере-сидируем при смене вкладки убытка и при внешнем
+  // изменении job. Объявлено ПОСЛЕ jobSyncSig — обращение к нему выше упало бы на
+  // «Cannot access before initialization». Guard по dirtyInfo как у формы:
+  // switchStream сам предлагает сохранить, так что несохранённого тут не остаётся.
+  useEffect(() => {
+    if (!isEdit || dirtyInfo) return;
+    const seeded = streamPartsFromJob(job, activeStream);
+    setOwnServices(streamServicesFromJob(job, activeStream)); // eslint-disable-line react-hooks/set-state-in-effect
+    setOwnParts(seeded);
+    setOwnPartsSeed(seeded.map((p) => p.id));
+  }, [jobSyncSig, activeStream]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function patchForm(patch) {
     setForm((f) => ({ ...f, ...patch }));
@@ -757,11 +824,26 @@ export default function CarCard({
       // массив можно отдавать целиком. Пустые строки допродаж отбрасываем.
       // `payer !== 'client'` оставляет нетронутыми позиции ВСЕХ убытков (и №1, и
       // 'cl_*'), а не только первого — перезапись массива их не теряет.
-      const insuranceServices = (job?.services || []).filter((s) => s.payer !== 'client');
+      // Позиции ЧУЖИХ потоков не трогаем: их правят на своих вкладках. Для наличной
+      // машины (STREAM_ALL) «чужих» нет — ownServices покрывает весь список, иначе
+      // фильтр по streamOf вернул бы те же строки и они задвоились бы.
+      const otherServices = activeStream === STREAM_ALL
+        ? []
+        : (job?.services || []).filter((s) => s.payer !== 'client' && streamOf(s) !== activeStream);
+      // На вкладке допродаж основной список не редактируется — там свои таблицы,
+      // иначе одни и те же позиции записались бы дважды.
+      const cleanOwnServices = onExtrasTab ? [] : ownServices
+        .filter((s) => String(s.name || '').trim())
+        .map((s) => ({
+          id: s.id, name: s.name.trim(), qty: Number(s.qty) || 1, price: Number(s.price) || 0,
+          ...(isInsCarForm ? { payer: activeStream } : {}),
+        }));
       const cleanExtraServices = extraServices
         .filter((s) => String(s.name || '').trim())
         .map((s) => ({ id: s.id, name: s.name.trim(), qty: Number(s.qty) || 1, price: Number(s.price) || 0, payer: 'client' }));
-      const mergedServices = [...insuranceServices, ...cleanExtraServices];
+      const mergedServices = onExtrasTab
+        ? [...(job?.services || []).filter((s) => s.payer !== 'client'), ...cleanExtraServices]
+        : [...otherServices, ...cleanOwnServices, ...cleanExtraServices];
 
       // Реквизиты дела. Убыток №1 едет плоскими полями — api.jobs.update зеркало-
       // осознан и сам дописывает их в claims[0], поэтому источник правды один.
@@ -791,12 +873,40 @@ export default function CarCard({
           : { franchise: Number(form.franchise) || null }),
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
-        ...(insCar ? { services: mergedServices } : {}),
+        // Раньше услуги сохранялись только у страховой машины — правились ведь одни
+        // допродажи. Теперь основной ремонт правится и у наличной, поэтому пишем всегда.
+        services: mergedServices,
       });
 
       // Допродажные запчасти — пооперационно (транзакция + синхронизация склада),
       // чтобы не затирать правки страховых запчастей с экрана «Запчасти». Для уже
       // существующих позиций сохраняем поверх оригинала (сохраняем закупку/статус).
+      // Запчасти основного ремонта (активный поток). Сохраняем ПОВЕРХ оригинала —
+      // спред `...orig` бережёт закупку, статус и лог приёмки, которые ведёт экран
+      // «Запчасти»; карточка правит только артикул/название/кол-во/цену.
+      if (jobId && !onExtrasTab) {
+        const origById = new Map((job?.parts || []).map((p) => [p.id, p]));
+        const keepOwn = new Set(ownParts.map((p) => p.id));
+        // Удаляем ТОЛЬКО то, что было в показанном пользователю списке и что он убрал.
+        // Сверяться со свежим job нельзя: запчастист мог параллельно завести позицию,
+        // и она исчезла бы «сама собой» при сохранении карточки.
+        for (const id of ownPartsSeed) if (!keepOwn.has(id)) {
+          await api.jobs.removePart(jobId, id);
+          setPhotos((prev) => prev.filter((ph) => !(ph.category === 'receiving' && ph.partId === id)));
+        }
+        for (const p of ownParts) {
+          if (!String(p.name || '').trim() && !String(p.code || '').trim()) continue;
+          const orig = origById.get(p.id) || {};
+          await api.jobs.savePart(jobId, {
+            ...orig, id: p.id, code: (p.code || '').trim(), name: (p.name || '').trim(),
+            qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0,
+            // У существующей позиции поток уже проставлен (пришёл со спредом). Новой
+            // ставим активный убыток, иначе она молча уедет в убыток №1.
+            ...(orig.id || !isInsCarForm ? {} : { payer: activeStream }),
+          });
+        }
+      }
+
       if (insCar && jobId) {
         const origById = new Map((job?.parts || []).map((p) => [p.id, p]));
         const persistedClientIds = (job?.parts || []).filter((p) => p.payer === 'client' && p.id).map((p) => p.id);
@@ -1010,6 +1120,29 @@ export default function CarCard({
     || routeSet.find((s) => effectiveStatus(s, now) !== 'done');
   const activePost = activeStage ? posts.find((p) => p.id === activeStage.post_id) : null;
   const activeMaster = activeStage ? masters.find((m) => m.id === activeStage.master_id) : null;
+  // Расхождение «карточка ↔ заказ-наряд». Себестоимость и «Финансы» читают ЗН
+  // (pickCostingSource), поэтому правка в карточке сама по себе денег не меняет —
+  // об этом честно предупреждаем и даём открыть документ.
+  const ownStaleOrder = useMemo(() => {
+    if (!isEdit || onExtrasTab) return null;
+    const doc = (orders || []).find((d) => orderMatchesStream(d, activeStream));
+    if (!doc) return null;
+    const lines = [...(doc.services || []), ...(doc.parts || [])];
+    const total = Number(doc.totals?.total)
+      || lines.reduce((a, x) => a + (Number(x.price) || 0) * (Number(x.qty) || 1), 0);
+    const card = ownServicesSum + ownPartsSum;
+    // Копеечные расхождения округления не считаем расхождением.
+    return Math.abs(total - card) > 1 ? { number: doc.number || '—', total } : null;
+  }, [isEdit, onExtrasTab, orders, activeStream, ownServicesSum, ownPartsSum]);
+
+  // Экономика машины для сводки. Считаем ТОЙ ЖЕ функцией, что и окно
+  // «Себестоимость» (computeCosting), чтобы цифры сходились до рубля.
+  // localCosting = снимок себестоимости; пока его не заполнили руками
+  // (закупка запчастей + оплата мастерам), считать нечего — так и пишем.
+  const ovTotals = useMemo(
+    () => (isOwner && localCosting ? computeCosting(localCosting, company) : null),
+    [isOwner, localCosting, company],
+  );
   // Календарных дней до дедлайна (отрицательное — просрочен).
   const daysLeft = form.deadline
     ? dayjs(form.deadline).startOf('day').diff(dayjs(now).startOf('day'), 'day')
@@ -1272,6 +1405,62 @@ export default function CarCard({
                   )}
                 </div>
               </div>
+
+              {/* ЭКОНОМИКА — только управленцу (как кнопки «Себестоимость» и
+                  «Оплата мастерам»): мастер и экспедитор маржу видеть не должны. */}
+              {isOwner && (
+                <div className="cc-ov-card cc-ov-fin">
+                  <div className="cc-ov-cardhead">
+                    <span className="cc-ov-cardbar" />Экономика
+                    {ovTotals && (
+                      <span className="cc-ov-cardmeta">
+                        {localCosting?.source === 'order' && localCosting?.source_number
+                          ? `по заказ-наряду № ${localCosting.source_number}`
+                          : 'по данным машины'}
+                      </span>
+                    )}
+                  </div>
+                  {ovTotals ? (
+                    <div className="cc-ov-fin-row">
+                      <div className="cc-ov-fin-cell">
+                        <span className="cc-ov-fin-label">Выручка</span>
+                        <b className="cc-ov-fin-val">{fmtMoney(ovTotals.revenue)}</b>
+                      </div>
+                      <div className="cc-ov-fin-cell">
+                        <span className="cc-ov-fin-label">Себестоимость</span>
+                        <b className="cc-ov-fin-val">{fmtMoney(ovTotals.cost_total)}</b>
+                      </div>
+                      <div className="cc-ov-fin-cell">
+                        <span className="cc-ov-fin-label">Прибыль</span>
+                        <b className={`cc-ov-fin-val${ovTotals.profit < 0 ? ' is-loss' : ' is-gain'}`}>
+                          {fmtMoney(ovTotals.profit)}
+                        </b>
+                      </div>
+                      <div className="cc-ov-fin-cell">
+                        <span className="cc-ov-fin-label">Маржа</span>
+                        {/* Красим по знаку, как в окне «Себестоимость». Порог
+                            RENTAB_TARGET сюда НЕ тащим: он про рентабельность
+                            запчастей, база другая, метрики не сходятся. */}
+                        <b
+                          className={`cc-ov-fin-val${ovTotals.profit < 0 ? ' is-loss' : ' is-gain'}`}
+                          title="Рентабельность по выручке: прибыль ÷ выручка"
+                        >
+                          {Math.round(ovTotals.margin_pct)}%
+                        </b>
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="cc-ov-fin-empty">
+                      <span className="cc-ov-empty">
+                        Себестоимость не заполнена — закупку запчастей и оплату мастерам вносят вручную.
+                      </span>
+                      <button type="button" className="cc-ov-edit-btn" onClick={openCosting}>
+                        <Icon name="wallet" size={12} />Заполнить
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
 
               <div className="cc-ov-meta">
                 {form.mileage && <span>{form.mileage} км</span>}
@@ -1726,20 +1915,72 @@ export default function CarCard({
           </section>
           )}
 
-          {isEdit && activeTab === 'works' && insWorks.length > 0 && (
+          {/* Основной ремонт. Раньше показывался только для чтения, а правился лишь
+              через заказ-наряд — приёмщику приходилось открывать документ, чтобы
+              поправить одну строку. Теперь таблицы такие же, как у допродаж. */}
+          {isEdit && activeTab === 'works' && !onExtrasTab && (
             <section className="cc-section">
-              <div className="cc-section-head"><span className="cc-section-icon" />{isInsCar ? 'Работы по страховой' : 'Работы'}<span className="cc-section-hint">{insWorks.length} поз.</span></div>
-              <div className="cc-sum-list">
-                {insWorks.map((s, i) => (
-                  <div className="cc-sum-row" key={`w-${i}`}>
-                    <span className="cc-sum-ico"><Icon name="wrench" size={15} /></span>
-                    <span className="cc-sum-name">{s.name || '—'}</span>
-                    {Number(s.qty) > 1 && <span className="cc-sum-qty">{s.qty} ×</span>}
-                    <span className="cc-sum-val">{fmtMoney((Number(s.price) || 0) * (Number(s.qty) || 1))}</span>
-                  </div>
-                ))}
+              <div className="cc-section-head">
+                <span className="cc-section-icon" />
+                {isInsCar ? `Основной ремонт · ${claimLabel(activeClaim, activeClaimIdx)}` : 'Работы и запчасти'}
+                <span className="cc-section-hint">{fmtMoney(ownServicesSum + ownPartsSum)}</span>
               </div>
-              <div className="cc-sum-total"><span>Итого работ</span><b>{fmtMoney(worksSum)}</b></div>
+
+              {/* Деньги считаются по заказ-наряду. Если карточку поправили, а ЗН нет —
+                  предупреждаем: молча разойтись этим цифрам нельзя. */}
+              {ownStaleOrder && (
+                <div className="cc-ov-attention" style={{ marginBottom: 12 }}>
+                  <span className="cc-ov-attention-ico"><Icon name="warning" size={15} /></span>
+                  <span className="cc-ov-attention-title">Заказ-наряд устарел</span>
+                  <span className="cc-ov-attention-parts">
+                    В карточке {fmtMoney(ownServicesSum + ownPartsSum)}, в ЗН № {ownStaleOrder.number} — {fmtMoney(ownStaleOrder.total)}.
+                    Себестоимость и «Финансы» считаются по заказ-наряду.
+                  </span>
+                  <button type="button" className="cc-ov-done-btn" onClick={onOpenDocs}>
+                    <Icon name="file" size={13} />Открыть
+                  </button>
+                </div>
+              )}
+
+              <div className="cc-section-subhead">Работы</div>
+              <table className="items-table cc-extras-table">
+                <thead><tr><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th /></tr></thead>
+                <tbody>
+                  {ownServices.map((s) => (
+                    <tr key={s.id}>
+                      <td><input value={s.name} onChange={(e) => updateOwnService(s.id, { name: e.target.value })} placeholder="напр. Замена бампера" /></td>
+                      <td><input type="number" min="0" value={s.qty} onChange={(e) => updateOwnService(s.id, { qty: e.target.value })} /></td>
+                      <td><input type="number" min="0" value={s.price} onChange={(e) => updateOwnService(s.id, { price: e.target.value })} /></td>
+                      <td className="items-table-sum">{fmtMoney((Number(s.price) || 0) * (Number(s.qty) || 1))}</td>
+                      <td><button className="danger small" onClick={() => removeOwnService(s.id)}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="cc-add-stage" onClick={addOwnService}>+ Добавить работу</button>
+
+              <div className="cc-section-subhead" style={{ marginTop: 14 }}>Запчасти</div>
+              <table className="items-table cc-extras-table">
+                <thead><tr><th>Код</th><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th /></tr></thead>
+                <tbody>
+                  {ownParts.map((p) => (
+                    <tr key={p.id}>
+                      <td><input value={p.code} onChange={(e) => updateOwnPart(p.id, { code: e.target.value })} placeholder="артикул" /></td>
+                      <td><input value={p.name} onChange={(e) => updateOwnPart(p.id, { name: e.target.value })} placeholder="напр. Бампер передний" /></td>
+                      <td><input type="number" min="0" value={p.qty} onChange={(e) => updateOwnPart(p.id, { qty: e.target.value })} /></td>
+                      <td><input type="number" min="0" value={p.price} onChange={(e) => updateOwnPart(p.id, { price: e.target.value })} /></td>
+                      <td className="items-table-sum">{fmtMoney((Number(p.price) || 0) * (Number(p.qty) || 1))}</td>
+                      <td><button className="danger small" onClick={() => removeOwnPart(p.id)}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="cc-add-stage" onClick={addOwnPart}>+ Добавить запчасть</button>
+              <div className="cc-hint" style={{ marginTop: 8 }}>
+                Статусы, закупочные цены и приёмку ведут на экране «Запчасти» — здесь они сохраняются.
+              </div>
+
+              <div className="cc-sum-total"><span>Итого основной ремонт</span><b>{fmtMoney(ownServicesSum + ownPartsSum)}</b></div>
             </section>
           )}
 
