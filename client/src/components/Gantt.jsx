@@ -444,7 +444,10 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false, isOwner
 
   async function finalizeJob(job, overall) {
     if (overall !== 'done') {
-      if (!window.confirm('Не все этапы завершены. Всё равно завершить заказ и убрать его в историю?')) return;
+      const msg = (job.stages || []).length === 0
+        ? 'У машины нет этапов. Завершить заказ и убрать его в историю?'
+        : 'Не все этапы завершены. Всё равно завершить заказ и убрать его в историю?';
+      if (!window.confirm(msg)) return;
     }
     // Warn before archiving a car that still has an unpaid счёт — otherwise its debt
     // lingers in Финансы with no car to open on the active screens.
@@ -812,7 +815,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false, isOwner
                 {!readOnly && (
                   <div className="job-item-head-actions" style={{ flexBasis: '100%', flexWrap: 'wrap', justifyContent: 'flex-end' }}>
                     <DocsButton onClick={() => openDocs(j.job_id)} />
-                    {!isQueued && <FinishButton onClick={() => finalizeJob(j, overall)} />}
+                    <FinishButton onClick={() => finalizeJob(j, overall)} />
                   </div>
                 )}
               </div>

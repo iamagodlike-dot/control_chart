@@ -2127,7 +2127,7 @@ export default function CarCard({
                 <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
                 {isOwner && <button className="cc-btn-ico" onClick={openPay}><Icon name="receipt" size={15} />Оплата мастерам</button>}
                 {isOwner && <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>}
-                {routeSet.length > 0 && <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>}
+                <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>
                 <button className="primary" disabled={savingInfo || !dirtyInfo} onClick={saveInfo}>
                   {savingInfo ? 'Сохраняем…' : dirtyInfo ? 'Сохранить' : 'Сохранено'}
                 </button>
