@@ -100,11 +100,16 @@ function esc(s) {
 
 // ─── Запчасти (те же статусы/типы, что на экране «Запчасти» сайта) ───
 // pr — порядок вывода (сначала «требуется», затем «заказано» и т.д.).
+// ВАЖНО: порядок/набор статусов должен совпадать с client/src/parts.js
+// (partStatusMeta). «Выставлен счёт» (invoiced) вставлен между «Требуется» и
+// «Заказано» — иначе позиция со счётом падала бы в бакет «Требуется».
 const PART_STATUS_META = [
   { id: 'need', label: 'Требуется', dot: '🔴', pr: 0 },
-  { id: 'ordered', label: 'Заказано', dot: '🟡', pr: 1 },
-  { id: 'in', label: 'На складе', dot: '🟢', pr: 2 },
-  { id: 'issued', label: 'Изъято', dot: '🔵', pr: 3 },
+  { id: 'invoiced', label: 'Выставлен счёт', dot: '🟠', pr: 1 },
+  { id: 'ordered', label: 'Заказано', dot: '🟡', pr: 2 },
+  { id: 'arrived', label: 'Приехало', dot: '🟣', pr: 3 }, // доехало до ТК — экспедитору забрать
+  { id: 'in', label: 'На складе', dot: '🟢', pr: 4 },
+  { id: 'issued', label: 'Изъято', dot: '🔵', pr: 5 },
 ];
 const partStatusMeta = (id) => PART_STATUS_META.find((s) => s.id === id) || PART_STATUS_META[0];
 
@@ -116,6 +121,28 @@ const PART_KIND_LABEL = {
   analog_orig: 'Аналог под ориг.',
 };
 const partKindLabel = (id) => PART_KIND_LABEL[id] || '';
+
+// ─── Фаза машины (копия client/src/phase.js — при правках на сайте синхронизировать) ───
+// СОВМЕСТИМОСТЬ: у машин, заведённых до появления фазы, поля `phase` нет. Как и на
+// сайте, считаем их ремонтом — иначе они выпали бы из сводки по укомплектованности.
+const PHASE = { APPROVAL: 'approval', REPAIR: 'repair' };
+const isApproval = (job) => !!job && job.phase === PHASE.APPROVAL;
+const isRepair = (job) => !isApproval(job);
+
+// Под-статусы согласования = колонки доски «Согласование» на сайте, слева направо.
+// Точки подобраны под те же цвета, что и колонки (planned/in_progress/queued/done +
+// warning/danger). `side: true` — тупиковые колонки (доплата / отказ).
+// ВАЖНО: набор и порядок должны совпадать с client/src/phase.js (APPROVAL_STATUSES).
+const APPROVAL_STATUS_META = [
+  { id: 'inspection', label: 'Осмотр / дефектовка',    dot: '⚪️', pr: 0 },
+  { id: 'calc',       label: 'Калькуляция',            dot: '🟠', pr: 1 },
+  { id: 'sent',       label: 'Отправлено страховой',   dot: '⚫️', pr: 2 },
+  { id: 'approved',   label: 'Согласовано',            dot: '🟢', pr: 3 },
+  { id: 'surcharge',  label: 'Нужна доплата / правки', dot: '🟡', pr: 4, side: true },
+  { id: 'rejected',   label: 'Отказ',                  dot: '🔴', pr: 5, side: true },
+];
+// Неизвестный/пустой под-статус = «Осмотр» (так же трактует доска на сайте).
+const approvalStatusMeta = (id) => APPROVAL_STATUS_META.find((s) => s.id === id) || APPROVAL_STATUS_META[0];
 
 // ─── Покраска ───
 const PAINT_STATUS_META = {
@@ -139,6 +166,24 @@ function partsSummary(parts) {
     counts[id] = (counts[id] || 0) + 1;
   }
   return { total: list.length, counts };
+}
+
+// Укомплектованность машины по запчастям: сколько позиций уже у нас на руках
+// (на складе или изъяты в работу) из общего числа.
+// ГОТЧА: у позиций из импорта Audatex и ручного ввода поля status нет вообще —
+// пустой статус означает «Требуется» (так же, как normalizePart на сайте).
+function partsReadiness(parts) {
+  const list = Array.isArray(parts) ? parts : [];
+  const obtained = list.filter((p) => {
+    const st = (p && p.status) || 'need';
+    return st === 'in' || st === 'issued';
+  }).length;
+  return {
+    total: list.length,
+    obtained,
+    missing: list.length - obtained,
+    complete: list.length > 0 && obtained === list.length,
+  };
 }
 
 // Компактная подпись машины для списков: госномер «шильдиком» (моноширинный) + модель.
@@ -176,6 +221,12 @@ module.exports = {
   paintStatusMeta,
   PAYMENT_SHORT,
   partsSummary,
+  partsReadiness,
   progressBar,
   carLabel,
+  PHASE,
+  isApproval,
+  isRepair,
+  APPROVAL_STATUS_META,
+  approvalStatusMeta,
 };

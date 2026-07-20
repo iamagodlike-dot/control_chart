@@ -201,7 +201,7 @@ function RouteStrip({ stages, posts, now }) {
   );
 }
 
-export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
+export default function Gantt({ openJobId, onOpenJobHandled, tv = false, isOwner = false }) {
   // TV / kiosk mode: a clean, read-only view for the big screen in the shop.
   // No editing affordances, bigger bars, auto-follows the current day & time,
   // and keeps the display awake. Opened via the ?tv=1 URL.
@@ -1195,6 +1195,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false }) {
           posts={posts}
           masters={masters}
           now={now}
+          isOwner={isOwner}
           onClose={() => setDetailJob(null)}
           onOpenDocs={() => { openDocs(detailJob.job_id); setDetailJob(null); }}
           onFinalize={() => { finalizeJob(detailJob, jobOverallStatus(detailJob, now)); setDetailJob(null); }}

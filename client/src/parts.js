@@ -10,12 +10,27 @@
 //         excluded from the base but flagged with a «N без себестоимости» badge.
 //         Deliberate — do NOT "simplify" back to counting every position.
 
+import { streamOf, claimsOf, claimLabel } from './billing.js';
+
 // ---- enums / meta (colors are CSS vars defined on the screen wrapper) --------
+// Жизненный цикл запчасти. ВАЖНО про два «складских» шага:
+//   ordered  — заказано, едет к нам/в пункт выдачи транспортной компании (ТК);
+//   arrived  — доехало до склада ТК / поставщика, лежит там — экспедитору нужно
+//              съездить и ЗАБРАТЬ (это его рабочий список «что забрать»);
+//   in       — экспедитор забрал и привёз к НАМ, деталь на нашем складе.
+// «arrived» вставлен между ordered и in — не схлопывать обратно: «приехало в ТК»
+// и «у нас на складе» это разные состояния (см. кабинет экспедитора, receiving.js).
+// «invoiced» («Выставлен счёт») вставлен между need и ordered: запчастист собрал
+// позиции в счёт поставщика и приложил файл, но учредитель ещё не оплатил. В
+// «Заказано» позиция уходит ТОЛЬКО после отметки оплаты (в ЛК/боте учредителя),
+// см. api.supplierInvoices.markPaid. Не схлопывать обратно в need→ordered.
 export const partStatusMeta = [
   { id: 'need', label: 'Требуется', color: 'var(--delay)', pr: 0 },
-  { id: 'ordered', label: 'Заказано', color: 'var(--wait)', pr: 1 },
-  { id: 'in', label: 'На складе', color: 'var(--done)', pr: 2 },
-  { id: 'issued', label: 'Изъято', color: 'var(--progress)', pr: 3 },
+  { id: 'invoiced', label: 'Выставлен счёт', color: 'var(--invoiced)', pr: 1 },
+  { id: 'ordered', label: 'Заказано', color: 'var(--wait)', pr: 2 },
+  { id: 'arrived', label: 'Приехало', color: 'var(--arrived)', pr: 3 },
+  { id: 'in', label: 'На складе', color: 'var(--done)', pr: 4 },
+  { id: 'issued', label: 'Изъято', color: 'var(--progress)', pr: 5 },
 ];
 export const partKindMeta = [
   { id: 'new', label: 'Новое', color: 'var(--done)' },
@@ -32,10 +47,19 @@ export const paintStatusMeta = [
   { id: 'applied', label: 'Нанесена', color: 'var(--text3)', pr: 4 },
 ];
 
+// Плательщик позиции на СТРАХОВОЙ машине: ремонт по страховой ↔ допродажа клиента
+// (клиент оплачивает отдельным документом, см. orderDoc.itemsForRecipient). На
+// не-страховых машинах метка не показывается. Цвета — CSS-переменные экрана.
+export const partPayerMeta = [
+  { id: 'insurance', label: 'Страховая', color: 'var(--wait)' },
+  { id: 'client', label: 'Допродажа', color: 'var(--brand)' },
+];
+
 export const PART_STATUS = partStatusMeta; // back-compat alias
 export const STATUS_BY_ID = Object.fromEntries(partStatusMeta.map((s) => [s.id, s]));
 export const psMeta = (id) => partStatusMeta.find((s) => s.id === id) || partStatusMeta[0];
 export const pkMeta = (id) => partKindMeta.find((k) => k.id === id) || partKindMeta[0];
+export const ppMeta = (id) => partPayerMeta.find((p) => p.id === id) || partPayerMeta[0];
 export const paMeta = (id) => paintStatusMeta.find((s) => s.id === id) || paintStatusMeta[0];
 
 // Color threshold for rentability (presentation only, spec §12.4). Default 40%.
@@ -96,8 +120,19 @@ export function normalizePart(p = {}) {
     price: p.price ?? 0,           // цена по заказ-наряду за шт
     status: p.status || 'need',
     kind: p.kind || 'new',
+    // Поток биллинга позиции (см. billing.js): 'client' — допродажа (клиент платит
+    // отдельным документом); отсутствует/'insurance' — убыток №1; 'cl_*' — убыток
+    // №2, №3… Влияет только на то, в чей документ попадёт позиция (itemsForStream);
+    // на закупку/склад — нет.
+    // ВНИМАНИЕ: это WHITELIST — произвольный id потока проходит НАСКВОЗЬ именно
+    // потому, что метка живёт в существующем поле payer. Отдельное поле claim_id
+    // здесь бы вырезалось на каждом снапшоте (usePartsController прогоняет через
+    // normalizePart КАЖДЫЙ снапшот) — ровно поэтому убыток и не стали делать
+    // отдельным полем.
+    payer: p.payer || 'insurance',
     orderedAt: p.orderedAt || '',
     eta: p.eta || '',
+    comment: p.comment || '',       // свободная заметка к позиции (приёмка и др.)
   };
 }
 
@@ -149,7 +184,8 @@ const advStyle = (color) => ({ width: '32px', height: '34px', borderRadius: '8px
 //   parts:  [{ id, carId, name, article|code, replArticle, qty, supplier, cost, price, status, kind, orderedAt, eta }]
 //   cars:   { [carId]: { model, plate, num, client } }
 //   paint:  { [carId]: { code, type, volume, status, cost } }
-//   cells:  { [cellId]: { plate, orderNum, parts:[{qty}] } }
+//   cells:  { [cellId]: { orderNum, parts:[{qty}] } } — машина находит свои ячейки
+//           по car.cell_ids, а не по гос.номеру (он не уникален)
 // `frozenOrder` («замороженный порядок»): пока экран «Запчасти» открыт,
 // строки и карточки держат позицию, снятую при первой смене статуса, и НЕ
 // пересортировываются от смены статусов. Форма: { cars:[carId…], parts:{ [carId]:[partId…] } }
@@ -166,10 +202,13 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
 
   let list = P.slice();
   if (filter === 'overdue') list = list.filter((p) => p.status === 'ordered' && parseDay(p.eta, year) && parseDay(p.eta, year) < t0);
+  // «Без себестоимости» — те же позиции, что считает бейдж missingCost: заказанные
+  // (не «Требуется»), у которых не введена закупочная цена. Кликом по бейджу.
+  else if (filter === 'nocost') list = list.filter((p) => !num(p.cost) && p.status !== 'need');
   else if (filter !== 'all') list = list.filter((p) => p.status === filter);
   if (q) list = list.filter((p) => { const c = cars[p.carId] || {}; return [p.name, p.article, p.supplier, c.model, c.plate].some((v) => String(v || '').toLowerCase().includes(q)); });
 
-  const counts = { need: 0, ordered: 0, in: 0, issued: 0 };
+  const counts = { need: 0, invoiced: 0, ordered: 0, arrived: 0, in: 0, issued: 0 };
   P.forEach((p) => { counts[p.status] = (counts[p.status] || 0) + 1; });
 
   // Полная выручка по ЗН каждой машины (ВСЕ её позиции, до фильтра). Это база,
@@ -184,7 +223,7 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
   const totalCost = list.reduce((a, p) => a + num(p.cost) * num(p.qty), 0);
   const totalOrder = list.reduce((a, p) => a + num(p.price) * num(p.qty), 0);
   const missingCost = list.filter((p) => !num(p.cost) && p.status !== 'need').length;
-  const actionNeeded = list.filter((p) => p.status === 'need' || p.status === 'ordered').length;
+  const actionNeeded = list.filter((p) => p.status === 'need' || p.status === 'invoiced' || p.status === 'ordered' || p.status === 'arrived').length;
 
   const costedParts = list.filter((p) => num(p.cost) > 0);
   const rentBase = costedParts.reduce((a, p) => a + num(p.price) * num(p.qty), 0);
@@ -206,6 +245,7 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
   const statusChips = partStatusMeta.map((s) => { const on = filter === s.id; return { id: s.id, label: s.label, count: counts[s.id] || 0, active: on, style: chipStyle(s.color, on), dotStyle: { width: '8px', height: '8px', borderRadius: '2px', background: on ? '#0a0e14' : s.color } }; });
   const overdueCount = P.filter((p) => p.status === 'ordered' && parseDay(p.eta, year) && parseDay(p.eta, year) < t0).length;
   const overdueChip = { count: overdueCount, active: filter === 'overdue', style: chipStyle('var(--delay)', filter === 'overdue') };
+  const missingActive = filter === 'nocost';
 
   const byCar = {}; const order = [];
   list.forEach((p) => { if (!byCar[p.carId]) { byCar[p.carId] = []; order.push(p.carId); } byCar[p.carId].push(p); });
@@ -219,6 +259,19 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
   let totalDiscApplied = 0; // сумма скидки, фактически отнесённой на видимые costed-позиции
   const groups = order.map((cid) => {
     const c = cars[cid] || {};
+    // Метка потока показывается только у страховых машин.
+    const carInsurance = c.payment_type === 'insurance';
+    // Убытки машины: обычно один (тогда метка бинарная — «страховая ↔ допродажа»,
+    // как было), но страховая может завести несколько дел (см. billing.js).
+    const carClaims = carInsurance ? claimsOf(c) : [];
+    const multiClaim = carClaims.length > 1;
+    // Варианты для селектора потока: каждое дело + допродажи. Подпись КОРОТКАЯ
+    // («Убыток 2»), без номера убытка: строка запчасти плотная, и полный вариант
+    // обрезался бы до нечитаемого «Убыток 2 · PV…». Полная подпись — в подсказке
+    // (payerStreamLabel) и на вкладках карточки машины.
+    const streamOptions = multiClaim
+      ? [...carClaims.map((cl, i) => ({ value: cl.id, label: 'Убыток ' + (i + 1) })), { value: 'client', label: 'Допродажа' }]
+      : [];
     const fp = frozenPartIdx[cid];
     const items = byCar[cid].slice().sort((a, b) => {
       if (fp) {
@@ -252,15 +305,39 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
     const gDiscPartial = gDiscount > 0 && (gDiscount - gDiscApplied) > 1;
     totalDiscApplied += gDiscApplied;
 
-    const groupCells = Object.keys(cells).filter((id) => { const d = cells[id]; return d && d.plate && c.plate && d.plate === c.plate; })
+    // Ячейки машины — по её собственной связи cell_ids (так же, как receiving.js
+    // cellIdsOf и api.warehouse.syncParts/setJobCells). НЕ по гос.номеру: он не
+    // уникален (задвоенные машины — целый экран «Дубликаты машин»), и сопоставление
+    // по нему показывало каждой из них ячейки чужой карточки.
+    const groupCells = (c.cell_ids || []).filter((id) => cells[id])
       .map((id) => { const d = cells[id]; const n = (d.parts || []).reduce((a, x) => a + (num(x.qty) || 1), 0); return { id, count: n, title: 'Ячейка ' + id + ' · ' + (d.orderNum || '') + ' · ' + n + ' поз.' }; });
 
     const rows = items.map((p) => {
       const m = psMeta(p.status); const km = pkMeta(p.kind || 'new'); const kc = kindColor(km, flagOrigParts);
       const eta = parseDay(p.eta, year); const overdue = (p.status === 'ordered') && eta && eta < t0;
       const cost = num(p.cost); const price = num(p.price); const qty = num(p.qty) || 1;
+      // Поток позиции. У машины с ОДНИМ убытком поведение прежнее: бинарная лампочка
+      // «страховая ↔ допродажа». У машины с несколькими делами лампочки мало (в какое
+      // из дел она бы переключала?) — там рендерится селектор, см. payerMulti.
+      const payer = streamOf(p);
+      const isExtra = payer === 'client';
+      const pm = ppMeta(isExtra ? 'client' : 'insurance');
+      const claimIdx = carClaims.findIndex((cl) => cl.id === payer);
+      const streamLabel = isExtra ? 'Допродажа' : claimLabel(carClaims[claimIdx] || null, claimIdx < 0 ? 0 : claimIdx);
       return {
         id: p.id, carId: cid, flash: p.id === flashId, name: p.name, article: p.article, qty: p.qty, supplier: p.supplier, cost: p.cost,
+        // Поток биллинга (только у страховых машин, см. isInsuranceCar).
+        //  • один убыток  → компактная кликабельная «лампочка»: янтарная = страховая,
+        //    синяя = допродажа; клик переключает (onPayer).
+        //  • несколько дел → селектор payerOptions: лампочка не смогла бы выразить,
+        //    В КАКОЕ из дел переключать.
+        payer, isInsuranceCar: carInsurance, isExtra, payerLabel: pm.label,
+        payerMulti: multiClaim, payerOptions: streamOptions, payerStreamLabel: streamLabel,
+        payerSelStyle: { height: '24px', padding: '0 6px', borderRadius: '6px', border: '1px solid color-mix(in srgb,' + pm.color + ' 45%,transparent)', background: 'color-mix(in srgb,' + pm.color + ' 12%,transparent)', color: pm.color, fontFamily: "'JetBrains Mono',monospace", fontWeight: 700, fontSize: '10.5px', outline: 'none', cursor: 'pointer', maxWidth: '104px' },
+        payerTitle: isExtra
+          ? 'Допродажа клиента — нажмите, чтобы вернуть в страховую'
+          : 'Страховая — нажмите, чтобы отметить допродажей клиента',
+        payerDotStyle: { width: '11px', height: '11px', borderRadius: '50%', flex: '0 0 auto', cursor: 'pointer', padding: 0, background: pm.color, border: '1px solid color-mix(in srgb,' + pm.color + ' 55%,transparent)', boxShadow: '0 0 0 3px color-mix(in srgb,' + pm.color + ' 20%,transparent)' },
         costStr: cost ? cost.toLocaleString('ru-RU') : '', status: p.status, statusColor: m.color, statusLabel: m.label,
         kind: p.kind || 'new', kindColor: kc, kindLabel: km.label,
         isAnalog: (p.kind === 'analog' || p.kind === 'analog_orig'), replArticle: p.replArticle || '',
@@ -277,9 +354,13 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
           border: '1px solid ' + (overdue ? 'var(--delay)' : 'transparent'), background: overdue ? 'color-mix(in srgb,var(--delay) 16%,transparent)' : 'transparent', color: overdue ? 'var(--delay)' : 'var(--text3)' },
         hasArticle: !!(p.article && p.article.trim()),
         orderedAt: p.orderedAt, hasOrdered: !!p.orderedAt,
+        comment: p.comment || '', hasComment: !!(p.comment && String(p.comment).trim()),
         isNeed: p.status === 'need', missingCost: !cost && p.status !== 'need',
-        advIsOrder: p.status === 'need', advIsArrive: p.status === 'ordered', advIsIssue: p.status === 'in', advIsDone: p.status === 'issued',
-        advOrderStyle: advStyle('var(--wait)'), advArriveStyle: advStyle('var(--done)'), advIssueStyle: advStyle('var(--progress)'),
+        // Кнопка-стрелка «следующий шаг». Каждая ведёт в следующий статус и
+        // окрашена в цвет ЦЕЛЕВОГО статуса: ordered→arrived (забрать из ТК),
+        // arrived→in (привезли к нам), in→issued (выдали в работу).
+        advIsOrder: p.status === 'need', advIsArrive: p.status === 'ordered', advIsToStock: p.status === 'arrived', advIsIssue: p.status === 'in', advIsDone: p.status === 'issued',
+        advOrderStyle: advStyle('var(--wait)'), advArriveStyle: advStyle('var(--arrived)'), advToStockStyle: advStyle('var(--done)'), advIssueStyle: advStyle('var(--progress)'),
         costBorder: (!cost && p.status !== 'need') ? 'color-mix(in srgb,var(--delay) 50%,transparent)' : 'var(--line2)',
         statusOptions: partStatusMeta.map((s) => ({ value: s.id, label: s.label })),
         rowStyle: { display: 'grid', gridTemplateColumns: '186px 1fr 44px 118px 120px 96px 96px 40px', gap: '12px', alignItems: 'center', padding: '11px 4px', borderBottom: '1px solid var(--line)', transition: 'background .5s ease, box-shadow .5s ease',
@@ -300,6 +381,10 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
 
     return {
       carId: cid, model: c.model || cid, plate: c.plate || '', num: c.num || '', client: c.client || '—', minPr,
+      // Страховая машина: у строк показывается метка «страховая/допродажа»; в шапке —
+      // тег + счётчик допродаж.
+      isInsuranceCar: carInsurance,
+      extrasCount: carInsurance ? items.filter((p) => p.payer === 'client').length : 0,
       cells: groupCells, hasCells: groupCells.length > 0,
       subtotalStr: money(subtotal), orderSumStr: money(orderSum),
       marginStr: (margin >= 0 ? '+ ' : '− ') + money(Math.abs(margin)), marginColor: margin >= 0 ? 'var(--done)' : 'var(--delay)',
@@ -343,7 +428,7 @@ export function buildPartsVM({ parts = [], cars = {}, paint = {}, cells = {}, fi
   return {
     groups, isEmpty: groups.length === 0, statusChips, overdueChip,
     hasFilter: scopeFiltered,
-    totalCostStr: money(totalCost), totalOrderStr: money(totalOrder), actionNeeded, missingCost,
+    totalCostStr: money(totalCost), totalOrderStr: money(totalOrder), actionNeeded, missingCost, missingActive,
     totalMarginStr: (totalMargin >= 0 ? '+ ' : '− ') + money(Math.abs(totalMargin)),
     rentabStr: rentBase > 0 ? ((totalMargin >= 0 ? '' : '−') + Math.abs(rentab) + '%') : '—',
     rentabColor: rentBase > 0 ? rentColor(rentab, rentabTarget) : 'var(--text3)',

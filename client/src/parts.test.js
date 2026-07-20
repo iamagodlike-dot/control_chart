@@ -4,7 +4,70 @@
 // "simplify" costed-only rentability back to counting every position.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { partNeedsOrderInfo, partsFin, partRentab, buildPartsVM, withPartIds } from './parts.js';
+import { partNeedsOrderInfo, partsFin, partRentab, buildPartsVM, withPartIds, partStatusMeta } from './parts.js';
+
+test('статусы: «Выставлен счёт» между need и ordered, «Приехало» между ordered и «На складе»', () => {
+  const ids = partStatusMeta.map((s) => s.id);
+  assert.deepEqual(ids, ['need', 'invoiced', 'ordered', 'arrived', 'in', 'issued']);
+  // приоритеты строго по порядку 0..5 — от этого зависит onAdvance (pr+1)
+  assert.deepEqual(partStatusMeta.map((s) => s.pr), [0, 1, 2, 3, 4, 5]);
+});
+
+test('buildPartsVM — «Приехало» считается и даёт кнопку «на склад» (advIsToStock)', () => {
+  const cars = { c1: { model: 'BMW' } };
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'A', supplier: 'Exist', cost: 100, price: 200, status: 'arrived' },
+    { id: 'b', carId: 'c1', name: 'B', status: 'ordered' },
+  ];
+  const vm = buildPartsVM({ parts, cars });
+  // чип «Приехало» есть и считает позицию
+  const chip = vm.statusChips.find((s) => s.id === 'arrived');
+  assert.ok(chip);
+  assert.equal(chip.count, 1);
+  // строка arrived предлагает следующий шаг → «привезли на склад», не «заказать/выдать»
+  const row = vm.groups[0].rows.find((r) => r.id === 'a');
+  assert.equal(row.advIsToStock, true);
+  assert.equal(row.advIsArrive, false);
+  assert.equal(row.advIsIssue, false);
+  // «Приехало» — позиция, требующая действия (забрать) → в actionNeeded
+  assert.equal(vm.actionNeeded, 2); // arrived (a) + ordered (b)
+});
+
+test('buildPartsVM — комментарий позиции пробрасывается в строку (comment/hasComment)', () => {
+  const cars = { c1: { model: 'Lada' } };
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'Бампер', status: 'ordered', comment: 'предоплата 50%' },
+    { id: 'b', carId: 'c1', name: 'Фара', status: 'need' },              // без комментария
+    { id: 'd', carId: 'c1', name: 'Капот', status: 'need', comment: '   ' }, // пробелы ≠ комментарий
+  ];
+  const vm = buildPartsVM({ parts, cars });
+  const rows = vm.groups[0].rows;
+  const ra = rows.find((r) => r.id === 'a');
+  const rb = rows.find((r) => r.id === 'b');
+  const rd = rows.find((r) => r.id === 'd');
+  assert.equal(ra.comment, 'предоплата 50%');
+  assert.equal(ra.hasComment, true);
+  assert.equal(rb.comment, '');
+  assert.equal(rb.hasComment, false);
+  assert.equal(rd.hasComment, false); // только пробелы → не считаем комментарием
+});
+
+test('buildPartsVM — фильтр «без себестоимости» (nocost) показывает только заказанные без закупки', () => {
+  const cars = { c1: { model: 'BMW' } };
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'A', supplier: 'Exist', cost: 100, price: 200, status: 'ordered' }, // с себест. → скрыт
+    { id: 'b', carId: 'c1', name: 'B', supplier: 'Exist', cost: 0, price: 300, status: 'ordered' },   // без себест. → показан
+    { id: 'd', carId: 'c1', name: 'D', cost: 0, price: 0, status: 'need' },                            // «Требуется» → не флажим, скрыт
+  ];
+  const vmAll = buildPartsVM({ parts, cars });
+  assert.equal(vmAll.missingCost, 1, 'бейдж считает 1 позицию без себестоимости');
+  assert.equal(vmAll.missingActive, false);
+
+  const vm = buildPartsVM({ parts, cars, filter: 'nocost' });
+  assert.equal(vm.missingActive, true, 'фильтр активен');
+  const rowIds = vm.groups.flatMap((g) => g.rows.map((r) => r.id));
+  assert.deepEqual(rowIds, ['b'], 'в списке только позиция без себестоимости, «Требуется» исключён');
+});
 
 test('§13 — need→ordered requires supplier AND cost>0', () => {
   assert.equal(partNeedsOrderInfo({ supplier: '', cost: 0 }), true);
@@ -102,7 +165,7 @@ test('freeze — без снимка сортирует канонически (
   ];
   // оба need → по названию: a, b
   assert.deepEqual(rowIds(buildPartsVM({ parts, cars })), ['a', 'b']);
-  // сменили a → issued (pr 3): канонически b (need) уходит вперёд a
+  // сменили a → issued (pr 5): канонически b (need) уходит вперёд a
   const p2 = parts.map((p) => (p.id === 'a' ? { ...p, status: 'issued' } : p));
   assert.deepEqual(rowIds(buildPartsVM({ parts: p2, cars })), ['b', 'a']);
 });
@@ -172,4 +235,113 @@ test('withPartIds — идемпотентна: id стабилен при по�
   const once = withPartIds([{ code: 'A1', name: 'Бампер', qty: 1 }]);
   const twice = withPartIds(once);
   assert.equal(once[0].id, twice[0].id, 'повторный проход не меняет уже присвоенный id');
+});
+
+// ===== Регрессия: метка «страховая ↔ допродажа» и ячейки склада =====
+// Оба бага были ЖИВЫМИ в проде и невидимыми в демо.
+
+// Лампочка плательщика показывается только у страховых машин (isInsuranceCar).
+// В проде Parts.jsx не прокидывал payment_type → jobShell подставлял 'cash' →
+// carInsurance всегда false → лампочки не было ни на одной машине. В demo поле
+// передавалось, поэтому там всё работало — расхождение и маскировало регрессию.
+test('buildPartsVM — метка плательщика включается payment_type машины, а не наличием payer', () => {
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'Бампер', status: 'need' },                     // без payer → страховая
+    { id: 'b', carId: 'c1', name: 'Коврики', status: 'need', payer: 'client' },   // допродажа
+  ];
+  const ins = buildPartsVM({ parts, cars: { c1: { model: 'BMW', payment_type: 'insurance' } } });
+  assert.equal(ins.groups[0].isInsuranceCar, true, 'страховая машина → группа помечена');
+  assert.equal(ins.groups[0].extrasCount, 1, 'допродажи посчитаны');
+  assert.deepEqual(ins.groups[0].rows.map((r) => r.payer), ['insurance', 'client']);
+  assert.equal(ins.groups[0].rows[0].isInsuranceCar, true, 'лампочка рендерится (isInsuranceCar у строки)');
+
+  // Наличная машина — метки нет вообще, даже если у позиции лежит payer.
+  const cash = buildPartsVM({ parts, cars: { c1: { model: 'BMW', payment_type: 'cash' } } });
+  assert.equal(cash.groups[0].isInsuranceCar, false);
+  assert.equal(cash.groups[0].extrasCount, 0);
+  assert.equal(cash.groups[0].rows[0].isInsuranceCar, false, 'у наличной машины лампочки нет');
+});
+
+// Ячейки ищутся по связи job.cell_ids, а НЕ по гос.номеру: номер не уникален
+// (задвоенные машины), и раньше каждая из них показывала ячейки чужой карточки.
+test('buildPartsVM — ячейки берутся по cell_ids машины, а не по совпадению гос.номера', () => {
+  const cars = {
+    c1: { model: 'BMW', plate: 'А123ВС196', cell_ids: ['A-01'] },
+    c2: { model: 'BMW', plate: 'А123ВС196', cell_ids: ['B-02'] }, // тот же номер — дубль
+  };
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'Бампер', status: 'need' },
+    { id: 'b', carId: 'c2', name: 'Фара', status: 'need' },
+  ];
+  const cells = {
+    'A-01': { orderNum: 'ЗН-2026-0001', parts: [{ qty: 2 }] },
+    'B-02': { orderNum: 'ЗН-2026-0002', parts: [{ qty: 1 }] },
+  };
+  const vm = buildPartsVM({ parts, cars, cells });
+  const g1 = vm.groups.find((g) => g.carId === 'c1');
+  const g2 = vm.groups.find((g) => g.carId === 'c2');
+  assert.deepEqual(g1.cells.map((x) => x.id), ['A-01'], 'машина видит ТОЛЬКО свою ячейку');
+  assert.deepEqual(g2.cells.map((x) => x.id), ['B-02'], 'дубль с тем же номером не подмешивается');
+  assert.equal(g1.cells[0].count, 2, 'позиции в ячейке посчитаны');
+  assert.equal(g1.hasCells, true);
+
+  // Машина без ячеек — пусто, а не «все ячейки без гос.номера».
+  const noCells = buildPartsVM({ parts: [{ id: 'a', carId: 'c1', name: 'Бампер' }], cars: { c1: { model: 'BMW' } }, cells });
+  assert.deepEqual(noCells.groups[0].cells, []);
+  assert.equal(noCells.groups[0].hasCells, false);
+});
+
+// ===== Несколько убытков на экране «Запчасти» =====
+test('buildPartsVM — один убыток: прежняя бинарная лампочка, селектора нет', () => {
+  const cars = { c1: { model: 'BMW', payment_type: 'insurance', claim_number: 'PVU-1' } };
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'Дверь', status: 'need' },
+    { id: 'b', carId: 'c1', name: 'Коврики', status: 'need', payer: 'client' },
+  ];
+  const vm = buildPartsVM({ parts, cars });
+  const g = vm.groups[0];
+  assert.equal(g.rows[0].payerMulti, false, 'селектор не нужен');
+  assert.deepEqual(g.rows[0].payerOptions, []);
+  assert.deepEqual(g.rows.map((r) => r.payer), ['insurance', 'client']);
+  assert.equal(g.rows[0].isExtra, false);
+  assert.equal(g.rows[1].isExtra, true);
+});
+
+test('buildPartsVM — два убытка: селектор потока со всеми делами + допродажи', () => {
+  const cars = { c1: { model: 'BMW', payment_type: 'insurance', claims: [
+    { id: 'insurance', claim_number: 'PVU-123' },
+    { id: 'cl_x7', claim_number: 'PVU-999' },
+  ] } };
+  const parts = [
+    { id: 'a', carId: 'c1', name: 'Дверь', status: 'need' },                    // убыток №1 (без метки)
+    { id: 'b', carId: 'c1', name: 'Бампер', status: 'need', payer: 'cl_x7' },   // убыток №2
+    { id: 'c', carId: 'c1', name: 'Коврики', status: 'need', payer: 'client' }, // допродажа
+  ];
+  const vm = buildPartsVM({ parts, cars });
+  const g = vm.groups[0];
+  assert.equal(g.rows[0].payerMulti, true);
+  // Подписи в селекторе — короткие: строка запчасти плотная, полный вариант с
+  // номером убытка обрезался бы до нечитаемого «Убыток 2 · PV…».
+  assert.deepEqual(g.rows[0].payerOptions, [
+    { value: 'insurance', label: 'Убыток 1' },
+    { value: 'cl_x7', label: 'Убыток 2' },
+    { value: 'client', label: 'Допродажа' },
+  ]);
+  // Каждая позиция знает СВОЁ дело — не схлопывается в первое.
+  const byId = Object.fromEntries(g.rows.map((r) => [r.id, r]));
+  assert.equal(byId.a.payer, 'insurance');
+  assert.equal(byId.b.payer, 'cl_x7');
+  assert.equal(byId.c.payer, 'client');
+  assert.equal(byId.a.payerStreamLabel, 'Убыток 1 · PVU-123');
+  assert.equal(byId.b.payerStreamLabel, 'Убыток 2 · PVU-999');
+  assert.equal(byId.c.payerStreamLabel, 'Допродажа');
+  // Допродажи считаются по метке 'client', а не «всё, что не убыток №1».
+  assert.equal(g.extrasCount, 1);
+});
+
+test('buildPartsVM — наличная машина: метки потока нет, даже если у машины есть claims', () => {
+  const cars = { c1: { model: 'BMW', payment_type: 'cash', claims: [{ id: 'insurance' }, { id: 'cl_x7' }] } };
+  const vm = buildPartsVM({ parts: [{ id: 'a', carId: 'c1', name: 'Фильтр' }], cars });
+  assert.equal(vm.groups[0].isInsuranceCar, false);
+  assert.equal(vm.groups[0].rows[0].payerMulti, false);
 });

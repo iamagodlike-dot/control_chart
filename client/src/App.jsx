@@ -11,22 +11,38 @@ import Logo from './components/Logo';
 import Icon from './components/Icon';
 import AuthGate from './components/AuthGate';
 import RoleGate from './components/RoleGate';
+import UpdateNotice from './components/UpdateNotice';
 import Warehouse from './components/Warehouse';
 import PartsReceiving from './components/PartsReceiving';
+import ReceivingHistory from './components/ReceivingHistory';
+import MyWork from './components/MyWork';
+import MyEarnings from './components/MyEarnings';
+import Payroll from './components/Payroll';
 import MyExpenses from './components/MyExpenses';
 import StaffExpenses from './components/StaffExpenses';
+import Requests from './components/Requests';
+import Purchasing from './components/Purchasing';
+import SupplierInvoices from './components/SupplierInvoices';
+import { GroupedTabs } from './components/NavGroup';
 import { roleTabs, roleHome, roleLabel } from './roles';
 import './App.css';
 
 const TABS = [
+  { id: 'mywork', label: 'Мои машины', icon: 'car' },
+  { id: 'earnings', label: 'Мой заработок', icon: 'wallet' },
   { id: 'approval', label: 'Согласование', icon: 'shield' },
   { id: 'gantt', label: 'График', icon: 'calendar' },
   { id: 'board', label: 'Загрузка', icon: 'chart' },
   { id: 'warehouse', label: 'Склад', icon: 'box' },
   { id: 'parts', label: 'Запчасти', icon: 'wrench' },
   { id: 'receiving', label: 'Приёмка', icon: 'box' },
+  { id: 'receiving-history', label: 'История приёмки', icon: 'history' },
+  { id: 'requests', label: 'Заявки', icon: 'clipboard' },
+  { id: 'purchasing', label: 'Закупки', icon: 'cart' },
+  { id: 'supplier-invoices', label: 'Счета поставщиков', icon: 'receipt' },
   { id: 'expenses', label: 'Мои траты', icon: 'receipt' },
   { id: 'finance', label: 'Финансы', icon: 'wallet' },
+  { id: 'payroll', label: 'Зарплата', icon: 'receipt' },
   { id: 'staffexpenses', label: 'Траты', icon: 'receipt' },
   { id: 'history', label: 'История', icon: 'history' },
 ];
@@ -77,6 +93,8 @@ function App() {
       <AuthGate>
         {() => (
           <div className="app app--tv">
+            {/* Экран в цехе: новое обновление подхватывается тихой перезагрузкой */}
+            <UpdateNotice auto />
             <TVErrorBoundary>
               <Gantt tv />
             </TVErrorBoundary>
@@ -87,6 +105,9 @@ function App() {
   }
 
   return (
+    <>
+    {/* Вне AuthGate: плашка «Вышло обновление» видна и на экране входа */}
+    <UpdateNotice />
     <AuthGate>
       {({ user, signOut }) => (
         <RoleGate user={user} signOut={signOut}>
@@ -103,6 +124,7 @@ function App() {
         </RoleGate>
       )}
     </AuthGate>
+    </>
   );
 }
 
@@ -155,16 +177,26 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
           </div>
         </div>
         {visibleTabs.length > 1 && (
-          <nav className="tabs">
-            {visibleTabs.map((t) => (
-              <button key={t.id} className={effectiveTab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
-                <Icon name={t.icon} size={16} />{t.label}
-                {t.id === 'approval' && approvalCount > 0 && (
-                  <span className="tab-badge">{approvalCount}</span>
-                )}
-              </button>
-            ))}
-          </nav>
+          isOwner ? (
+            <GroupedTabs
+              tabs={TABS}
+              activeTab={effectiveTab}
+              onSelect={setTab}
+              allowed={allowed}
+              approvalCount={approvalCount}
+            />
+          ) : (
+            <nav className="tabs">
+              {visibleTabs.map((t) => (
+                <button key={t.id} className={effectiveTab === t.id ? 'active' : ''} onClick={() => setTab(t.id)}>
+                  <Icon name={t.icon} size={16} />{t.label}
+                  {t.id === 'approval' && approvalCount > 0 && (
+                    <span className="tab-badge">{approvalCount}</span>
+                  )}
+                </button>
+              ))}
+            </nav>
+          )
         )}
         <div className="app-user">
           {isOwner && (
@@ -207,19 +239,27 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
       </header>
 
       <main className={`app-main${effectiveTab === 'gantt' ? ' app-main--flush' : ''}`}>
+        {effectiveTab === 'mywork' && <MyWork masterId={profile?.masterId} />}
+        {effectiveTab === 'earnings' && <MyEarnings masterId={profile?.masterId} />}
         {effectiveTab === 'gantt' && (
           <Gantt
             openJobId={openJobId}
             onOpenJobHandled={() => setOpenJobId(null)}
+            isOwner={isOwner}
           />
         )}
-        {effectiveTab === 'approval' && <Approval />}
+        {effectiveTab === 'approval' && <Approval isOwner={isOwner} />}
         {effectiveTab === 'board' && <PostsBoard />}
         {effectiveTab === 'warehouse' && <Warehouse onOpenJob={openJobDetail} />}
-        {effectiveTab === 'parts' && <Parts />}
+        {effectiveTab === 'parts' && <Parts role={role} profile={profile} />}
         {effectiveTab === 'receiving' && <PartsReceiving />}
+        {effectiveTab === 'receiving-history' && <ReceivingHistory />}
+        {effectiveTab === 'requests' && <Requests role={role} />}
+        {effectiveTab === 'purchasing' && <Purchasing />}
+        {effectiveTab === 'supplier-invoices' && <SupplierInvoices role={role} profile={profile} />}
         {effectiveTab === 'expenses' && <MyExpenses />}
         {effectiveTab === 'finance' && <Finance />}
+        {effectiveTab === 'payroll' && <Payroll />}
         {effectiveTab === 'staffexpenses' && <StaffExpenses />}
         {effectiveTab === 'history' && <History />}
         {effectiveTab === 'config' && <PostsMasters />}
@@ -228,10 +268,13 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
   );
 }
 
-// Seeds the insurer list once, after the user is authenticated (so Firestore
-// rules allow the write). Runs regardless of which tab is open first.
+// Seeds the insurer and supplier lists once, after the user is authenticated (so
+// Firestore rules allow the write). Runs regardless of which tab is open first.
 function SeedDefaults() {
-  useEffect(() => { api.insurers.ensureSeeded().catch(() => {}); }, []);
+  useEffect(() => {
+    api.insurers.ensureSeeded().catch(() => {});
+    api.suppliers.ensureSeeded().catch(() => {});
+  }, []);
   return null;
 }
 

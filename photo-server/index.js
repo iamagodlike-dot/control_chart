@@ -111,16 +111,47 @@ app.post('/upload/:jobId', requireAuth, upload.single('file'), async (req, res) 
   }
 });
 
-// Удаление файла: POST /delete, тело { path: "/uploads/jobs/<id>/<file>" }.
+// Расширения, которые разрешаем для файла счёта поставщика (PDF/фото/документ).
+const INVOICE_EXTS = new Set(['.pdf', '.jpg', '.jpeg', '.png', '.webp', '.heic', '.heif', '.gif', '.doc', '.docx', '.xls', '.xlsx', '.csv', '.txt']);
+function invoiceExt(filename, mime) {
+  const m = /\.([A-Za-z0-9]{1,8})$/.exec(String(filename || ''));
+  const ext = m ? '.' + m[1].toLowerCase() : '';
+  if (INVOICE_EXTS.has(ext)) return ext;
+  return { 'application/pdf': '.pdf', 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp' }[mime] || '.bin';
+}
+
+// Приём файла счёта поставщика: POST /upload-invoice, поле формы "file". В отличие
+// от фото машин принимаем ЛЮБОЙ тип (PDF/фото/документ) и НЕ привязываем к машине —
+// один счёт может быть по нескольким машинам. Оригинальное имя возвращаем, чтобы
+// учредитель скачивал файл под понятным именем.
+app.post('/upload-invoice', requireAuth, upload.single('file'), async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: 'Файл не пришёл' });
+    const orig = String(req.file.originalname || 'Счёт').slice(0, 128);
+    const name = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${invoiceExt(orig, req.file.mimetype)}`;
+    const dir = path.join(UPLOAD_DIR, 'invoices');
+    await fs.mkdir(dir, { recursive: true });
+    await fs.writeFile(path.join(dir, name), req.file.buffer);
+    const rel = `/uploads/invoices/${name}`;
+    res.json({ url: rel, path: rel, name: orig, size: req.file.size });
+  } catch (e) {
+    console.error('Ошибка сохранения счёта:', e);
+    res.status(500).json({ error: 'Не удалось сохранить файл счёта' });
+  }
+});
+
+// Удаление файла: POST /delete, тело { path: "/uploads/jobs/<id>/<file>" | "/uploads/invoices/<file>" }.
 app.post('/delete', requireAuth, async (req, res) => {
   try {
     const rel = String(req.body?.path || '');
-    if (!/^\/uploads\/jobs\/[A-Za-z0-9_-]{1,64}\/[A-Za-z0-9._-]{1,128}$/.test(rel)) {
+    const okJob = /^\/uploads\/jobs\/[A-Za-z0-9_-]{1,64}\/[A-Za-z0-9._-]{1,128}$/.test(rel);
+    const okInvoice = /^\/uploads\/invoices\/[A-Za-z0-9._-]{1,160}$/.test(rel);
+    if (!okJob && !okInvoice) {
       return res.status(400).json({ error: 'Неверный путь' });
     }
     const abs = path.resolve(UPLOAD_DIR, rel.replace(/^\/uploads\//, ''));
-    const jobsRoot = path.join(UPLOAD_DIR, 'jobs') + path.sep;
-    if (!abs.startsWith(jobsRoot)) return res.status(400).json({ error: 'Неверный путь' }); // страховка от выхода из папки
+    const uploadsRoot = path.resolve(UPLOAD_DIR) + path.sep;
+    if (!abs.startsWith(uploadsRoot)) return res.status(400).json({ error: 'Неверный путь' }); // страховка от выхода из папки
     await fs.unlink(abs).catch(() => {}); // уже удалён — не беда
     res.json({ ok: true });
   } catch (e) {

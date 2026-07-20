@@ -1,29 +1,33 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { api } from '../api';
 import { parseAudatexPdf } from '../audatexParse';
 import OrderDocument from './OrderDocument';
+import DocLineItems from './DocLineItems';
+import DocPreviewPane from './DocPreviewPane';
+import CollapsibleSection from './CollapsibleSection';
+import DocTotal from './DocTotal';
+import DiscountField from './DiscountField';
 import DateTimeField from './DateTimeField';
 import { printFitted } from '../printDoc';
 import {
-  buildOrderSnapshot, computeOrderTotals, uid, money, lineTotal, formatDocDate,
-  buildPartsConsentText, DEFAULT_WARRANTY, DEFAULT_CONSENT,
+  buildOrderSnapshot, computeOrderTotals, uid, formatDocDate,
+  buildPartsConsentText, orderMatchesRecipient, planDocItemsToCar, DEFAULT_WARRANTY, DEFAULT_CONSENT,
 } from '../orderDoc';
+import { genPartId } from '../parts';
 import '../orderDoc.css';
 
-const A4_WIDTH_PX = 794; // 210mm at 96dpi
-
-function seedSnapshot(job, company, existingDoc) {
+function seedSnapshot(job, company, existingDoc, recipient) {
   if (existingDoc) {
     // Reopen a saved document exactly as issued (drop only the storage fields).
     const { id, created_at, updated_at, created_by, ...rest } = existingDoc; // eslint-disable-line no-unused-vars
     return rest;
   }
-  return buildOrderSnapshot(job, company);
+  return buildOrderSnapshot(job, company, recipient);
 }
 
-export default function OrderDocumentEditor({ job, company, existingDoc = null, onClose }) {
-  const [snapshot, setSnapshot] = useState(() => seedSnapshot(job, company, existingDoc));
+export default function OrderDocumentEditor({ job, company, existingDoc = null, recipient = 'all', onClose, onJobUpdated }) {
+  const [snapshot, setSnapshot] = useState(() => seedSnapshot(job, company, existingDoc, recipient));
   const [docId, setDocId] = useState(existingDoc?.id || null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
@@ -32,14 +36,16 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
   const [extracting, setExtracting] = useState(false);
   const [extractError, setExtractError] = useState('');
   const [extractInfo, setExtractInfo] = useState('');
-  const [scale, setScale] = useState(0.6);
+  const [showPreview, setShowPreview] = useState(true);
   const [history, setHistory] = useState([]);
-  const paneRef = useRef(null);
 
   async function loadHistory() {
     if (!job?.id) return;
     try {
-      setHistory(await api.orderDocuments.listByJob(job.id, 'order'));
+      const all = await api.orderDocuments.listByJob(job.id, 'order');
+      // Показываем только ранее выданные ЗН этого же получателя (страховой/клиента),
+      // чтобы страховые и клиентские заказ-наряды не путались в одном списке.
+      setHistory(recipient === 'all' ? all : all.filter((d) => orderMatchesRecipient(d, recipient)));
     } catch {
       // Reading issued documents may be blocked until Firestore rules are deployed;
       // the editor still works for creating/printing.
@@ -49,29 +55,15 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
   useEffect(() => { loadHistory(); }, []); // eslint-disable-line react-hooks/exhaustive-deps, react-hooks/set-state-in-effect
 
   function openExisting(d) {
-    setSnapshot(seedSnapshot(job, company, d));
+    setSnapshot(seedSnapshot(job, company, d, recipient));
     setDocId(d.id);
     setSaved(true);
   }
   function newDoc() {
-    setSnapshot(buildOrderSnapshot(job, company));
+    setSnapshot(buildOrderSnapshot(job, company, recipient));
     setDocId(null);
     setSaved(false);
   }
-
-  // Fit the A4 preview to the width of the right pane.
-  useEffect(() => {
-    const pane = paneRef.current;
-    if (!pane) return undefined;
-    const fit = () => {
-      const avail = pane.clientWidth - 32;
-      setScale(Math.max(0.25, Math.min(1, avail / A4_WIDTH_PX)));
-    };
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(pane);
-    return () => ro.disconnect();
-  }, []);
 
   // Preload the logo so it's painted before the print dialog fires.
   useEffect(() => {
@@ -89,8 +81,11 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
     setSavedToCar(false);
   }
 
-  // Push the document's vehicle + client data back onto the car (opt-in — the
-  // document is isolated by default). Only non-empty fields overwrite the card.
+  // Push the document's vehicle + client data AND услуги/запчасти back onto the car
+  // (opt-in — the document is isolated by default). Vehicle/client: заполненные поля
+  // перезаписывают карточку. Услуги/запчасти: «добавить и обновить, не удалять»
+  // по получателю (см. planDocItemsToCar) — совпадающие запчасти сохраняют закупку
+  // и историю приёмки (matched by артикул+название через savePart).
   async function saveToCar() {
     if (!job?.id) return;
     const veh = snapshot.vehicle || {};
@@ -103,11 +98,20 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
     if (veh.mileage) upd.mileage = veh.mileage;
     if (cust.name) upd.client_name = cust.name;
     if (cust.phone) upd.client_phone = cust.phone;
-    if (!Object.keys(upd).length) return;
-    if (!window.confirm('Обновить данные машины в карточке данными из документа? Заполненные поля перезапишут карточку.')) return;
+    const { services, partOps } = planDocItemsToCar(job, snapshot, recipient, genPartId);
+    const hasDocItems = (snapshot.services || []).some((s) => String((s && s.name) || '').trim())
+      || (snapshot.parts || []).some((p) => String((p && p.code) || '').trim() || String((p && p.name) || '').trim());
+    if (!Object.keys(upd).length && !hasDocItems) return;
+    if (!window.confirm('Обновить карточку машины данными из документа?\n\n• Марка, гос. номер, VIN, пробег и клиент — перезапишут карточку.\n• Услуги и запчасти из документа — добавятся в карточку и обновят совпадающие. Ничего не удаляется (удалить позицию можно на экране «Запчасти»).')) return;
     try {
-      await api.jobs.update(job.id, upd);
+      // Услуги пишем целым (слитым) массивом, только если в документе есть работы —
+      // иначе карточку не трогаем. Запчасти — пооперационно (сохраняют склад/приёмку).
+      const payload = { ...upd };
+      if ((snapshot.services || []).some((s) => String((s && s.name) || '').trim())) payload.services = services;
+      if (Object.keys(payload).length) await api.jobs.update(job.id, payload);
+      for (const p of partOps) await api.jobs.savePart(job.id, p); // последовательно: транзакции на один job-док не должны конфликтовать
       setSavedToCar(true);
+      if (onJobUpdated) onJobUpdated();
     } catch {
       alert('Не удалось обновить карточку машины.');
     }
@@ -196,7 +200,11 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
         ...snapshot,
         services: snapshot.services.map((s) => ({ ...s, qty: n(s.qty), price: n(s.price) })),
         parts: snapshot.parts.map((p) => ({ ...p, qty: n(p.qty), price: n(p.price) })),
-        discount: n(snapshot.discount),
+        // discount ПЕРСИСТИМ рублями (эффективную сумму) — costing и печать читают его
+        // как рубли; режим/процент сохраняем отдельно для повторного открытия.
+        discount: totals.discount,
+        discount_mode: snapshot.discount_mode === 'pct' ? 'pct' : 'rub',
+        discount_pct: n(snapshot.discount_pct),
         prepayment: n(snapshot.prepayment),
         totals,
       };
@@ -298,105 +306,75 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
             {extractError && <span className="login-error">{extractError}</span>}
             {extractInfo && <span className="oe-recognized">{extractInfo}</span>}
           </div>
-          <table className="items-table">
-            <thead>
-              <tr><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th></th></tr>
-            </thead>
-            <tbody>
-              {snapshot.services.map((s) => (
-                <tr key={s.id}>
-                  <td><input value={s.name} onChange={(e) => updateService(s.id, { name: e.target.value })} placeholder="напр. Окраска двери" /></td>
-                  <td><input type="number" min="0" value={s.qty} onChange={(e) => updateService(s.id, { qty: e.target.value })} /></td>
-                  <td><input type="number" min="0" value={s.price} onChange={(e) => updateService(s.id, { price: e.target.value })} /></td>
-                  <td className="items-table-sum">{money(lineTotal(s))}</td>
-                  <td><button className="danger small" onClick={() => removeService(s.id)}>×</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button onClick={addService}>+ Добавить работу</button>
+          <DocLineItems
+            kind="services"
+            items={snapshot.services}
+            onAdd={addService}
+            onUpdate={updateService}
+            onRemove={removeService}
+            addLabel="+ Добавить работу"
+          />
         </div>
 
         <div className="oe-section">
           <h4>Запчасти / материалы</h4>
-          <table className="items-table">
-            <thead>
-              <tr><th>Код</th><th>Наименование</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Сумма</th><th></th></tr>
-            </thead>
-            <tbody>
-              {snapshot.parts.map((p) => (
-                <tr key={p.id}>
-                  <td><input value={p.code} onChange={(e) => updatePart(p.id, { code: e.target.value })} placeholder="артикул" /></td>
-                  <td><input value={p.name} onChange={(e) => updatePart(p.id, { name: e.target.value })} placeholder="напр. Бампер" /></td>
-                  <td><input type="number" min="0" value={p.qty} onChange={(e) => updatePart(p.id, { qty: e.target.value })} /></td>
-                  <td><input value={p.unit} onChange={(e) => updatePart(p.id, { unit: e.target.value })} placeholder="шт." /></td>
-                  <td><input type="number" min="0" value={p.price} onChange={(e) => updatePart(p.id, { price: e.target.value })} /></td>
-                  <td className="items-table-sum">{money(lineTotal(p))}</td>
-                  <td><button className="danger small" onClick={() => removePart(p.id)}>×</button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-          <button onClick={addPart}>+ Добавить запчасть</button>
+          <DocLineItems
+            kind="parts"
+            items={snapshot.parts}
+            onAdd={addPart}
+            onUpdate={updatePart}
+            onRemove={removePart}
+            addLabel="+ Добавить запчасть"
+          />
         </div>
 
         <div className="oe-section">
           <h4>Итоги</h4>
           <div className="oe-grid">
-            <label className="oe-field">Скидка, ₽
-              <input type="number" min="0" value={snapshot.discount} onChange={(e) => patch({ discount: e.target.value })} />
-            </label>
+            <DiscountField
+              mode={snapshot.discount_mode}
+              rub={snapshot.discount}
+              pct={snapshot.discount_pct}
+              effective={totals.discount}
+              subtotal={totals.subtotal}
+              onPatch={patch}
+            />
             <label className="oe-field">Предоплата, ₽
               <input type="number" min="0" value={snapshot.prepayment} onChange={(e) => patch({ prepayment: e.target.value })} />
             </label>
           </div>
-          <div className="oe-hint">Итого к оплате: <b>{money(totals.total)}</b> · К доплате: {money(totals.due)}</div>
+          <DocTotal totals={totals} />
         </div>
 
-        <div className="oe-section">
-          <label className="oe-toggle">
-            <input type="checkbox" checked={snapshot.show_recommendations} onChange={(e) => patch({ show_recommendations: e.target.checked })} />
-            Рекомендации
-          </label>
+        <div className="oe-group-label"><span>Дополнительно · тексты и реквизиты</span></div>
+
+        <CollapsibleSection title="Рекомендации" toggle={{ checked: snapshot.show_recommendations, onChange: (v) => patch({ show_recommendations: v }) }}>
           <textarea className="oe-textarea" value={snapshot.recommendations} disabled={!snapshot.show_recommendations} onChange={(e) => patch({ recommendations: e.target.value })} placeholder="Рекомендации мастера" />
-        </div>
+        </CollapsibleSection>
 
-        <div className="oe-section">
-          <div className="oe-toggle-row">
-            <label className="oe-toggle">
-              <input type="checkbox" checked={snapshot.show_warranty} onChange={(e) => patch({ show_warranty: e.target.checked })} />
-              Гарантия
-            </label>
-            <button className="small" onClick={() => patch({ warranty_text: DEFAULT_WARRANTY })}>Вернуть стандартный текст</button>
+        <CollapsibleSection title="Гарантия" toggle={{ checked: snapshot.show_warranty, onChange: (v) => patch({ show_warranty: v }) }}>
+          <div className="oe-collapse-actions">
+            {/* Заодно включаем блок: иначе при снятой галочке клик «ничего не делает» */}
+            <button className="small" onClick={() => patch({ warranty_text: DEFAULT_WARRANTY, show_warranty: true })}>Вернуть стандартный текст</button>
           </div>
           <textarea className="oe-textarea" value={snapshot.warranty_text} disabled={!snapshot.show_warranty} onChange={(e) => patch({ warranty_text: e.target.value })} />
-        </div>
+        </CollapsibleSection>
 
-        <div className="oe-section">
-          <div className="oe-toggle-row">
-            <label className="oe-toggle">
-              <input type="checkbox" checked={snapshot.show_consent} onChange={(e) => patch({ show_consent: e.target.checked })} />
-              Согласие заказчика
-            </label>
-            <button className="small" onClick={() => patch({ consent_text: DEFAULT_CONSENT })}>Вернуть стандартный текст</button>
+        <CollapsibleSection title="Согласие заказчика" toggle={{ checked: snapshot.show_consent, onChange: (v) => patch({ show_consent: v }) }}>
+          <div className="oe-collapse-actions">
+            <button className="small" onClick={() => patch({ consent_text: DEFAULT_CONSENT, show_consent: true })}>Вернуть стандартный текст</button>
           </div>
           <textarea className="oe-textarea" value={snapshot.consent_text} disabled={!snapshot.show_consent} onChange={(e) => patch({ consent_text: e.target.value })} />
-        </div>
+        </CollapsibleSection>
 
-        <div className="oe-section">
-          <div className="oe-toggle-row">
-            <label className="oe-toggle">
-              <input type="checkbox" checked={snapshot.show_parts_consent} onChange={(e) => patch({ show_parts_consent: e.target.checked })} />
-              Согласование по запчастям (Б/У и замены)
-            </label>
-            <button className="small" onClick={() => patch({ parts_consent_text: buildPartsConsentText(snapshot.parts) })}>Собрать из запчастей</button>
+        <CollapsibleSection title="Согласование по запчастям (Б/У и замены)" toggle={{ checked: snapshot.show_parts_consent, onChange: (v) => patch({ show_parts_consent: v }) }}>
+          <div className="oe-collapse-actions">
+            <button className="small" onClick={() => patch({ parts_consent_text: buildPartsConsentText(snapshot.parts), show_parts_consent: true })}>Собрать из запчастей</button>
           </div>
           <textarea className="oe-textarea" value={snapshot.parts_consent_text || ''} disabled={!snapshot.show_parts_consent} onChange={(e) => patch({ parts_consent_text: e.target.value })} placeholder="Отметки о Б/У и заменах на аналог — по одной в строке" />
-        </div>
+        </CollapsibleSection>
 
-        <div className="oe-section">
-          <h4>Реквизиты компании (для этого документа)</h4>
-          <div className="oe-hint">По умолчанию берутся из «Посты и мастера → Реквизиты». Правки здесь остаются только в этом документе.</div>
+        <CollapsibleSection title="Реквизиты компании (для этого документа)" hint="По умолчанию берутся из «Посты и мастера → Реквизиты». Правки здесь остаются только в этом документе.">
           <div className="oe-grid">
             <label className="oe-field oe-full">Наименование
               <input value={c.name} onChange={(e) => patchGroup('company', { name: e.target.value })} />
@@ -417,23 +395,26 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
               <input value={c.director} onChange={(e) => patchGroup('company', { director: e.target.value })} />
             </label>
           </div>
-        </div>
+        </CollapsibleSection>
       </div>
 
-      <div className="order-editor-right" ref={paneRef} style={{ textAlign: 'center' }}>
-        <div style={{ zoom: scale, display: 'inline-block' }}>
-          <OrderDocument snapshot={snapshot} />
-        </div>
-      </div>
+      <DocPreviewPane show={showPreview}>
+        <OrderDocument snapshot={snapshot} />
+      </DocPreviewPane>
       </div>
 
       <div className="order-editor-actions">
-        <button onClick={onClose}>Закрыть</button>
+        <div className="oe-actions-left">
+          <button onClick={onClose}>Закрыть</button>
+          <button className="oe-preview-toggle" aria-pressed={showPreview} onClick={() => setShowPreview((v) => !v)}>
+            {showPreview ? '🙈 Скрыть лист' : '👁 Показать образец'}
+          </button>
+        </div>
         <div>
           {saveError && <span className="login-error">{saveError}</span>}
           {savedToCar && <span className="oe-saved">Карточка обновлена ✓</span>}
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
-          <button onClick={saveToCar} title="Перенести марку, гос. номер, VIN, пробег и клиента в карточку машины">↩ Обновить карточку машины</button>
+          <button onClick={saveToCar} title="Перенести данные ТС, клиента, а также услуги и запчасти из документа в карточку машины (новые добавит, совпадающие обновит, ничего не удалит)">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
           <button className="primary" onClick={() => printFitted()}>🖨 Печать</button>
         </div>

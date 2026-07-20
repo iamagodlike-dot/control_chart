@@ -104,6 +104,22 @@ export async function uploadPhoto(jobId, file, onProgress) {
   return { url: res.url, path: res.path, size: res.size || blob.size || 0, w: res.w || w, h: res.h || h };
 }
 
+// Загрузить файл счёта поставщика (PDF / фото / документ) на свой сервер.
+// В отличие от фото машин НЕ сжимаем (счёт нужен как есть) и не привязываем к
+// машине — счёт может охватывать несколько машин. Возвращает { url, name, size }.
+export async function uploadInvoiceFile(file, onProgress) {
+  if (!file) throw new Error('Файл не выбран');
+  const form = new FormData();
+  form.append('file', file, file.name || 'invoice');
+  const res = await xhrUpload(
+    `${PHOTO_API}/upload-invoice`,
+    form,
+    await authHeader(),
+    onProgress,
+  );
+  return { url: res.url, path: res.path, name: res.name || file.name || 'Счёт', size: res.size || file.size || 0 };
+}
+
 // Удалить файл с сервера. Best-effort: запись из job.photos уже убрана вызывающим
 // кодом, поэтому сбой чистки файла не критичен (останется «сирота» на диске).
 export async function deletePhotoFile(path) {

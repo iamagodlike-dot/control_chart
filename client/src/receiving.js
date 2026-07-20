@@ -6,17 +6,21 @@
 // the raw jobs + cells and produce car-grouped cards of only the relevant parts.
 import { psMeta } from './parts.js';
 
-// Statuses an expeditor acts on: 'ordered' (в пути) and 'in' (на складе).
-// 'need' (ещё не заказано) and 'issued' (уже забрали) are not their concern.
-export const RECEIVING_STATUSES = ['ordered', 'in'];
+// Statuses an expeditor acts on:
+//   'ordered' — заказано, едет к складу ТК (в пути), забирать пока нечего;
+//   'arrived' — доехало до склада ТК / поставщика — НАДО СЪЕЗДИТЬ ЗАБРАТЬ;
+//   'in'      — экспедитор забрал и привёз к нам на склад.
+// 'need' (ещё не заказано) and 'issued' (уже забрали в работу) are not their concern.
+export const RECEIVING_STATUSES = ['ordered', 'arrived', 'in'];
 
 // A job's linked warehouse cells. Mirror of api.js `jobCellIds` — kept local so
 // this module carries no Firestore dependency.
 const cellIdsOf = (job) => job.cell_ids || (job.cell_id ? [job.cell_id] : []);
 
-// filter: 'ordered' | 'in' | 'all'. Returns { groups, counts }.
-export function buildReceiving(jobs = [], filter = 'ordered') {
+// filter: 'ordered' | 'arrived' | 'in' | 'all'. Returns { groups, counts }.
+export function buildReceiving(jobs = [], filter = 'arrived') {
   let ordered = 0;
+  let arrived = 0;
   let inStock = 0;
   const groups = [];
 
@@ -25,12 +29,35 @@ export function buildReceiving(jobs = [], filter = 'ordered') {
     const relevant = (job.parts || []).filter((p) => p && RECEIVING_STATUSES.includes(p.status));
     for (const p of relevant) {
       if (p.status === 'ordered') ordered += 1;
+      else if (p.status === 'arrived') arrived += 1;
       else inStock += 1;
     }
     const shown = relevant.filter((p) => (filter === 'all' ? true : p.status === filter));
     if (!shown.length) continue;
 
     const cellIds = cellIdsOf(job);
+    // readyPickup — по машине есть что забрать из ТК прямо сейчас (главный сигнал
+    // экспедитору). waiting — есть незавершённые позиции (едут или к выдаче), т.е.
+    // машина ещё не укомплектована. Ранг для сортировки: сначала «забрать», потом
+    // «ждём в пути», потом полностью на складе.
+    const readyPickup = shown.some((p) => p.status === 'arrived');
+    const waiting = shown.some((p) => p.status === 'ordered' || p.status === 'arrived');
+
+    // Фото приёмки этой машины, разложенные по позициям. Экспедитор снимает
+    // деталь при заборе — снимок кладётся в job.photos[] с category:'receiving' и
+    // partId (см. PartsReceiving.onAddPhoto). Общий массив job.photos хранит и
+    // «до/после» карточки машины — поэтому фильтруем строго по category+partId.
+    // Сортировка по времени загрузки, чтобы порядок миниатюр не «прыгал».
+    const photosByPart = {};
+    for (const ph of (job.photos || [])) {
+      if (ph && ph.category === 'receiving' && ph.partId) {
+        (photosByPart[ph.partId] = photosByPart[ph.partId] || []).push(ph);
+      }
+    }
+    for (const id in photosByPart) {
+      photosByPart[id].sort((a, b) => (a.uploaded_at || 0) - (b.uploaded_at || 0));
+    }
+
     groups.push({
       jobId: job.id,
       car: job.car_model || 'Без модели',
@@ -39,7 +66,9 @@ export function buildReceiving(jobs = [], filter = 'ordered') {
       client: job.client_name || '',
       cellIds,
       hasCell: cellIds.length > 0,
-      waiting: shown.some((p) => p.status === 'ordered'),
+      readyPickup,
+      waiting,
+      rank: readyPickup ? 0 : waiting ? 1 : 2,
       parts: shown
         .slice()
         .sort((a, b) => psMeta(a.status).pr - psMeta(b.status).pr
@@ -54,14 +83,22 @@ export function buildReceiving(jobs = [], filter = 'ordered') {
           statusLabel: psMeta(p.status).label,
           statusColor: psMeta(p.status).color,
           eta: p.eta || '',
+          // Фото приёмки этой позиции (id/url/path — достаточно для показа и
+          // удаления). Пустой массив, если ещё не снимали.
+          photos: (photosByPart[p.id] || []).map((ph) => ({ id: ph.id, url: ph.url, path: ph.path })),
+          photoCount: (photosByPart[p.id] || []).length,
+          // Свободный комментарий к позиции (напр. «коробка мятая», «привёз 1 из 2»).
+          // Живёт на самой запчасти → виден везде, где показывается деталь.
+          comment: p.comment || '',
         })),
     });
   }
 
-  // Cars still waiting for deliveries float to the top; then alphabetical.
-  groups.sort((a, b) => (a.waiting === b.waiting
+  // Машины «есть что забрать» — вверх, затем «ждём в пути», затем укомплектованные;
+  // внутри ранга — по алфавиту.
+  groups.sort((a, b) => (a.rank === b.rank
     ? String(a.car).localeCompare(String(b.car), 'ru')
-    : (a.waiting ? -1 : 1)));
+    : a.rank - b.rank));
 
-  return { groups, counts: { ordered, in: inStock, total: ordered + inStock } };
+  return { groups, counts: { ordered, arrived, in: inStock, total: ordered + arrived + inStock } };
 }

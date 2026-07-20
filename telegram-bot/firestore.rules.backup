@@ -1,0 +1,89 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // ─── Кто есть кто ───────────────────────────────────────────────────────
+    // Роли лежат в коллекции users, ключ документа = email в нижнем регистре
+    // (см. normEmail в client/src/api.js). Здесь мы читаем роль вызывающего по
+    // его email из токена входа и решаем, что ему можно.
+    function signedIn() { return request.auth != null; }
+    function meRef() {
+      return /databases/$(database)/documents/users/$(request.auth.token.email.lower());
+    }
+    function hasProfile() { return signedIn() && exists(meRef()); }
+    function me() { return get(meRef()).data; }
+
+    // Управленец: есть запись с ролью owner и доступ не отключён.
+    function isOwner() { return hasProfile() && me().role == 'owner' && me().active != false; }
+    // Активный сотрудник: вошёл и не отключён явно. Пока роли ещё никому не
+    // назначены (записи нет) — считаем активным, чтобы первый управленец мог
+    // войти и всё настроить, никого не заперев.
+    function isActive() { return signedIn() && (!hasProfile() || me().active != false); }
+
+    // ─── Рабочие данные: любой активный сотрудник ───────────────────────────
+    // Мастеру и экспедитору это нужно для работы (график, склад, запчасти,
+    // машины, документы). Поведение как раньше — просто отсекаем отключённых.
+    match /posts/{id}            { allow read, write: if isActive(); }
+    match /masters/{id}          { allow read, write: if isActive(); }
+    match /insurers/{id}         { allow read, write: if isActive(); }
+    // Справочник поставщиков запчастей: читают все (подсказки на экране «Запчасти»),
+    // а заводит/меняет только управленец — он ведёт этот список в «Настройках».
+    match /suppliers/{id}        { allow read: if isActive(); allow write: if isOwner(); }
+    match /jobs/{id}             { allow read, write: if isActive(); }
+    match /stages/{id}           { allow read, write: if isActive(); }
+    match /settings/{id}         { allow read, write: if isActive(); }
+    match /queue/{id}            { allow read, write: if isActive(); }
+    match /cells/{id}            { allow read, write: if isActive(); }
+    match /warehouseConfig/{id}  { allow read, write: if isActive(); }
+    match /warehouseLog/{id}     { allow read, write: if isActive(); }
+    match /orderDocuments/{id}   { allow read, write: if isActive(); }
+    // Счётчики автонумерации документов: counters/{тип}-{год} с полем value.
+    // Любой активный сотрудник заводит машины и выдаёт документы, поэтому и читает,
+    // и увеличивает счётчик. Атомарность самой выдачи держит транзакция в api.js.
+    match /counters/{id}         { allow read, write: if isActive(); }
+
+    // ─── Денежная лента: только управленцы ──────────────────────────────────
+    // Аренда, зарплаты, налоги, ручные доходы/расходы. Ни один экран линейного
+    // сотрудника это не читает, поэтому замок их работу не ломает — но и в обход
+    // интерфейса (через консоль браузера) мастер эти данные больше не получит.
+    match /transactions/{id}     { allow read, write: if isOwner(); }
+    // Выплаты зарплаты мастерам (аванс / расчёт) — только управленец: это деньги.
+    match /salaryPayments/{id}   { allow read, write: if isOwner(); }
+
+    // ─── Список доступов ────────────────────────────────────────────────────
+    // Читать могут все активные (приложению нужно определить роль вошедшего).
+    // Менять — только управленец. Плюс первичная настройка: пока у вошедшего
+    // ещё нет своей записи, он может создать РОВНО свою запись управленца —
+    // так самый первый владелец заводит себя, не имея пока никаких прав.
+    match /users/{id} {
+      allow read: if isActive();
+      allow write: if isOwner()
+        || (signedIn() && !hasProfile()
+            && id == request.auth.token.email.lower()
+            && request.resource.data.role == 'owner');
+    }
+
+    // ─── Траты сотрудников ──────────────────────────────────────────────────
+    // Экспедитор вносит свои траты (запчасти за нал, бензин…). Он видит и правит
+    // ТОЛЬКО свои записи (created_by = его email); создать чужую нельзя. Управленец
+    // видит и правит все. Денежной ленты transactions это не касается — она заперта.
+    match /expenses/{id} {
+      allow read:          if isOwner() || (isActive() && resource.data.created_by == request.auth.token.email.lower());
+      allow create:        if isActive() && request.resource.data.created_by == request.auth.token.email.lower();
+      allow update, delete: if isOwner() || (isActive() && resource.data.created_by == request.auth.token.email.lower());
+    }
+
+    // ─── Заявки на закупку расходников ───────────────────────────────────────
+    // Любой активный сотрудник создаёт заявку (created_by = его email) и видит
+    // список — это рабочие данные, как машины и график. Одобрение и отметку
+    // «куплено» показывает интерфейс нужным ролям (управленец/экспедитор); сами
+    // деньги пишутся в expenses и остаются под её замком «своё или управленец».
+    match /purchaseRequests/{id} {
+      allow read:           if isActive();
+      allow create:         if isActive() && request.resource.data.created_by == request.auth.token.email.lower();
+      allow update, delete: if isActive();
+    }
+
+    match /{document=**} { allow read, write: if false; }
+  }
+}

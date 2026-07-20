@@ -207,3 +207,17 @@ button.hist-card:active { transform: scale(0.99); }
   color: var(--color-success); border-color: var(--color-success);
   background: color-mix(in srgb, var(--color-success) 12%, transparent);
 }
+
+/* ── Мобильная адаптация «Финансы» (телефоны ≤640px) ─────────────────────── */
+@media (max-width: 640px) {
+  /* Строка операции: даём переносить, чтобы категория/сумма/удаление не жались */
+  .fin-tx-row { flex-wrap: wrap; }
+  /* Форма добавления траты: селект и кнопку на всю ширину — удобнее пальцем */
+  .fin-tx-form > select, .fin-tx-form > button { flex: 1 1 100%; }
+  .fin-tx-form input[type="text"] { flex: 1 1 100%; }
+  /* Крестик удаления — комфортная зона нажатия */
+  .fin-tx-del { min-width: 40px; min-height: 32px; }
+  /* Тулбар финансов: не растягиваем группы по краям, «Для бухгалтера» на всю ширину */
+  .fin-toolbar { justify-content: flex-start; }
+  .fin-export { width: 100%; }
+}

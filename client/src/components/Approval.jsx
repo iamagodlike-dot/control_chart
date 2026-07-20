@@ -30,7 +30,7 @@ function pluralRu(n, one, few, many) {
 const MAIN_COLS = APPROVAL_STATUSES.filter((s) => !s.side);
 const SIDE_COLS = APPROVAL_STATUSES.filter((s) => s.side);
 
-export default function Approval() {
+export default function Approval({ isOwner = false }) {
   const [jobs, setJobs] = useState(null);   // null → ещё грузим
   const [openId, setOpenId] = useState(null);
   const [busyId, setBusyId] = useState(null);
@@ -125,7 +125,7 @@ export default function Approval() {
         </div>
       ) : (
         <>
-          <div style={S.board}>
+          <div className="apr-board" style={S.board}>
             {MAIN_COLS.map((col) => (
               <Column key={col.id} col={col} jobs={byStatus[col.id]} h={h} />
             ))}
@@ -144,7 +144,7 @@ export default function Approval() {
         </>
       )}
 
-      {openId && <CarDetailModal key={openId} jobId={openId} onClose={() => setOpenId(null)} />}
+      {openId && <CarDetailModal key={openId} jobId={openId} isOwner={isOwner} onClose={() => setOpenId(null)} />}
 
       {docsJob && (
         <DocumentsModal job={docsJob} company={company} onClose={() => setDocsJob(null)} />
@@ -173,7 +173,7 @@ export default function Approval() {
 
 function Column({ col, jobs, h, side }) {
   return (
-    <div style={{ ...S.col, ...(side ? S.colSide : null) }}>
+    <div className="apr-col" style={{ ...S.col, ...(side ? S.colSide : null) }}>
       <div style={{ ...S.colHead, borderTopColor: col.color }}>
         <span style={{ ...S.dot, background: col.color }} />
         <span style={S.colTitle}>{col.label}</span>

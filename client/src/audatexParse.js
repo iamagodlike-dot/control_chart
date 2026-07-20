@@ -99,6 +99,13 @@ export async function parseAudatexPdf(file) {
   const vehicle = {};
   const meta = {};
   let section = null;
+  let lkmAdded = false; // защита от двойного добавления «Лакокрасочные материалы»
+  // Окраску собираем отдельно и решаем в конце. Система AZT даёт окраску двумя
+  // итоговыми строками (работа + материал) — тогда постатейную разбивку выкидываем.
+  // Другие форматы итоговых строк не дают — тогда постатейную окраску оставляем
+  // как обычные работы (иначе она потеряется). aztPaint = найден AZT-итог окраски.
+  const paintWorkLines = [];
+  let aztPaint = false;
 
   for (const { width, tokens } of lines) {
     const nameX = F_NAME * width;
@@ -145,8 +152,16 @@ export async function parseAudatexPdf(file) {
     if (/^-{6,}/.test(text) || c.includes('СИСТЕМАAUDATEX')) continue;
     if (section !== 'summary') {
       if (c.startsWith('ЗАПЧАСТИ')) { section = 'parts'; continue; }
-      if (c.startsWith('СТОИМОСТЬРАБОТ')) { section = 'works'; continue; }
-      if (c.startsWith('ОКРАСКА')) { section = 'works'; continue; }
+      // Настоящий заголовок секции работ содержит «НОРМА ВРЕМЕНИ». Внутри блока
+      // окраски встречается строка-расценка «СТОИМОСТЬ РАБОТ 1 300 RUR/ЧАС» (без
+      // «НОРМА ВРЕМЕНИ») — её нельзя принимать за заголовок, иначе окрасочные строки
+      // после неё утекают в работы (и задваивают окраску).
+      if (c.startsWith('СТОИМОСТЬРАБОТ') && c.includes('НОРМАВРЕМЕНИ')) { section = 'works'; continue; }
+      // Окраску (постатейную разбивку) НЕ тащим в работы: она задваивается с
+      // материалами. Берём окраску двумя итоговыми строками из «ОКОНЧАТЕЛЬНОЙ
+      // КАЛЬКУЛЯЦИИ» (см. section 'summary'). Здесь просто помечаем секцию, чтобы
+      // её строки пропускались.
+      if (c.startsWith('ОКРАСКА')) { section = 'paintworks'; continue; }
       if (c.startsWith('ПРОЧЕЕ')) { section = 'other'; continue; }
     }
 
@@ -165,6 +180,14 @@ export async function parseAudatexPdf(file) {
       const name = join(tokens, nameX, rpX);
       if (!name) continue;
       services.push({ name, qty: 1, price });
+    } else if (section === 'paintworks') {
+      // Постатейные окрасочные строки — копим отдельно. Пойдут в работы только если
+      // AZT-итог окраски не найден (см. решение после цикла).
+      const price = priceAt(tokens, wPriceX);
+      if (price <= 0) continue;
+      const name = join(tokens, nameX, rpX);
+      if (!name) continue;
+      paintWorkLines.push({ name, qty: 1, price });
     } else if (section === 'other') {
       const price = priceAt(tokens, pPriceX);
       if (price <= 0) continue;
@@ -175,14 +198,41 @@ export async function parseAudatexPdf(file) {
       if (c.startsWith('СКИДКА')) {
         const d = sumRight(tokens, width);
         if (d > 0) meta.discount = d;
-      } else if (c.startsWith('ЛАКОКРАСОЧН')) {
+      } else if (c.startsWith('ЗАТРАТЫНАРАБОЧУЮСИЛУ')) {
+        // Окраска в итоговой калькуляции (AZT) разбита на две строки: работа маляра
+        // и материалы. Берём их вместо постатейной разбивки (paintWorkLines тогда
+        // отбрасываются) — так сумма окраски сходится с калькуляцией и не задваивается.
         const price = sumRight(tokens, width);
-        if (price > 0) parts.push({ code: '', name: 'Лакокрасочные материалы', qty: 1, unit: 'компл.', price });
+        if (price > 0) { services.push({ name: 'Окрасочные работы', qty: 1, price }); meta.hasPaint = true; aztPaint = true; }
+      } else if (c.startsWith('ЗАТРАТЫНАМАТЕРИАЛ')) {
+        const price = sumRight(tokens, width);
+        if (price > 0) {
+          aztPaint = true; meta.hasPaint = true;
+          if (!lkmAdded) { parts.push({ code: '', name: 'Лакокрасочные материалы', qty: 1, unit: 'компл.', price }); lkmAdded = true; }
+        }
+      } else if (c.startsWith('ЛАКОКРАСОЧН')) {
+        // Другой формат Audatex: сумма ЛКМ указана прямо в строке «Лакокрасочные
+        // материалы» (в системе AZT эта строка идёт без суммы — там см. ветку выше).
+        const price = sumRight(tokens, width);
+        if (price > 0 && !lkmAdded) {
+          parts.push({ code: '', name: 'Лакокрасочные материалы', qty: 1, unit: 'компл.', price });
+          lkmAdded = true; meta.hasPaint = true;
+        }
+      } else if (c.startsWith('ИТОГОСТОИМОСТЬОКРАСКИ')) {
+        // Есть окраска, но работа/материалы не распознались построчно → хотя бы
+        // ставим флаг, чтобы завести блок «Подготовка краски» на экране «Запчасти».
+        if (sumRight(tokens, width) > 0) meta.hasPaint = true;
       } else if (c.startsWith('СТОИМОСТЬРЕМОНТА')) {
         const tot = sumRight(tokens, width);
         if (tot > 0) meta.repair_total = tot;
       }
     }
+  }
+
+  // Окраска: если AZT-итог не найден (другой формат Audatex) — возвращаем собранные
+  // постатейные окрасочные строки как обычные работы, чтобы они не потерялись.
+  if (!aztPaint && paintWorkLines.length) {
+    for (const w of paintWorkLines) services.push(w);
   }
 
   return { services, parts, vehicle, meta };

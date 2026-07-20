@@ -1,5 +1,9 @@
 import { initializeApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
+import {
+  initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
+} from 'firebase/firestore';
 import { getAuth } from 'firebase/auth';
 
 // Exported so a throwaway secondary app instance (see staffAuth.js) can create
@@ -14,5 +18,13 @@ export const firebaseConfig = {
 };
 
 const app = initializeApp(firebaseConfig);
-export const db = getFirestore(app);
+
+// Локальный кэш (IndexedDB): переподключения и перезагрузки страницы читаются с
+// устройства, а не тянут коллекции заново с сервера. Живые подписки на доске
+// стоят намного меньше чтений Firestore, доска открывается мгновенно и переживает
+// кратковременную потерю связи. persistentMultipleTabManager — чтобы несколько
+// открытых вкладок на одном компьютере не конфликтовали за кэш.
+export const db = initializeFirestore(app, {
+  localCache: persistentLocalCache({ tabManager: persistentMultipleTabManager() }),
+});
 export const auth = getAuth(app);

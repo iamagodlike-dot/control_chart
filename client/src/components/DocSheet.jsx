@@ -120,9 +120,11 @@ function TotalsBox({ totals, showPrepayment }) {
     <div className="zn-totals">
       <div className="zn-tr"><span className="zn-tl">Итого по работам</span><span className="zn-tv">{money(totals.services_sum)}</span></div>
       <div className="zn-tr"><span className="zn-tl">Итого по запчастям</span><span className="zn-tv">{money(totals.parts_sum)}</span></div>
-      {totals.discount > 0 && <div className="zn-tr"><span className="zn-tl">Скидка</span><span className="zn-tv">− {money(totals.discount)}</span></div>}
+      {totals.discount > 0 && <div className="zn-tr"><span className="zn-tl">Скидка{totals.discount_mode === 'pct' ? ` ${totals.discount_pct}%` : ''}</span><span className="zn-tv">− {money(totals.discount)}</span></div>}
       <div className="zn-tr zn-tr-total"><span className="zn-tl">ИТОГО</span><span className="zn-tv">{money(totals.total)}</span></div>
       <div className="zn-words">{totals.total_words}</div>
+      {totals.franchise > 0 && <div className="zn-tr"><span className="zn-tl">Франшиза (оплачивает клиент)</span><span className="zn-tv">{money(totals.franchise)}</span></div>}
+      {totals.franchise > 0 && <div className="zn-tr"><span className="zn-tl">Оплачивает страховая</span><span className="zn-tv">{money(totals.insurer_pays)}</span></div>}
       {showPrepayment && totals.prepayment > 0 && <div className="zn-tr"><span className="zn-tl">Предоплата</span><span className="zn-tv">{money(totals.prepayment)}</span></div>}
       {showPrepayment && totals.prepayment > 0 && <div className="zn-tr"><span className="zn-tl">К доплате</span><span className="zn-tv">{money(totals.due)}</span></div>}
     </div>
@@ -198,10 +200,17 @@ function ActSheet({ snapshot }) {
 function HandoverSheet({ snapshot }) {
   const c = snapshot.company || {};
   const cond = snapshot.condition || {};
+  // Ранее сохранённые акты без direction печатаются как выдача (прежнее поведение).
+  const isIntake = snapshot.direction === 'intake';
+  const title = snapshot.direction === 'intake'
+    ? 'АКТ ПРИЁМА-ПЕРЕДАЧИ ТС (ПРИЁМ В РЕМОНТ)'
+    : snapshot.direction === 'issue'
+      ? 'АКТ ПРИЁМА-ПЕРЕДАЧИ ТС (ВЫДАЧА ИЗ РЕМОНТА)'
+      : 'АКТ ПРИЁМА-ПЕРЕДАЧИ ТРАНСПОРТНОГО СРЕДСТВА';
   return (
     <div className="zn-sheet">
       <DocHeader c={c} meta={<div className="zn-mrow"><span>Дата составления:</span><b>{formatDocDate(snapshot.doc_date)}</b></div>} />
-      <div className="zn-title"><h1>АКТ ПРИЁМА-ПЕРЕДАЧИ ТРАНСПОРТНОГО СРЕДСТВА</h1><div className="zn-num">№ {snapshot.doc_number || '—'}</div></div>
+      <div className="zn-title"><h1>{title}</h1><div className="zn-num">№ {snapshot.doc_number || '—'}</div></div>
       <div className="zn-info"><CustomerCard cust={snapshot.customer || {}} rows={<InsuranceRows ins={snapshot.insurance} />} /><VehicleCard veh={snapshot.vehicle || {}} /></div>
       <div className="zn-info">
         {snapshot.show_intake && (
@@ -225,7 +234,13 @@ function HandoverSheet({ snapshot }) {
         )}
       </div>
       {snapshot.show_handover_text && <div className="zn-legal"><p>{snapshot.handover_text}</p></div>}
-      <Signatures leftTitle="Исполнитель (ТС сдал)" leftName={c.director} rightTitle="Заказчик (ТС принял)" rightName={(snapshot.customer || {}).name} />
+      {/* Исполнитель всегда слева (там М.П.), меняется только «сдал/принял». */}
+      <Signatures
+        leftTitle={isIntake ? 'Исполнитель (ТС принял)' : 'Исполнитель (ТС сдал)'}
+        leftName={c.director}
+        rightTitle={isIntake ? 'Заказчик (ТС сдал)' : 'Заказчик (ТС принял)'}
+        rightName={(snapshot.customer || {}).name}
+      />
       <Foot c={c} title="Акт приёма-передачи" snapshot={snapshot} />
     </div>
   );
@@ -292,9 +307,11 @@ function InvoiceSheet({ snapshot, qrDataUrl }) {
           {!items.length && <tr><td className="zn-c-num">—</td><td colSpan={5} style={{ color: '#777' }}>Позиции не добавлены</td></tr>}
         </tbody>
         <tfoot>
-          {t.discount > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Скидка:</td><td className="zn-c-sum">− {money(t.discount)}</td></tr>}
+          {t.discount > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Скидка{t.discount_mode === 'pct' ? ` ${t.discount_pct}%` : ''}:</td><td className="zn-c-sum">− {money(t.discount)}</td></tr>}
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>Итого:</td><td className="zn-c-sum">{money(t.total)}</td></tr>
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>{t.vat_mode === 'vat20' ? 'В том числе НДС 20%:' : 'НДС:'}</td><td className="zn-c-sum">{t.vat_mode === 'vat20' ? money2(t.vat_amount) : 'Без НДС'}</td></tr>
+          {t.franchise > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Франшиза (оплачивает клиент):</td><td className="zn-c-sum">{money(t.franchise)}</td></tr>}
+          {t.franchise > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Оплачивает страховая:</td><td className="zn-c-sum">{money(t.insurer_pays)}</td></tr>}
           {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Предоплата:</td><td className="zn-c-sum">− {money(t.prepayment)}</td></tr>}
           {t.prepayment > 0 && <tr><td colSpan={5} style={{ textAlign: 'right', fontWeight: 700 }}>К доплате:</td><td className="zn-c-sum" style={{ fontWeight: 700 }}>{money(t.due)}</td></tr>}
         </tfoot>

@@ -23,13 +23,22 @@ const BTN = {
   revenue: 'Выручка',
   analytics: 'Аналитика',
   summary: 'Сводка за день',
+  invoices: 'Счета к оплате',
+  digest: 'Состояние ремонтов',
+  approvals: 'Согласования',
 };
 
-function menuFor(isManager) {
+function menuFor(isManager, isFounder) {
+  // Учредителю (если он не управляющий) — узкое меню: его сводка и разделы из неё.
+  if (isFounder && !isManager) {
+    return Markup.keyboard([[BTN.digest], [BTN.approvals, BTN.invoices]]).resize();
+  }
   const rows = [[BTN.find], [BTN.cars, BTN.masters], [BTN.upcoming]];
   if (isManager) {
     rows.push([BTN.debts, BTN.revenue]);
     rows.push([BTN.analytics, BTN.summary]);
+    rows.push([BTN.digest, BTN.approvals]);
+    rows.push([BTN.invoices]); // управляющий тоже может оплачивать счета
   }
   return Markup.keyboard(rows).resize();
 }
@@ -41,7 +50,7 @@ const periodKb = Markup.inlineKeyboard([
 ]);
 
 async function send(ctx, text, isManager) {
-  return ctx.reply(text, { parse_mode: 'HTML', ...menuFor(isManager) });
+  return ctx.reply(text, { parse_mode: 'HTML', ...menuFor(isManager, config.isFounder(ctx.from?.id)) });
 }
 
 // Аккуратно выполняем запрос к данным и не роняем бота на ошибке.
@@ -117,6 +126,10 @@ const HELP_TEXT = [
   '<b>Загрузка мастеров</b> — у кого что в работе.',
   '<b>Скоро выдача</b> — что сдаём в ближайшие дни.',
   '',
+  '<b>Состояние ремонтов</b> — новые авто за сутки, согласования со страховой, укомплектованность по запчастям и счета к оплате одним экраном. Приходит автоматически каждое утро; кнопки под ней разворачивают разделы.',
+  '<b>Согласования</b> — что где стоит по страховой.',
+  '<b>Счета к оплате</b> — неоплаченные счета поставщиков файлом с кнопкой «Оплачено».',
+  '',
   '<i>Управляющим также:</i> Долги, Выручка, Аналитика, Сводка за день.',
   '',
   'Команды — в меню ☰ у поля ввода.',
@@ -168,6 +181,58 @@ async function actAnalytics(ctx) {
   if (!ctx.state.manager) return send(ctx, 'Раздел доступен только управляющим.', false);
   return safe(ctx, () => views.analytics());
 }
+// Счета поставщиков к оплате — учредителю и управляющему. Шлём каждый счёт файлом
+// с подписью и кнопкой «Оплачено» (см. invoices.sendInvoice). Общее тело для кнопки
+// меню, команды /invoices и кнопки «Счета к оплате» под сводкой учредителя.
+async function pushUnpaidInvoices(ctx) {
+  if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — загляните чуть позже.', ctx.state.manager);
+  let list;
+  try {
+    list = await listUnpaidSupplierInvoices();
+  } catch (e) {
+    console.error('Счета к оплате:', e);
+    return send(ctx, '⚠️ Не удалось получить счета.', ctx.state.manager);
+  }
+  if (!list.length) return send(ctx, '✅ Неоплаченных счетов нет.', ctx.state.manager);
+  await send(ctx, `<b>Счета к оплате: ${list.length}</b>\nНиже — каждый счёт с файлом и кнопкой «Оплачено».`, ctx.state.manager);
+  for (const inv of list) {
+    // eslint-disable-next-line no-await-in-loop
+    await sendInvoice(bot, ctx.chat.id, inv);
+  }
+  return undefined;
+}
+
+async function actInvoices(ctx) {
+  if (!canPay(ctx.from.id)) return send(ctx, 'Раздел доступен учредителю и управляющему.', ctx.state.manager);
+  return pushUnpaidInvoices(ctx);
+}
+
+// Сводка учредителя «Состояние ремонтов» по требованию (та же, что приходит утром).
+async function actDigest(ctx) {
+  if (!canSeeDigest(ctx.from.id)) return send(ctx, 'Раздел доступен учредителю и управляющему.', ctx.state.manager);
+  try {
+    const data = await views.founderDigest();
+    await ctx.reply(data.text, { parse_mode: 'HTML', ...digestKeyboard(data) });
+  } catch (e) {
+    if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — идёт настройка.', ctx.state.manager);
+    console.error('Сводка учредителя:', e);
+    await send(ctx, '⚠️ Не удалось собрать сводку. Попробуйте ещё раз.', ctx.state.manager);
+  }
+  return undefined;
+}
+
+// Разворот кнопки «Согласования» — доска согласований списком.
+async function actApprovals(ctx) {
+  if (!canSeeDigest(ctx.from.id)) return send(ctx, 'Раздел доступен учредителю и управляющему.', ctx.state.manager);
+  try {
+    await sendList(ctx, await views.approvals());
+  } catch (e) {
+    if (!isReady()) return send(ctx, '⚙️ База ещё не подключена — идёт настройка.', ctx.state.manager);
+    console.error('Согласования:', e);
+    await send(ctx, '⚠️ Не удалось получить данные. Попробуйте ещё раз.', ctx.state.manager);
+  }
+  return undefined;
+}
 
 // Кнопки нижнего меню + одноимённые слэш-команды (для меню ☰ у поля ввода).
 // В hears указываем и СТАРЫЕ подписи с эмодзи — чтобы у тех, у кого нижнее меню
@@ -180,7 +245,23 @@ bot.hears([BTN.summary, '📊 Сводка за день'], guard(actSummary)); 
 bot.hears([BTN.debts, '💰 Долги'], guard(actDebts));               bot.command('debts', guard(actDebts));
 bot.hears([BTN.revenue, '📈 Выручка'], guard(actRevenue));         bot.command('revenue', guard(actRevenue));
 bot.hears([BTN.analytics, '🧭 Аналитика'], guard(actAnalytics));   bot.command('analytics', guard(actAnalytics));
+bot.hears([BTN.invoices, '💳 Счета к оплате'], guard(actInvoices)); bot.command('invoices', guard(actInvoices));
+bot.hears(BTN.digest, guard(actDigest));                           bot.command('digest', guard(actDigest));
+bot.hears(BTN.approvals, guard(actApprovals));                     bot.command('approvals', guard(actApprovals));
 bot.command('help', guard(actHelp));
+
+// ─── Развороты под сводкой учредителя ───
+bot.action('fd:invoices', async (ctx) => {
+  if (!canSeeDigest(ctx.from.id)) return ctx.answerCbQuery('Только учредителю или управляющему');
+  await ctx.answerCbQuery();
+  return pushUnpaidInvoices(ctx);
+});
+
+bot.action('fd:approvals', async (ctx) => {
+  if (!canSeeDigest(ctx.from.id)) return ctx.answerCbQuery('Только учредителю или управляющему');
+  await ctx.answerCbQuery();
+  return actApprovals(ctx);
+});
 
 bot.action(/^rev:(today|week|month|year)$/, async (ctx) => {
   if (!config.isManager(ctx.from.id)) return ctx.answerCbQuery('Только управляющим');
@@ -202,7 +283,60 @@ bot.action(/^rev:(today|week|month|year)$/, async (ctx) => {
 // Присылаем ИМЕННО сохранённые в сервисе документы (заказ-наряд, счёт, акты),
 // напечатанные в PDF теми же компонентами и стилями, что на сайте.
 const docpdf = require('./docpdf');
-const { getDocById } = require('./data');
+const { getDocById, listUnpaidSupplierInvoices, getSupplierInvoiceById, markSupplierInvoicePaid } = require('./data');
+const { sendInvoice } = require('./invoices');
+const { money } = require('./format');
+
+// ─── Оплата счёта поставщика (учредителю и управляющему) ───
+// Тап «Оплачено» под счётом → подтверждение → отметка. markSupplierInvoicePaid
+// идемпотентна и переводит позиции счёта в «Заказано» (см. data.js).
+const canPay = (id) => config.isFounder(id) || config.isManager(id);
+// Сводка учредителя и её развороты — учредителю и управляющему (тот и так видит
+// всё то же самое по отдельным кнопкам).
+const canSeeDigest = (id) => config.isFounder(id) || config.isManager(id);
+
+bot.action(/^pay:(.+)$/, async (ctx) => {
+  if (!canPay(ctx.from.id)) return ctx.answerCbQuery('Только учредителю или управляющему');
+  const id = ctx.match[1];
+  try {
+    await ctx.answerCbQuery();
+    const inv = await getSupplierInvoiceById(id);
+    if (!inv) return ctx.reply('Счёт не найден.');
+    if (inv.status === 'paid' || inv.paid_at) return ctx.reply('Этот счёт уже оплачен.');
+    const kb = Markup.inlineKeyboard([
+      [Markup.button.callback('✅ Да, оплачено', `paycfm:${id}`), Markup.button.callback('Отмена', 'paycancel')],
+    ]);
+    await ctx.reply(
+      `Отметить счёт ${inv.number || ''}${inv.supplier ? ' (' + inv.supplier + ')' : ''} на <b>${money(inv.amount)}</b> как оплаченный?\nПозиции уйдут в «Заказано».`,
+      { parse_mode: 'HTML', ...kb },
+    );
+  } catch (e) {
+    console.error('Подтверждение оплаты:', e);
+    await ctx.reply(isReady() ? '⚠️ Не удалось открыть счёт.' : '⚙️ База ещё не подключена.');
+  }
+});
+
+bot.action('paycancel', async (ctx) => {
+  try { await ctx.answerCbQuery('Отменено'); await ctx.editMessageText('Отменено.'); }
+  catch { /* сообщение уже изменено — не страшно */ }
+});
+
+bot.action(/^paycfm:(.+)$/, async (ctx) => {
+  if (!canPay(ctx.from.id)) return ctx.answerCbQuery('Только учредителю или управляющему');
+  const id = ctx.match[1];
+  const name = [ctx.from.first_name, ctx.from.last_name].filter(Boolean).join(' ') || ctx.from.username || 'учредитель';
+  try {
+    await ctx.answerCbQuery('Отмечаю…');
+    const { alreadyPaid, invoice } = await markSupplierInvoicePaid(id, name);
+    const msg = alreadyPaid
+      ? `Счёт ${invoice.number || ''} уже был оплачен.`
+      : `✅ Счёт ${invoice.number || ''}${invoice.supplier ? ' (' + invoice.supplier + ')' : ''} оплачен. Позиции ушли в «Заказано».`;
+    try { await ctx.editMessageText(msg); } catch { await ctx.reply(msg); }
+  } catch (e) {
+    console.error('Отметка оплаты:', e);
+    await ctx.reply('⚠️ Не удалось отметить оплату. Попробуйте ещё раз.');
+  }
+});
 
 // Кнопки под карточкой машины. Запчасти и фото — всем сотрудникам; документы —
 // только управляющим (как и было).
@@ -264,6 +398,21 @@ function plateButtons(cars) {
   return Markup.inlineKeyboard(rows);
 }
 
+// Кнопки под сводкой учредителя: сверху развороты по разделам (со счётчиками),
+// снизу — номера машин, упомянутых в сводке, чтобы провалиться в карточку.
+function digestKeyboard(data) {
+  const rows = [];
+  const top = [];
+  if (data.invoices) top.push(Markup.button.callback(`Счета к оплате · ${data.invoices}`, 'fd:invoices'));
+  if (data.approvals) top.push(Markup.button.callback(`Согласования · ${data.approvals}`, 'fd:approvals'));
+  if (top.length) rows.push(top);
+  for (let i = 0; i < (data.cars || []).length; i += 3) {
+    rows.push(data.cars.slice(i, i + 3).map((c) => Markup.button.callback(c.plate, `car:${c.id}`)));
+  }
+  // В спокойный день кнопок может не быть вовсе — тогда шлём вообще без клавиатуры.
+  return rows.length ? Markup.inlineKeyboard(rows) : {};
+}
+
 // Отправить список вида {text, cars}: с кнопками-номерами, если машины есть.
 async function sendList(ctx, res) {
   if (res && res.cars && res.cars.length) {
@@ -310,7 +459,10 @@ bot.action(/^parts:(.+)$/, async (ctx) => {
   const jobId = ctx.match[1];
   try {
     await ctx.answerCbQuery();
-    const text = await views.partsView(jobId, { isManager: config.isManager(ctx.from.id) });
+    const text = await views.partsView(jobId, {
+      isManager: config.isManager(ctx.from.id),
+      canSeeSupply: config.canSeeSupply(ctx.from.id), // управляющий или запчастист
+    });
     try {
       await ctx.reply(text, { parse_mode: 'HTML' });
     } catch (e) {
@@ -480,6 +632,33 @@ function scheduleReminder() {
   }, { timezone: config.reminder.tz });
 }
 
+// Ежедневная сводка учредителям «Состояние ремонтов»: новые авто, согласования,
+// укомплектованность по запчастям, счета к оплате — одним сообщением с кнопками.
+// Пришла на смену прежнему дайджесту «каждый счёт файлом»: счета теперь считаются
+// в сводке, а сами файлы приходят по кнопке «Счета к оплате».
+// Шлём всегда (даже в спокойный день) — это сводка состояния, а не оповещение.
+// Своё время и СВОЙ часовой пояс — см. config.founderDigest.
+function scheduleFounderDigest() {
+  cron.schedule(config.founderDigest.cron, async () => {
+    if (!isReady() || !config.founders.length) return;
+    let data;
+    try {
+      data = await views.founderDigest();
+    } catch (e) {
+      console.error('Сводка учредителя:', e);
+      return;
+    }
+    for (const id of config.founders) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await bot.telegram.sendMessage(id, data.text, { parse_mode: 'HTML', ...digestKeyboard(data) });
+      } catch (e) {
+        console.error(`Сводка учредителя ${id}:`, e.message);
+      }
+    }
+  }, { timezone: config.founderDigest.tz });
+}
+
 // ─── Запуск ───
 // В этой версии Telegraf промис bot.launch() резолвится только при ОСТАНОВКЕ,
 // поэтому расписание и логи ставим до запуска, а сам launch не «ждём».
@@ -508,6 +687,9 @@ async function setupCommands() {
     { command: 'revenue', description: 'Выручка за период' },
     { command: 'analytics', description: 'Аналитика' },
     { command: 'summary', description: 'Сводка за день' },
+    { command: 'digest', description: 'Состояние ремонтов' },
+    { command: 'approvals', description: 'Согласования со страховой' },
+    { command: 'invoices', description: 'Счета к оплате' },
     { command: 'help', description: 'Что умеет бот' },
   ];
   try {
@@ -517,6 +699,20 @@ async function setupCommands() {
     try {
       await bot.telegram.setMyCommands(managerCmds, { scope: { type: 'chat', chat_id: Number(id) } });
     } catch (e) { console.error(`Меню команд (управляющий ${id}):`, e.message); }
+  }
+  // Учредителю — узкое меню: его сводка и разделы из неё. (Тех, кто ещё и
+  // управляющий, не трогаем — у них уже расширенное меню.)
+  const founderCmds = [
+    { command: 'digest', description: 'Состояние ремонтов' },
+    { command: 'approvals', description: 'Согласования со страховой' },
+    { command: 'invoices', description: 'Счета к оплате' },
+    { command: 'help', description: 'Что умеет бот' },
+  ];
+  for (const id of config.founders) {
+    if (config.isManager(id)) continue;
+    try {
+      await bot.telegram.setMyCommands(founderCmds, { scope: { type: 'chat', chat_id: Number(id) } });
+    } catch (e) { console.error(`Меню команд (учредитель ${id}):`, e.message); }
   }
 }
 
@@ -544,10 +740,13 @@ async function connectAndLaunch() {
 
 scheduleSummary();
 scheduleReminder();
+scheduleFounderDigest();
 startNotifier(bot);
 console.log('🤖 Бот запускается…');
 console.log(isReady() ? '✅ База подключена.' : `⚠️  База не подключена: ${reason()}`);
 console.log(`⏰ Утренняя сводка: ${config.summary.hour}:${String(config.summary.minute).padStart(2, '0')} · напоминание: ${config.reminder.hour}:${String(config.reminder.minute).padStart(2, '0')} (${config.summary.tz}), получатели: ${config.managers.length || 'пока никого'}`);
+console.log(`💳 Счета поставщиков: учредителей ${config.founders.length || 'пока нет'} (мгновенный пуш + кнопка «Счета к оплате»)`);
+console.log(`📋 Сводка учредителя «Состояние ремонтов»: ${config.founderDigest.hour}:${String(config.founderDigest.minute).padStart(2, '0')} (${config.founderDigest.tz}), получателей: ${config.founders.length || 'пока нет'}`);
 connectAndLaunch();
 
 function stop(sig) {

@@ -3,30 +3,92 @@ import { api } from '../api';
 import CompanySettings from './CompanySettings';
 import SplusImport from './SplusImport';
 import UsersAdmin from './UsersAdmin';
+import DuplicateCars from './DuplicateCars';
 import Icon from './Icon';
+import {
+  PAY_TYPE_ORDER, PAY_TYPES, DEFAULT_PAY_TYPE, DEFAULT_ADVANCE,
+  normalizeMasterPay, masterPayForm, masterPaySummary,
+} from '../salary';
+
+// Разделы настроек. Раньше все блоки лежали одной длинной лентой; теперь слева
+// меню, справа — только выбранный раздел. Порядок и подписи должны совпадать со
+// сборкой ниже (по section === id).
+const SECTIONS = [
+  { id: 'company', label: 'Компания', icon: 'building' },
+  { id: 'staff', label: 'Сотрудники', icon: 'user' },
+  { id: 'masters', label: 'Мастера', icon: 'wrench' },
+  { id: 'posts', label: 'Посты', icon: 'columns' },
+  { id: 'dict', label: 'Справочники', icon: 'clipboard' },
+  { id: 'import', label: 'Импорт данных', icon: 'download' },
+  { id: 'duplicates', label: 'Дубликаты машин', icon: 'car' },
+];
+const SECTION_IDS = SECTIONS.map((s) => s.id);
+const SECTION_KEY = 'aa-settings-section';
+
+// Поля оплаты мастера/сотрудника (тип + аванс + оклад) — общие для формы
+// добавления и формы редактирования. Оклад показываем только для типа «Оклад».
+// Экспортируется, чтобы демо-страница (salary-demo) показывала РЕАЛЬНЫЕ поля.
+export function PayFields({ form, onPatch }) {
+  return (
+    <>
+      <select value={form.pay_type} onChange={(e) => onPatch({ pay_type: e.target.value })}>
+        {PAY_TYPE_ORDER.map((t) => <option key={t} value={t}>{PAY_TYPES[t].label}</option>)}
+      </select>
+      <input
+        type="number" min="0" inputMode="numeric" placeholder="Аванс, ₽"
+        value={form.advance} onChange={(e) => onPatch({ advance: e.target.value })}
+      />
+      {form.pay_type === 'fixed' && (
+        <input
+          type="number" min="0" inputMode="numeric" placeholder="Оклад, ₽/мес"
+          value={form.salary} onChange={(e) => onPatch({ salary: e.target.value })}
+        />
+      )}
+    </>
+  );
+}
+
+const emptyMasterForm = () => ({
+  name: '', specialty: '', default_post_id: '',
+  pay_type: DEFAULT_PAY_TYPE, advance: String(DEFAULT_ADVANCE), salary: '',
+});
 
 export default function PostsMasters() {
   const [posts, setPosts] = useState([]);
   const [masters, setMasters] = useState([]);
   const [insurers, setInsurers] = useState([]);
+  const [suppliers, setSuppliers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [newPost, setNewPost] = useState('');
-  const [newMaster, setNewMaster] = useState({ name: '', specialty: '', default_post_id: '' });
+  const [newMaster, setNewMaster] = useState(emptyMasterForm());
   const [newInsurer, setNewInsurer] = useState('');
+  const [newSupplier, setNewSupplier] = useState('');
   const [dragIndex, setDragIndex] = useState(null);
   const [editingPostId, setEditingPostId] = useState(null);
   const [editPostName, setEditPostName] = useState('');
   const [editingMasterId, setEditingMasterId] = useState(null);
-  const [editMasterForm, setEditMasterForm] = useState({ name: '', specialty: '', default_post_id: '' });
+  const [editMasterForm, setEditMasterForm] = useState(emptyMasterForm());
   const [editingInsurerId, setEditingInsurerId] = useState(null);
   const [editInsurerName, setEditInsurerName] = useState('');
+  const [editingSupplierId, setEditingSupplierId] = useState(null);
+  const [editSupplierName, setEditSupplierName] = useState('');
   const [showImport, setShowImport] = useState(false);
+  // Открытый раздел запоминаем — чтобы вернуться туда, где были в прошлый раз.
+  const [section, setSection] = useState(() => {
+    const saved = localStorage.getItem(SECTION_KEY);
+    return SECTION_IDS.includes(saved) ? saved : 'company';
+  });
+
+  useEffect(() => { localStorage.setItem(SECTION_KEY, section); }, [section]);
 
   const load = async () => {
-    const [p, m, ins] = await Promise.all([api.posts.list(), api.masters.list(), api.insurers.list()]);
+    const [p, m, ins, sup] = await Promise.all([
+      api.posts.list(), api.masters.list(), api.insurers.list(), api.suppliers.list(),
+    ]);
     setPosts(p);
     setMasters(m);
     setInsurers(ins);
+    setSuppliers(sup);
     setLoading(false);
   };
 
@@ -82,8 +144,9 @@ export default function PostsMasters() {
       name: newMaster.name.trim(),
       specialty: newMaster.specialty || null,
       default_post_id: newMaster.default_post_id || null,
+      ...normalizeMasterPay(newMaster),
     });
-    setNewMaster({ name: '', specialty: '', default_post_id: '' });
+    setNewMaster(emptyMasterForm());
     load();
   }
 
@@ -99,7 +162,7 @@ export default function PostsMasters() {
 
   function startEditMaster(m) {
     setEditingMasterId(m.id);
-    setEditMasterForm({ name: m.name, specialty: m.specialty || '', default_post_id: m.default_post_id || '' });
+    setEditMasterForm({ name: m.name, specialty: m.specialty || '', default_post_id: m.default_post_id || '', ...masterPayForm(m) });
   }
 
   function cancelEditMaster() {
@@ -113,6 +176,7 @@ export default function PostsMasters() {
       name,
       specialty: editMasterForm.specialty || null,
       default_post_id: editMasterForm.default_post_id || null,
+      ...normalizeMasterPay(editMasterForm),
     });
     setEditingMasterId(null);
     load();
@@ -148,183 +212,323 @@ export default function PostsMasters() {
     load();
   }
 
+  async function addSupplier() {
+    if (!newSupplier.trim()) return;
+    await api.suppliers.create({ name: newSupplier.trim(), sort_order: suppliers.length });
+    setNewSupplier('');
+    load();
+  }
+
+  async function removeSupplier(id) {
+    if (!confirm('Удалить поставщика из справочника? Уже заказанные запчасти сохранят его название.')) return;
+    await api.suppliers.remove(id);
+    load();
+  }
+
+  function startEditSupplier(x) {
+    setEditingSupplierId(x.id);
+    setEditSupplierName(x.name);
+  }
+
+  function cancelEditSupplier() {
+    setEditingSupplierId(null);
+  }
+
+  async function saveEditSupplier() {
+    const name = editSupplierName.trim();
+    if (!name) return;
+    await api.suppliers.update(editingSupplierId, { name });
+    setEditingSupplierId(null);
+    load();
+  }
+
+  // Счётчики у пунктов меню — сколько записей в справочниках (подсказка «есть ли
+  // что-то внутри», не открывая раздел). Загружаются вместе с данными.
+  const counts = {
+    masters: masters.length,
+    posts: posts.length,
+    dict: insurers.length + suppliers.length,
+  };
+
+  const nav = (
+    <nav className="settings-nav" aria-label="Разделы настроек">
+      <div className="settings-nav-title">Настройки</div>
+      {SECTIONS.map((s) => (
+        <button
+          key={s.id}
+          type="button"
+          className={`settings-nav-item${section === s.id ? ' active' : ''}`}
+          onClick={() => setSection(s.id)}
+          aria-current={section === s.id ? 'page' : undefined}
+        >
+          <Icon name={s.icon} size={18} />
+          <span className="settings-nav-label">{s.label}</span>
+          {counts[s.id] > 0 && <span className="settings-nav-count">{counts[s.id]}</span>}
+        </button>
+      ))}
+    </nav>
+  );
+
   if (loading) {
     return (
-      <div className="panel">
-        <div className="list-loading"><div className="spinner" /><span>Загружаем…</span></div>
+      <div className="settings-screen">
+        {nav}
+        <div className="settings-content">
+          <div className="panel">
+            <div className="list-loading"><div className="spinner" /><span>Загружаем…</span></div>
+          </div>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="panel-grid">
-      <UsersAdmin />
+    <div className="settings-screen">
+      {nav}
+      <div className="settings-content">
 
-      <div className="panel">
-        <h3>Посты</h3>
-        {posts.length === 0 ? (
-          <div className="list-empty">Постов пока нет — добавьте первый ниже</div>
-        ) : (
-          <ul className="list draggable-list">
-            {posts.map((p, i) => (
-              <li
-                key={p.id}
-                draggable={editingPostId !== p.id}
-                onDragStart={() => setDragIndex(i)}
-                onDragOver={(e) => e.preventDefault()}
-                onDrop={() => { reorderPosts(dragIndex, i); setDragIndex(null); }}
-                className={`${dragIndex === i ? 'is-dragging' : ''}${editingPostId === p.id ? ' list-item-editing' : ''}`}
-              >
-                {editingPostId === p.id ? (
-                  <>
-                    <input
-                      className="list-edit-input"
-                      autoFocus
-                      value={editPostName}
-                      onChange={(e) => setEditPostName(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditPost(); if (e.key === 'Escape') cancelEditPost(); }}
-                    />
-                    <span className="list-actions">
-                      <button className="list-action-btn" title="Сохранить" onClick={saveEditPost}>✓</button>
-                      <button className="list-action-btn" title="Отмена" onClick={cancelEditPost}>×</button>
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="drag-handle" title="Перетащите, чтобы изменить порядок">⠿</span>
-                    <span className="list-icon list-icon--letter">{(p.name || '?').trim().charAt(0).toUpperCase()}</span>
-                    <span className="list-label">{p.name}</span>
-                    <span className="list-actions">
-                      <button className="list-action-btn" title="Переименовать" onClick={() => startEditPost(p)}>✎</button>
-                      <button className="list-action-btn danger" title="Удалить" onClick={() => removePost(p.id)}>×</button>
-                    </span>
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+        {section === 'company' && <CompanySettings />}
+
+        {section === 'staff' && <UsersAdmin />}
+
+        {section === 'masters' && (
+          <div className="panel">
+            <h3>Мастера</h3>
+            <p className="panel-hint">Кто выполняет работы. Ставка оплаты подтягивается в расчёт себестоимости и в зарплату.</p>
+            {masters.length === 0 ? (
+              <div className="list-empty">Мастеров пока нет — добавьте первого ниже</div>
+            ) : (
+              <ul className="list">
+                {masters.map((m) => (
+                  <li key={m.id} className={editingMasterId === m.id ? 'list-item-editing' : ''}>
+                    {editingMasterId === m.id ? (
+                      <>
+                        <input
+                          className="list-edit-input"
+                          autoFocus
+                          placeholder="Имя мастера"
+                          value={editMasterForm.name}
+                          onChange={(e) => setEditMasterForm({ ...editMasterForm, name: e.target.value })}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
+                        />
+                        <input
+                          className="list-edit-input"
+                          placeholder="Специализация"
+                          value={editMasterForm.specialty}
+                          onChange={(e) => setEditMasterForm({ ...editMasterForm, specialty: e.target.value })}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
+                        />
+                        <select
+                          value={editMasterForm.default_post_id}
+                          onChange={(e) => setEditMasterForm({ ...editMasterForm, default_post_id: e.target.value })}
+                        >
+                          <option value="">Основной пост — не выбран</option>
+                          {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                        </select>
+                        <PayFields form={editMasterForm} onPatch={(patch) => setEditMasterForm({ ...editMasterForm, ...patch })} />
+                        <span className="list-actions">
+                          <button className="list-action-btn ok" title="Сохранить" onClick={saveEditMaster}><Icon name="check" size={15} /></button>
+                          <button className="list-action-btn" title="Отмена" onClick={cancelEditMaster}><Icon name="x" size={15} /></button>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="list-icon list-icon--letter">{(m.name || '?').trim().charAt(0).toUpperCase()}</span>
+                        <span className="list-label">{m.name} <span className="list-sub">{`${m.specialty ? `— ${m.specialty} · ` : ''}${masterPaySummary(m)}`}</span></span>
+                        <span className="list-actions">
+                          <button className="list-action-btn" title="Редактировать" onClick={() => startEditMaster(m)}><Icon name="edit" size={14} /></button>
+                          <button className="list-action-btn danger" title="Удалить" onClick={() => removeMaster(m.id)}><Icon name="trash" size={14} /></button>
+                        </span>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="settings-add">
+              <div className="settings-add-title"><Icon name="plus" size={15} />Добавить мастера</div>
+              <div className="settings-add-grid">
+                <input placeholder="Имя мастера" value={newMaster.name} onChange={(e) => setNewMaster({ ...newMaster, name: e.target.value })} />
+                <input placeholder="Специализация" value={newMaster.specialty} onChange={(e) => setNewMaster({ ...newMaster, specialty: e.target.value })} />
+                <select value={newMaster.default_post_id} onChange={(e) => setNewMaster({ ...newMaster, default_post_id: e.target.value })}>
+                  <option value="">Основной пост — не выбран</option>
+                  {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+                <PayFields form={newMaster} onPatch={(patch) => setNewMaster({ ...newMaster, ...patch })} />
+              </div>
+              <div className="settings-add-actions">
+                <button className="primary" onClick={addMaster}>Добавить мастера</button>
+              </div>
+            </div>
+          </div>
         )}
-        <div className="inline-form">
-          <input placeholder="Название поста" value={newPost} onChange={(e) => setNewPost(e.target.value)} />
-          <button className="primary" onClick={addPost}>Добавить</button>
-        </div>
-      </div>
 
-      <div className="panel">
-        <h3>Мастера</h3>
-        {masters.length === 0 ? (
-          <div className="list-empty">Мастеров пока нет — добавьте первого ниже</div>
-        ) : (
-          <ul className="list">
-            {masters.map((m) => (
-              <li key={m.id} className={editingMasterId === m.id ? 'list-item-editing' : ''}>
-                {editingMasterId === m.id ? (
-                  <>
-                    <input
-                      className="list-edit-input"
-                      autoFocus
-                      placeholder="Имя мастера"
-                      value={editMasterForm.name}
-                      onChange={(e) => setEditMasterForm({ ...editMasterForm, name: e.target.value })}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
-                    />
-                    <input
-                      className="list-edit-input"
-                      placeholder="Специализация"
-                      value={editMasterForm.specialty}
-                      onChange={(e) => setEditMasterForm({ ...editMasterForm, specialty: e.target.value })}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
-                    />
-                    <select
-                      value={editMasterForm.default_post_id}
-                      onChange={(e) => setEditMasterForm({ ...editMasterForm, default_post_id: e.target.value })}
-                    >
-                      <option value="">Основной пост — не выбран</option>
-                      {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-                    </select>
-                    <span className="list-actions">
-                      <button className="list-action-btn" title="Сохранить" onClick={saveEditMaster}>✓</button>
-                      <button className="list-action-btn" title="Отмена" onClick={cancelEditMaster}>×</button>
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="list-icon list-icon--letter">{(m.name || '?').trim().charAt(0).toUpperCase()}</span>
-                    <span className="list-label">{m.name} {m.specialty ? <span className="list-sub">— {m.specialty}</span> : ''}</span>
-                    <span className="list-actions">
-                      <button className="list-action-btn" title="Редактировать" onClick={() => startEditMaster(m)}>✎</button>
-                      <button className="list-action-btn danger" title="Удалить" onClick={() => removeMaster(m.id)}>×</button>
-                    </span>
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+        {section === 'posts' && (
+          <div className="panel">
+            <h3>Посты</h3>
+            <p className="panel-hint">Рабочие места в цеху. Перетаскивайте за ⠿, чтобы задать их порядок на графике.</p>
+            {posts.length === 0 ? (
+              <div className="list-empty">Постов пока нет — добавьте первый ниже</div>
+            ) : (
+              <ul className="list draggable-list">
+                {posts.map((p, i) => (
+                  <li
+                    key={p.id}
+                    draggable={editingPostId !== p.id}
+                    onDragStart={() => setDragIndex(i)}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={() => { reorderPosts(dragIndex, i); setDragIndex(null); }}
+                    className={`${dragIndex === i ? 'is-dragging' : ''}${editingPostId === p.id ? ' list-item-editing' : ''}`}
+                  >
+                    {editingPostId === p.id ? (
+                      <>
+                        <input
+                          className="list-edit-input"
+                          autoFocus
+                          value={editPostName}
+                          onChange={(e) => setEditPostName(e.target.value)}
+                          onKeyDown={(e) => { if (e.key === 'Enter') saveEditPost(); if (e.key === 'Escape') cancelEditPost(); }}
+                        />
+                        <span className="list-actions">
+                          <button className="list-action-btn ok" title="Сохранить" onClick={saveEditPost}><Icon name="check" size={15} /></button>
+                          <button className="list-action-btn" title="Отмена" onClick={cancelEditPost}><Icon name="x" size={15} /></button>
+                        </span>
+                      </>
+                    ) : (
+                      <>
+                        <span className="drag-handle" title="Перетащите, чтобы изменить порядок">⠿</span>
+                        <span className="list-icon list-icon--letter">{(p.name || '?').trim().charAt(0).toUpperCase()}</span>
+                        <span className="list-label">{p.name}</span>
+                        <span className="list-actions">
+                          <button className="list-action-btn" title="Переименовать" onClick={() => startEditPost(p)}><Icon name="edit" size={14} /></button>
+                          <button className="list-action-btn danger" title="Удалить" onClick={() => removePost(p.id)}><Icon name="trash" size={14} /></button>
+                        </span>
+                      </>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="settings-add">
+              <div className="settings-add-title"><Icon name="plus" size={15} />Добавить пост</div>
+              <div className="inline-form">
+                <input placeholder="Название поста" value={newPost} onChange={(e) => setNewPost(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addPost(); }} />
+                <button className="primary" onClick={addPost}>Добавить</button>
+              </div>
+            </div>
+          </div>
         )}
-        <div className="inline-form column">
-          <input placeholder="Имя мастера" value={newMaster.name} onChange={(e) => setNewMaster({ ...newMaster, name: e.target.value })} />
-          <input placeholder="Специализация" value={newMaster.specialty} onChange={(e) => setNewMaster({ ...newMaster, specialty: e.target.value })} />
-          <select value={newMaster.default_post_id} onChange={(e) => setNewMaster({ ...newMaster, default_post_id: e.target.value })}>
-            <option value="">Основной пост — не выбран</option>
-            {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-          <button className="primary" onClick={addMaster}>Добавить мастера</button>
-        </div>
-      </div>
 
-      <div className="panel">
-        <h3>Страховые компании</h3>
-        <p className="panel-hint">Список для выбора в карточке машины (тип оплаты «Страховая»).</p>
-        {insurers.length === 0 ? (
-          <div className="list-empty">Справочник пуст — добавьте страховую ниже</div>
-        ) : (
-          <ul className="list">
-            {insurers.map((x) => (
-              <li key={x.id} className={editingInsurerId === x.id ? 'list-item-editing' : ''}>
-                {editingInsurerId === x.id ? (
-                  <>
-                    <input
-                      className="list-edit-input"
-                      autoFocus
-                      value={editInsurerName}
-                      onChange={(e) => setEditInsurerName(e.target.value)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditInsurer(); if (e.key === 'Escape') cancelEditInsurer(); }}
-                    />
-                    <span className="list-actions">
-                      <button className="list-action-btn" title="Сохранить" onClick={saveEditInsurer}>✓</button>
-                      <button className="list-action-btn" title="Отмена" onClick={cancelEditInsurer}>×</button>
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="list-icon"><Icon name="shield" size={15} /></span>
-                    <span className="list-label">{x.name}</span>
-                    <span className="list-actions">
-                      <button className="list-action-btn" title="Переименовать" onClick={() => startEditInsurer(x)}>✎</button>
-                      <button className="list-action-btn danger" title="Удалить" onClick={() => removeInsurer(x.id)}>×</button>
-                    </span>
-                  </>
-                )}
-              </li>
-            ))}
-          </ul>
+        {section === 'dict' && (
+          <>
+            <div className="panel">
+              <h3>Страховые компании</h3>
+              <p className="panel-hint">Список для выбора в карточке машины (тип оплаты «Страховая»).</p>
+              {insurers.length === 0 ? (
+                <div className="list-empty">Справочник пуст — добавьте страховую ниже</div>
+              ) : (
+                <ul className="list">
+                  {insurers.map((x) => (
+                    <li key={x.id} className={editingInsurerId === x.id ? 'list-item-editing' : ''}>
+                      {editingInsurerId === x.id ? (
+                        <>
+                          <input
+                            className="list-edit-input"
+                            autoFocus
+                            value={editInsurerName}
+                            onChange={(e) => setEditInsurerName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') saveEditInsurer(); if (e.key === 'Escape') cancelEditInsurer(); }}
+                          />
+                          <span className="list-actions">
+                            <button className="list-action-btn ok" title="Сохранить" onClick={saveEditInsurer}><Icon name="check" size={15} /></button>
+                            <button className="list-action-btn" title="Отмена" onClick={cancelEditInsurer}><Icon name="x" size={15} /></button>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="list-icon"><Icon name="shield" size={15} /></span>
+                          <span className="list-label">{x.name}</span>
+                          <span className="list-actions">
+                            <button className="list-action-btn" title="Переименовать" onClick={() => startEditInsurer(x)}><Icon name="edit" size={14} /></button>
+                            <button className="list-action-btn danger" title="Удалить" onClick={() => removeInsurer(x.id)}><Icon name="trash" size={14} /></button>
+                          </span>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="settings-add">
+                <div className="settings-add-title"><Icon name="plus" size={15} />Добавить страховую</div>
+                <div className="inline-form">
+                  <input placeholder="Название страховой" value={newInsurer} onChange={(e) => setNewInsurer(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addInsurer(); }} />
+                  <button className="primary" onClick={addInsurer}>Добавить</button>
+                </div>
+              </div>
+            </div>
+
+            <div className="panel">
+              <h3>Поставщики запчастей</h3>
+              <p className="panel-hint">Список для подсказок в поле «Поставщик» на экране «Запчасти».</p>
+              {suppliers.length === 0 ? (
+                <div className="list-empty">Справочник пуст — добавьте поставщика ниже</div>
+              ) : (
+                <ul className="list">
+                  {suppliers.map((x) => (
+                    <li key={x.id} className={editingSupplierId === x.id ? 'list-item-editing' : ''}>
+                      {editingSupplierId === x.id ? (
+                        <>
+                          <input
+                            className="list-edit-input"
+                            autoFocus
+                            value={editSupplierName}
+                            onChange={(e) => setEditSupplierName(e.target.value)}
+                            onKeyDown={(e) => { if (e.key === 'Enter') saveEditSupplier(); if (e.key === 'Escape') cancelEditSupplier(); }}
+                          />
+                          <span className="list-actions">
+                            <button className="list-action-btn ok" title="Сохранить" onClick={saveEditSupplier}><Icon name="check" size={15} /></button>
+                            <button className="list-action-btn" title="Отмена" onClick={cancelEditSupplier}><Icon name="x" size={15} /></button>
+                          </span>
+                        </>
+                      ) : (
+                        <>
+                          <span className="list-icon"><Icon name="cart" size={15} /></span>
+                          <span className="list-label">{x.name}</span>
+                          <span className="list-actions">
+                            <button className="list-action-btn" title="Переименовать" onClick={() => startEditSupplier(x)}><Icon name="edit" size={14} /></button>
+                            <button className="list-action-btn danger" title="Удалить" onClick={() => removeSupplier(x.id)}><Icon name="trash" size={14} /></button>
+                          </span>
+                        </>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              )}
+              <div className="settings-add">
+                <div className="settings-add-title"><Icon name="plus" size={15} />Добавить поставщика</div>
+                <div className="inline-form">
+                  <input placeholder="Название поставщика" value={newSupplier} onChange={(e) => setNewSupplier(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addSupplier(); }} />
+                  <button className="primary" onClick={addSupplier}>Добавить</button>
+                </div>
+              </div>
+            </div>
+          </>
         )}
-        <div className="inline-form">
-          <input placeholder="Название страховой" value={newInsurer} onChange={(e) => setNewInsurer(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') addInsurer(); }} />
-          <button className="primary" onClick={addInsurer}>Добавить</button>
-        </div>
-      </div>
 
-      <CompanySettings />
+        {section === 'import' && (
+          <div className="panel">
+            <h3>Импорт из Splus</h3>
+            <p className="panel-hint">
+              Перенос заказ-нарядов из старого сервиса Splus. Выгрузите там раздел «Заказ-наряды»
+              в CSV и загрузите его здесь — заказы добавятся к существующим (номер, дата, клиент,
+              машина с госномером, сумма — в заметку). Дубли по номеру пропускаются.
+            </p>
+            <button className="primary" onClick={() => setShowImport(true)}>Импортировать заказы</button>
+          </div>
+        )}
 
-      <div className="panel">
-        <h3>Импорт из Splus</h3>
-        <p style={{ color: 'var(--text2, #667)', marginTop: 0, fontSize: 14 }}>
-          Перенос заказ-нарядов из старого сервиса Splus. Выгрузите там раздел «Заказ-наряды»
-          в CSV и загрузите его здесь — заказы добавятся к существующим (номер, дата, клиент,
-          машина с госномером, сумма — в заметку). Дубли по номеру пропускаются.
-        </p>
-        <button className="primary" onClick={() => setShowImport(true)}>Импортировать заказы</button>
+        {section === 'duplicates' && <DuplicateCars />}
+
       </div>
 
       {showImport && <SplusImport onClose={() => setShowImport(false)} onImported={load} />}

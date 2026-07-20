@@ -176,7 +176,7 @@ export default function UsersAdmin() {
                     title={isMe ? 'Нельзя убрать себя' : 'Убрать доступ'}
                     disabled={isMe}
                     onClick={() => removeUser(u)}
-                  >×</button>
+                  ><Icon name="trash" size={14} /></button>
                 </span>
               </li>
             );

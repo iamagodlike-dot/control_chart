@@ -8,15 +8,22 @@ import { isRepair, isApproval } from './phase';
 import { withPartIds } from './parts';
 import { deletePhotoFile } from './photos';
 import { formatDocNumber } from './orderDoc';
+import { STREAM_INSURANCE, claimsOf, genClaimId } from './billing';
 
 const postsCol = collection(db, 'posts');
 const mastersCol = collection(db, 'masters');
 const insurersCol = collection(db, 'insurers');
+const suppliersCol = collection(db, 'suppliers');
+
+// Первичное наполнение справочника поставщиков — то, чем сервис уже пользуется.
+// Управленец потом добавляет/убирает своих в «Настройках».
+const DEFAULT_SUPPLIERS = ['Exist', 'Emex', 'Разборка', 'Химснаб'];
 
 // Dedupes concurrent ensureSeeded() calls (React StrictMode double-invokes the
 // mount effect in dev; also guards against parallel callers) so defaults are
 // never seeded twice. Reset on failure so a transient error can be retried.
 let insurerSeedPromise = null;
+let supplierSeedPromise = null;
 const jobsCol = collection(db, 'jobs');
 const stagesCol = collection(db, 'stages');
 const settingsCol = collection(db, 'settings');
@@ -28,6 +35,9 @@ const countersCol = collection(db, 'counters');
 const transactionsCol = collection(db, 'transactions');
 const usersCol = collection(db, 'users');
 const expensesCol = collection(db, 'expenses');
+const purchaseRequestsCol = collection(db, 'purchaseRequests');
+const salaryPaymentsCol = collection(db, 'salaryPayments');
+const supplierInvoicesCol = collection(db, 'supplierInvoices');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -37,6 +47,53 @@ function stripUndefined(obj) {
   const out = {};
   for (const k in obj) if (obj[k] !== undefined) out[k] = obj[k];
   return out;
+}
+
+// Плоские страховые поля машины = ЗЕРКАЛО убытка №1 (claims[0]). Держим их, чтобы
+// весь непереписанный код (телеграм-бот и его собранный bundle.cjs, История, Финансы
+// byInsurer, сайдбар Гантта, доска «Согласование») продолжал работать без правок:
+// он читает убыток №1 и просто не знает про остальные — недоговаривает, но не врёт.
+//
+// SERVER-OWNED, как receiving_log: пересчитывается ТОЛЬКО внутри транзакций
+// addClaim/saveClaim/removeClaim. Никакой другой писатель этих полей не допускается —
+// иначе зеркало и claims станут двумя источниками правды и разойдутся (прецедент в
+// проекте уже есть: у splus-машин insurer_name без insurer_id, и пикер страховой
+// показывает пустоту при заполненном имени в документах).
+// ВАЖНО: null, а не undefined — stripUndefined выбросил бы ключ, и старое значение
+// осталось бы в базе висеть (например, франшиза удалённого убытка).
+export const CLAIM_MIRROR_KEYS = [
+  'claim_number', 'insurer_id', 'insurer_name', 'policy_type',
+  'franchise', 'order_number', 'discount',
+];
+function claimMirror(claims) {
+  const c = (claims && claims[0]) || {};
+  return {
+    claim_number: c.claim_number || '',
+    insurer_id: c.insurer_id || '',
+    insurer_name: c.insurer_name || '',
+    policy_type: c.policy_type || '',
+    franchise: c.franchise ?? null,
+    order_number: c.order_number || '',
+    discount: Number(c.discount) || 0,
+  };
+}
+
+// Statuses whose transitions are recorded in a part's приёмка history
+// (part.receiving_log). «Заказано» → «Приехало в ТК» → «На складе» are the
+// receiving milestones the «История приёмки» screen shows. 'need' and 'issued'
+// are not receiving events, so they are deliberately not logged.
+const RECEIVING_LOG_STATUSES = ['ordered', 'arrived', 'in'];
+
+// Given a part's stored log and a status transition, return the log with one
+// entry appended IFF the status actually changed INTO a tracked приёмка step.
+// Always derived from the SERVER's stored log (never the caller's snapshot), so
+// two people advancing parts on the same car can't wipe each other's history.
+function appendReceivingLog(prevLog, prevStatus, nextStatus, by, at) {
+  const log = Array.isArray(prevLog) ? prevLog.slice() : [];
+  if (nextStatus && nextStatus !== prevStatus && RECEIVING_LOG_STATUSES.includes(nextStatus)) {
+    log.push(stripUndefined({ status: nextStatus, at, by: by || null }));
+  }
+  return log;
 }
 
 // Access records are keyed by the login's email (lowercased) — so the owner can
@@ -99,6 +156,62 @@ function buildGantt(posts, allStages, jobsList, mastersList) {
     });
 
   return { posts, stages, jobs };
+}
+
+// Перевести позиции счёта поставщика в целевой статус — 'invoiced' при создании
+// счёта, 'ordered' при отметке оплаты. Позиции могут быть с РАЗНЫХ машин, поэтому
+// группируем по job_id и на каждую машину идёт своя транзакция (мерж по id —
+// безопасно к параллельным правкам, как savePart). Переход разрешён только из
+// «правильного» исходного статуса → идемпотентно (повторная оплата ничего не
+// двигает) и без регресса. Возвращает список затронутых машин (для синка склада).
+async function setInvoiceParts(items, targetStatus, { invoiceId, supplier } = {}) {
+  const by = normEmail(auth.currentUser?.email);
+  const at = Date.now();
+  const orderedAt = new Date().toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
+  const from = targetStatus === 'ordered' ? ['need', 'invoiced'] : ['need', 'invoiced'];
+  const sup = String(supplier || '').trim();
+  const byJob = new Map();
+  for (const it of (items || [])) {
+    if (!it || !it.job_id || !it.part_id) continue;
+    if (!byJob.has(it.job_id)) byJob.set(it.job_id, new Set());
+    byJob.get(it.job_id).add(it.part_id);
+  }
+  const affected = [];
+  for (const [jobId, partIds] of byJob.entries()) {
+    const jref = doc(jobsCol, jobId);
+    const synced = await runTransaction(db, async (tx) => {
+      const js = await tx.get(jref);
+      if (!js.exists()) return null;
+      const data = js.data();
+      const parts = (data.parts || []).slice();
+      let changed = false;
+      for (let i = 0; i < parts.length; i++) {
+        const p = parts[i];
+        // Пустой статус = «Требуется» (как в normalizePart): позиции без статуса
+        // (импорт/ручной ввод) тоже должны переводиться в счёт, а не игнорироваться.
+        const curStatus = p.status || 'need';
+        if (!partIds.has(p.id) || !from.includes(curStatus) || curStatus === targetStatus) continue;
+        const merged = { ...p, status: targetStatus };
+        if (targetStatus === 'ordered') merged.orderedAt = p.orderedAt || orderedAt;
+        if (targetStatus === 'invoiced' && invoiceId !== undefined) merged.supplier_invoice_id = invoiceId;
+        // Поставщик счёта — авторитетный: проставляем его на позиции при выставлении,
+        // чтобы у заказанных позиций был поставщик (в «Заказано» уходят через оплату,
+        // минуя ручной ввод §13).
+        if (targetStatus === 'invoiced' && sup) merged.supplier = sup;
+        // Приёмка server-owned: лог пишется только при входе в receiving-статус
+        // ('ordered'/'arrived'/'in'); переход в 'invoiced' историю не трогает.
+        merged.receiving_log = appendReceivingLog(p.receiving_log, p.status, targetStatus, by, at);
+        parts[i] = merged;
+        changed = true;
+      }
+      if (!changed) return null;
+      tx.update(jref, { parts });
+      return { id: jobId, ...data, parts };
+    });
+    if (synced) affected.push(synced);
+  }
+  for (const j of affected) if (jobCellIds(j).length) await api.warehouse.syncParts(j);
+  return affected;
 }
 
 export const api = {
@@ -226,6 +339,51 @@ export const api = {
     },
   },
 
+  // Справочник поставщиков запчастей. Управляет им только управленец (в «Настройках»),
+  // а на экране «Запчасти» имена подставляются как подсказки в поле «Поставщик».
+  // Устроен так же, как insurers: сортировка по sort_order, разовое наполнение
+  // текущими поставщиками при первом запуске (флаг в settings/company).
+  suppliers: {
+    async list() {
+      const snap = await getDocs(query(suppliersCol, orderBy('sort_order')));
+      return snap.docs.map(withId);
+    },
+    async create(data) {
+      const ref = await addDoc(suppliersCol, stripUndefined({ sort_order: 0, ...data }));
+      return withId(await getDoc(ref));
+    },
+    async update(id, data) {
+      await updateDoc(doc(suppliersCol, id), stripUndefined(data));
+      return withId(await getDoc(doc(suppliersCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(suppliersCol, id));
+      return { ok: true };
+    },
+    // Наполняем справочник теми поставщиками, что уже были зашиты в код, — один
+    // раз. Флаг в settings/company не даёт заново засеять список после того, как
+    // сервис его отредактировал. Детерминированные id (`default-N`) в одном
+    // writeBatch: два клиента на чистой базе перезапишут те же документы, а не
+    // создадут дубли, и частичный сбой не оставит осиротевших записей.
+    ensureSeeded() {
+      if (supplierSeedPromise) return supplierSeedPromise;
+      supplierSeedPromise = (async () => {
+        const snap = await getDocs(suppliersCol);
+        if (!snap.empty) return;
+        const company = await api.settings.getCompany();
+        if (company.suppliersSeeded) return;
+        const now = Date.now();
+        const batch = writeBatch(db);
+        DEFAULT_SUPPLIERS.forEach((name, i) => {
+          batch.set(doc(suppliersCol, `default-${i}`), { name, sort_order: i, created_at: now });
+        });
+        batch.set(doc(settingsCol, 'company'), { suppliersSeeded: true }, { merge: true });
+        await batch.commit();
+      })().catch((e) => { supplierSeedPromise = null; throw e; });
+      return supplierSeedPromise;
+    },
+  },
+
   jobs: {
     async list() {
       const snap = await getDocs(query(jobsCol, orderBy('created_at', 'desc')));
@@ -257,6 +415,12 @@ export const api = {
       // сюда не заходит и сохраняет свои исходные номера. Сбой счётчика (напр. правила
       // Firestore ещё не задеплоены) НЕ должен мешать заведению машины — тогда просто
       // оставляем номер пустым (поле и раньше было необязательным).
+      //
+      // НОВАЯ МАШИНА НЕ ПИШЕТ claims[] — и не должна. Плоские поля (order_number,
+      // claim_number, franchise…) И ЕСТЬ убыток №1: claimsOf соберёт его на лету, как
+      // phase.js трактует отсутствие job.phase. Массив материализуется только при
+      // заведении ВТОРОГО дела (api.jobs.addClaim). Это и есть ленивая миграция:
+      // в базе не меняется ничего, пока второй убыток реально не понадобился.
       if (!String(jobFields.order_number || '').trim()) {
         try {
           const year = new Date().getFullYear();
@@ -291,7 +455,34 @@ export const api = {
       // Only when parts are part of this update (e.g. a fresh Audatex import) —
       // give them ids. Plain edits omit `parts` and leave the stored array as-is.
       const payload = Array.isArray(data.parts) ? { ...data, parts: withPartIds(data.parts) } : data;
-      await updateDoc(doc(jobsCol, id), stripUndefined(payload));
+      // ЗЕРКАЛО claims[0] ↔ плоские страховые поля. Штатное сохранение карточки шлёт
+      // {claim_number, franchise, …} целиком — у машины С НЕСКОЛЬКИМИ убытками это
+      // разъехалось бы с claims[0] и стало вторым источником правды. Поэтому если в
+      // payload есть зеркальные ключи И у машины уже материализован claims[] —
+      // дописываем те же значения в claims[0] в ОДНОЙ транзакции.
+      //
+      // У машин без claims[] (все ~100 машин прода до первого второго убытка) ветка
+      // не срабатывает вообще: update ведёт себя ровно как раньше. Плюс это делает
+      // правку убытка №1 самолечащейся — карточке не нужно особого случая для него.
+      const touchesMirror = CLAIM_MIRROR_KEYS.some((k) => k in payload);
+      if (touchesMirror) {
+        const ref = doc(jobsCol, id);
+        await runTransaction(db, async (tx) => {
+          const snap = await tx.get(ref);
+          if (!snap.exists()) throw new Error('Машина не найдена');
+          const stored = snap.data();
+          const clean = stripUndefined(payload);
+          if (Array.isArray(stored.claims) && stored.claims.length) {
+            const claims = stored.claims.map((c) => ({ ...c }));
+            for (const k of CLAIM_MIRROR_KEYS) if (k in clean) claims[0][k] = clean[k];
+            tx.update(ref, { ...clean, claims, ...claimMirror(claims) });
+          } else {
+            tx.update(ref, clean);
+          }
+        });
+      } else {
+        await updateDoc(doc(jobsCol, id), stripUndefined(payload));
+      }
       const job = withId(await getDoc(doc(jobsCol, id)));
       job.stages = await stagesForJob(id);
       return job;
@@ -343,20 +534,127 @@ export const api = {
     async savePart(jobId, part) {
       const ref = doc(jobsCol, jobId);
       const clean = stripUndefined({ ...part, qty: Number(part.qty) || 1, cost: Number(part.cost) || 0, price: Number(part.price) || 0 });
+      // Who/when for the приёмка history entry, captured once outside the retryable
+      // transaction so a retry doesn't shift the timestamp.
+      const by = auth.currentUser?.email || null;
+      const at = Date.now();
       const synced = await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
         const data = snap.data();
         const parts = (data.parts || []).slice();
         const i = parts.findIndex((p) => p.id === part.id);
-        if (i >= 0) parts[i] = { ...parts[i], ...clean };
-        else parts.push(clean);
+        if (i >= 0) {
+          const prev = parts[i];
+          const merged = { ...prev, ...clean };
+          // Receiving history is server-owned: recompute from the stored log,
+          // ignoring whatever receiving_log the caller may have carried in.
+          merged.receiving_log = appendReceivingLog(prev.receiving_log, prev.status, merged.status, by, at);
+          parts[i] = merged;
+        } else {
+          // A part created straight into a receiving status (e.g. «Заказано») gets
+          // its first history entry too.
+          clean.receiving_log = appendReceivingLog([], undefined, clean.status, by, at);
+          parts.push(clean);
+        }
         tx.update(ref, { parts });
         return { id: jobId, ...data, parts };
       });
       // Keep any linked warehouse cell in step: cells hold a COPY of the car's
       // parts, so every part edit must refresh them (else the Склад shows a stale list).
       if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
+    },
+    // ===== Убытки (страховые дела) =====
+    // По одной машине страховая может завести НЕСКОЛЬКО дел. Каждое — свой поток
+    // биллинга со своими реквизитами и своим номером ЗН (см. billing.js).
+    //
+    // ЗЕРКАЛО: claims[0] дублируется в плоские поля машины (claim_number, insurer_id,
+    // insurer_name, policy_type, franchise, order_number, discount). Оно SERVER-OWNED —
+    // пересчитывается ТОЛЬКО здесь, внутри транзакции, по образцу receiving_log. Ввод
+    // вызывающего игнорируется. Благодаря зеркалу весь непереписанный код (телеграм-бот,
+    // История, Финансы, сайдбар Гантта) продолжает работать без единой правки: он
+    // читает убыток №1 и просто не знает про остальные.
+    async addClaim(jobId, claim = {}) {
+      const ref = doc(jobsCol, jobId);
+      // Номер ЗН нового дела — следующий из годовой очереди. Страховая заводит дело
+      // по номеру заказ-наряда, поэтому два дела с одним номером недопустимы. Берём
+      // номер ДО транзакции: счётчик — своя транзакция, вложить её нельзя.
+      let orderNumber = String(claim.order_number || '').trim();
+      if (!orderNumber) {
+        const year = new Date().getFullYear();
+        orderNumber = formatDocNumber('order', year, await api.counters.next('order', year));
+      }
+      const id = claim.id && claim.id !== STREAM_INSURANCE ? String(claim.id) : genClaimId();
+      return runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('Машина не найдена');
+        const data = snap.data();
+        // claimsOf материализует убыток №1 из плоских полей, если claims ещё нет —
+        // ленивая миграция происходит ровно здесь, при заведении ВТОРОГО дела.
+        const claims = claimsOf({ id: jobId, ...data }).map((c) => ({ ...c }));
+        if (claims.some((c) => c.id === id)) throw new Error('Убыток с таким id уже есть');
+        claims.push(stripUndefined({
+          id,
+          claim_number: claim.claim_number || '',
+          insurer_id: claim.insurer_id || '',
+          insurer_name: claim.insurer_name || '',
+          policy_type: claim.policy_type || '',
+          franchise: claim.franchise ?? null,
+          order_number: orderNumber,
+          discount: Number(claim.discount) || 0,
+          deadline: claim.deadline || null,
+          approval_status: claim.approval_status || null,
+          approval_since: claim.approval_since || null,
+        }));
+        tx.update(ref, { claims, ...claimMirror(claims) });
+        return { id: jobId, ...data, claims };
+      });
+    },
+    // Правка реквизитов ОДНОГО дела (мерж по id, как savePart по позиции): двое
+    // правят разные убытки одной машины и не затирают друг друга.
+    async saveClaim(jobId, claim = {}) {
+      const ref = doc(jobsCol, jobId);
+      return runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('Машина не найдена');
+        const data = snap.data();
+        const claims = claimsOf({ id: jobId, ...data }).map((c) => ({ ...c }));
+        const i = claims.findIndex((c) => c.id === claim.id);
+        if (i < 0) throw new Error('Убыток не найден');
+        // id менять нельзя НИКОГДА: он же лежит меткой в payer у позиций. Смена id
+        // осиротила бы все позиции этого дела (itemsForStream матчит точным равенством).
+        const patch = { ...claim };
+        delete patch.id;
+        claims[i] = { ...claims[i], ...stripUndefined(patch) };
+        tx.update(ref, { claims, ...claimMirror(claims) });
+        return { id: jobId, ...data, claims };
+      });
+    },
+    // Удаление дела. Позиции удаляемого убытка ПЕРЕЕЗЖАЮТ в убыток №1 (меняем только
+    // payer — id позиции, история приёмки, закупка и фото сохраняются), иначе они
+    // осиротели бы: их метка перестала бы совпадать с любым существующим потоком, и
+    // они молча исчезли бы из всех документов и из себестоимости.
+    async removeClaim(jobId, claimId) {
+      // ЗАПРЕТ, ЗАКРЕПЛЁННЫЙ ТЕСТОМ. 'insurance' — одновременно id убытка №1 И дефолт
+      // для всех нетегированных позиций (streamOf). Его удаление осиротило бы легаси-
+      // позиции ВСЕХ машин разом. Ниоткуда больше защиты нет: firestore.rules пускает
+      // любую запись в jobs без валидации полей, а бот ходит мимо правил через admin SDK.
+      if (claimId === STREAM_INSURANCE) throw new Error('Убыток №1 удалить нельзя — к нему относятся все позиции без метки');
+      const ref = doc(jobsCol, jobId);
+      const synced = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('Машина не найдена');
+        const data = snap.data();
+        const claims = claimsOf({ id: jobId, ...data }).filter((c) => c.id !== claimId);
+        const move = (arr) => (arr || []).map((x) => (x && x.payer === claimId ? { ...x, payer: STREAM_INSURANCE } : x));
+        const parts = move(data.parts);
+        const services = move(data.services);
+        tx.update(ref, { claims, parts, services, ...claimMirror(claims) });
+        return { id: jobId, ...data, claims, parts, services };
+      });
+      // Ячейки склада держат КОПИЮ списка запчастей — обновляем, как в savePart.
+      if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
+      return synced;
     },
     // One-shot backfill for cars imported before parts carried ids. Without an id
     // the Запчасти screen minted a throwaway id per snapshot that never matched
@@ -377,18 +675,31 @@ export const api = {
         return { id: jobId, ...data, parts: next };
       });
     },
-    // Remove ONE part by id (transaction — keeps every other part intact).
+    // Remove ONE part by id (transaction — keeps every other part intact). Its
+    // receiving photos (job.photos entries with partId === this part) are dropped
+    // in the SAME transaction, so the DB never shows photos for a part that's gone.
+    // Their files are wiped from the photo server afterwards — best-effort, mirrors
+    // jobs.remove: a server hiccup just leaves stray files, it never blocks.
     async removePart(jobId, partId) {
       const ref = doc(jobsCol, jobId);
-      const synced = await runTransaction(db, async (tx) => {
+      const result = await runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) return null;
         const data = snap.data();
         const parts = (data.parts || []).filter((p) => p.id !== partId);
-        tx.update(ref, { parts });
-        return { id: jobId, ...data, parts };
+        const allPhotos = data.photos || [];
+        const removedPhotos = allPhotos.filter((ph) => ph && ph.partId === partId);
+        const photos = allPhotos.filter((ph) => !(ph && ph.partId === partId));
+        const update = { parts };
+        if (removedPhotos.length) update.photos = photos;
+        tx.update(ref, update);
+        return { job: { id: jobId, ...data, parts, photos }, removedPhotos };
       });
+      const synced = result && result.job;
       if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
+      if (result && result.removedPhotos.length) {
+        await Promise.all(result.removedPhotos.map((ph) => deletePhotoFile(ph.path).catch(() => {})));
+      }
     },
     // Paint is a single field (0..1 per car) — a plain field write is enough; it
     // only ever contends paint-vs-paint, never the parts array.
@@ -641,6 +952,36 @@ export const api = {
     },
   },
 
+  // Выплаты зарплаты мастерам (аванс / окончательный расчёт). Отдельная от
+  // `transactions` коллекция: сдельная оплата мастерам уже учтена в себестоимости
+  // ремонта (costing.labor → P&L), поэтому эти выплаты — учёт «кому сколько выдали»,
+  // а НЕ новый расход в «Финансах» (иначе задвоение). Только управленец (правила).
+  salaryPayments: {
+    async listAll() {
+      const snap = await getDocs(salaryPaymentsCol);
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async create(data) {
+      const ref = await addDoc(salaryPaymentsCol, stripUndefined({
+        master_id: data.master_id || null,
+        master_name: data.master_name || null,
+        kind: data.kind === 'advance' ? 'advance' : 'settlement',
+        // Тип оплаты замораживаем в момент выплаты: оклады идут в расход «Финансов»,
+        // сдельные — нет (уже в себестоимости). См. salaryExpenseTx в salary.js.
+        pay_type: data.pay_type === 'fixed' ? 'fixed' : 'piece',
+        amount: Number(data.amount) || 0,
+        note: data.note || '',
+        created_at: Date.now(),
+        created_by: auth.currentUser?.email || null,
+      }));
+      return withId(await getDoc(ref));
+    },
+    async remove(id) {
+      await deleteDoc(doc(salaryPaymentsCol, id));
+      return { ok: true };
+    },
+  },
+
   // Траты, которые вносит линейный сотрудник (экспедитор: запчасти за нал,
   // бензин на поездки…). Отдельно от денежной ленты transactions, которая заперта
   // на управленцев — сотрудник видит и правит ТОЛЬКО свои записи (created_by),
@@ -671,6 +1012,196 @@ export const api = {
     },
     async remove(id) {
       await deleteDoc(doc(expensesCol, id));
+      return { ok: true };
+    },
+  },
+
+  // Заявки на закупку расходников/инструмента от мастеров и других сотрудников.
+  // Жизненный цикл: new → approved → purchased (плюс rejected). Деньги живут
+  // отдельно: при «куплено» экспедитор вводит цену, и создаётся трата в expenses
+  // (категория «Расходники»), чтобы сумма как обычно попала в P&L — двойного учёта
+  // нет. created_by пишется в нижнем регистре, чтобы совпасть с правилами (как в
+  // expenses). Номер ЗАК-ГОД-NNNN выдаёт тот же атомарный счётчик, что и заказ-наряды.
+  requests: {
+    async listMine(email) {
+      const key = normEmail(email);
+      if (!key) return [];
+      const snap = await getDocs(query(purchaseRequestsCol, where('created_by', '==', key)));
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async listAll() {
+      const snap = await getDocs(purchaseRequestsCol);
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    async create(data) {
+      // Номер не критичен для создания: если счётчик недоступен (напр. правила ещё
+      // не задеплоены) — оставляем пустым, как сделано для заказ-нарядов.
+      let number = null;
+      try {
+        const year = new Date().getFullYear();
+        number = formatDocNumber('purchase', year, await api.counters.next('purchase', year));
+      } catch (e) {
+        console.warn('Не удалось получить номер заявки из счётчика:', e);
+      }
+      const ref = await addDoc(purchaseRequestsCol, stripUndefined({
+        number,
+        item_name: String(data.item_name || '').trim(),
+        qty: Number(data.qty) || 1,
+        unit: data.unit || 'шт',
+        for_job_id: data.for_job_id || null,
+        for_job_label: data.for_job_label || null,
+        urgent: !!data.urgent,
+        comment: String(data.comment || '').trim(),
+        status: 'new',
+        created_at: Date.now(),
+        created_by: normEmail(auth.currentUser?.email),
+        created_by_name: data.created_by_name || null,
+      }));
+      return withId(await getDoc(ref));
+    },
+    async approve(id) {
+      await updateDoc(doc(purchaseRequestsCol, id), stripUndefined({
+        status: 'approved',
+        approved_at: Date.now(),
+        approved_by: normEmail(auth.currentUser?.email),
+        reject_reason: null,
+      }));
+      return withId(await getDoc(doc(purchaseRequestsCol, id)));
+    },
+    async reject(id, reason) {
+      await updateDoc(doc(purchaseRequestsCol, id), stripUndefined({
+        status: 'rejected',
+        reject_reason: String(reason || '').trim() || null,
+        approved_at: Date.now(),
+        approved_by: normEmail(auth.currentUser?.email),
+      }));
+      return withId(await getDoc(doc(purchaseRequestsCol, id)));
+    },
+    // Экспедитор отметил «куплено» + цена. Идемпотентно: повторный клик по уже
+    // купленной заявке НЕ создаёт вторую трату. Сумма > 0 → создаём трату (категория
+    // «Расходники») от имени вошедшего (кто купил), её id пишем в заявку.
+    async markPurchased(id, { price, created_by_name } = {}) {
+      const reqSnap = await getDoc(doc(purchaseRequestsCol, id));
+      if (!reqSnap.exists()) throw new Error('Заявка не найдена');
+      const req = withId(reqSnap);
+      if (req.status === 'purchased') return req;
+      const amount = Number(price) || 0;
+      let expenseId = null;
+      if (amount > 0) {
+        const label = `${req.item_name} — ${req.qty} ${req.unit || ''}`.trim();
+        const note = [req.number, label].filter(Boolean).join(': ');
+        const expense = await api.expenses.create({ amount, category: 'Расходники', note, created_by_name });
+        expenseId = expense.id;
+      }
+      await updateDoc(doc(purchaseRequestsCol, id), stripUndefined({
+        status: 'purchased',
+        purchased_price: amount,
+        purchased_at: Date.now(),
+        purchased_by: normEmail(auth.currentUser?.email),
+        expense_id: expenseId,
+      }));
+      return withId(await getDoc(doc(purchaseRequestsCol, id)));
+    },
+    async remove(id) {
+      await deleteDoc(doc(purchaseRequestsCol, id));
+      return { ok: true };
+    },
+  },
+
+  // Счета поставщиков на запчасти, которые оплачивает УЧРЕДИТЕЛЬ. Запчастист
+  // группирует позиции (возможно с разных машин) в счёт + грузит файл → позиции
+  // становятся «Выставлен счёт» (invoiced). Учредитель отмечает оплату → позиции
+  // уходят в «Заказано» (ordered). Деньги: оплаченный счёт показывается расходом
+  // в кассовой ленте (computeCashFlow), но НЕ в чистой прибыли — себестоимость
+  // запчастей уже в costing (иначе задвоение; тот же приём, что salaryPayments).
+  // Номер СП-ГОД-NNNN — тот же атомарный счётчик, что и заказ-наряды.
+  supplierInvoices: {
+    async listAll() {
+      const snap = await getDocs(supplierInvoicesCol);
+      return snap.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+    },
+    subscribe(onData, onError = () => {}) {
+      return onSnapshot(supplierInvoicesCol, (s) => onData(s.docs.map(withId).sort((a, b) => (b.created_at || 0) - (a.created_at || 0))), onError);
+    },
+    // Создать счёт из выбранных позiций и перевести их в «Выставлен счёт».
+    // items: [{ job_id, part_id, name, code, qty, cost }].
+    async create(data) {
+      let number = null;
+      try {
+        const year = new Date().getFullYear();
+        number = formatDocNumber('supplier', year, await api.counters.next('supplier', year));
+      } catch (e) {
+        console.warn('Не удалось получить номер счёта поставщика из счётчика:', e);
+      }
+      const items = (Array.isArray(data.items) ? data.items : []).map((it) => stripUndefined({
+        job_id: it.job_id || null,
+        part_id: it.part_id || null,
+        name: String(it.name || '').trim(),
+        code: String(it.code || '').trim(),
+        qty: Number(it.qty) || 1,
+        cost: Number(it.cost) || 0,
+        car_model: String(it.car_model || '').trim() || null,
+        plate: String(it.plate || '').trim() || null,
+      }));
+      const ref = await addDoc(supplierInvoicesCol, stripUndefined({
+        number,
+        supplier: String(data.supplier || '').trim(),
+        amount: Number(data.amount) || 0,
+        file_url: data.file_url || null,
+        file_name: data.file_name || null,
+        file_size: data.file_size || null,
+        items,
+        status: 'unpaid',
+        comment: String(data.comment || '').trim(),
+        created_at: Date.now(),
+        created_by: normEmail(auth.currentUser?.email),
+        created_by_name: data.created_by_name || null,
+      }));
+      // Позиции → «Выставлен счёт» (с ссылкой на счёт + поставщиком). Делаем ПОСЛЕ
+      // создания документа, чтобы part.supplier_invoice_id указывал на реальный id.
+      try { await setInvoiceParts(items, 'invoiced', { invoiceId: ref.id, supplier: data.supplier }); }
+      catch (e) { console.warn('Счёт создан, но не удалось пометить позиции:', e); }
+      return withId(await getDoc(ref));
+    },
+    // Правка шапки счёта (поставщик/сумма/комментарий) до оплаты.
+    async update(id, data) {
+      await updateDoc(doc(supplierInvoicesCol, id), stripUndefined({
+        supplier: data.supplier !== undefined ? String(data.supplier || '').trim() : undefined,
+        amount: data.amount !== undefined ? (Number(data.amount) || 0) : undefined,
+        comment: data.comment !== undefined ? String(data.comment || '').trim() : undefined,
+      }));
+      return withId(await getDoc(doc(supplierInvoicesCol, id)));
+    },
+    // Заменить/прикрепить файл счёта (новый затирает старый в шапке; удаление
+    // старого файла с диска — забота вызывающего через deletePhotoFile).
+    async setFile(id, { file_url, file_name, file_size } = {}) {
+      await updateDoc(doc(supplierInvoicesCol, id), stripUndefined({
+        file_url: file_url || null,
+        file_name: file_name || null,
+        file_size: file_size || null,
+      }));
+      return withId(await getDoc(doc(supplierInvoicesCol, id)));
+    },
+    // Учредитель отметил «Оплачено». ИДЕМПОТЕНТНО: повторный клик (или гонка
+    // приложение↔бот) не двигает позиции второй раз. Переводит позиции счёта в
+    // «Заказано» и проставляет оплату. paid_by_name — имя того, кто оплатил.
+    async markPaid(id, { paid_by_name } = {}) {
+      const ref = doc(supplierInvoicesCol, id);
+      const snap = await getDoc(ref);
+      if (!snap.exists()) throw new Error('Счёт не найден');
+      const inv = withId(snap);
+      if (inv.status === 'paid' || inv.paid_at) return inv; // уже оплачен
+      await setInvoiceParts(inv.items || [], 'ordered');
+      await updateDoc(ref, stripUndefined({
+        status: 'paid',
+        paid_at: Date.now(),
+        paid_by: normEmail(auth.currentUser?.email),
+        paid_by_name: paid_by_name || null,
+      }));
+      return withId(await getDoc(ref));
+    },
+    async remove(id) {
+      await deleteDoc(doc(supplierInvoicesCol, id));
       return { ok: true };
     },
   },

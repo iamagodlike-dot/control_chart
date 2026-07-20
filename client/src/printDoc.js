@@ -13,19 +13,22 @@
 // нужный масштаб и выставляем эту переменную перед window.print().
 
 const PX_PER_MM = 96 / 25.4;
-const PRINT_W_MM = 186; // A4 210мм − 2×12мм поля @page
+const PRINT_W_MM = 186; // A4 210мм − 2×12мм поля @page (ширина листа в геометрии печати)
+const PRINT_PAD_MM = 3; // горизонтальный «гаттер» листа при печати (см. orderDoc.css @media print)
 const PRINT_H_MM = 273; // A4 297мм − 2×12мм поля @page
-const MIN_SCALE = 0.62; // ниже — уже мелко; такой большой заказ печатаем на 2+ стр.
+const MIN_SCALE = 0.55; // ниже — уже совсем мелко; такой большой заказ печатаем на 2+ стр.
 
-// Меряем лист офскрин в точной геометрии печати (ширина 186мм, без полей самого
-// листа и без тени) и возвращаем масштаб, при котором он влезает в одну страницу.
+// Меряем лист офскрин в ТОЧНОЙ геометрии печати (ширина 186мм с гаттером 3мм ⇒
+// контент 180мм, без вертикальных полей листа и без тени) и возвращаем масштаб,
+// при котором он влезает в одну страницу. Ширину контента держим равной печатной,
+// иначе строки перенесутся иначе и замер высоты «соврёт».
 function computeScale(sheet) {
   const mount = sheet.closest('#zn-print-mount');
   const savedSheet = sheet.getAttribute('style') || '';
   const savedMount = mount ? mount.getAttribute('style') || '' : '';
 
   if (mount) mount.style.cssText = 'display:block;position:fixed;left:-10000px;top:0;visibility:hidden;';
-  sheet.style.cssText = `${savedSheet};width:${PRINT_W_MM}mm;min-height:0;padding:0;box-shadow:none;zoom:1;`;
+  sheet.style.cssText = `${savedSheet};width:${PRINT_W_MM}mm;min-height:0;padding:0 ${PRINT_PAD_MM}mm;box-shadow:none;zoom:1;`;
 
   const naturalMm = sheet.getBoundingClientRect().height / PX_PER_MM;
 

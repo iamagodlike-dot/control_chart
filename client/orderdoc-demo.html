@@ -1,0 +1,210 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Demo · Документы (стресс-тест)</title>
+  <link rel="stylesheet" href="/src/orderDoc.css" />
+  <style>
+    body{ margin:0; background:#e8e8e8; font-family:Roboto,system-ui,Arial,sans-serif; }
+    .demo-bar{ position:sticky; top:0; z-index:10; background:#1f2430; color:#fff;
+      padding:8px 14px; display:flex; gap:14px; align-items:center; font-size:13px; flex-wrap:wrap; }
+    .demo-bar b{ color:#8fd0ff; }
+    .demo-bar label{ display:flex; gap:5px; align-items:center; }
+    .demo-bar input[type=number]{ width:56px; }
+    .demo-wrap{ padding:22px; display:flex; justify-content:center; }
+    /* имитация геометрии печати: лист ровно 186мм (A4 минус поля @page), гаттер 3мм */
+    body.printsim .demo-wrap{ background:#bbb; }
+    body.printsim .zn-sheet{ width:186mm !important; min-height:0 !important; padding:0 3mm !important;
+      box-shadow:0 0 0 1px #f00 !important; }
+  </style>
+</head>
+<body>
+  <div class="demo-bar">
+    <span><b>Демо документов</b> — правьте <code>src/orderDoc.css</code></span>
+    <label>тип
+      <select id="type">
+        <option value="order">Заказ-наряд</option>
+        <option value="act">Акт выполненных работ</option>
+        <option value="invoice">Счёт (реквизиты + QR)</option>
+        <option value="handover">Приём-передача</option>
+      </select>
+    </label>
+    <label>работ <input id="ns" type="number" value="14" min="0" /></label>
+    <label>запчастей <input id="np" type="number" value="22" min="0" /></label>
+    <label>zoom <input id="zoom" type="number" value="1" step="0.05" min="0.4" /></label>
+    <label><input id="psim" type="checkbox" /> печать (186мм + красная рамка = край листа)</label>
+    <span>высота: <b id="hmm">—</b> мм</span>
+    <button id="fit">подогнать zoom</button>
+  </div>
+  <div class="demo-wrap"><div id="mount"></div></div>
+
+  <script type="module">
+    const PX_PER_MM = 96 / 25.4;
+    const money = (v) => `${(Number(v)||0).toLocaleString('ru-RU')} ₽`;
+    const money2 = (v) => `${(Number(v)||0).toLocaleString('ru-RU',{minimumFractionDigits:2,maximumFractionDigits:2})} ₽`;
+    const rnd = (a,b) => a + Math.floor((Math.sin(a*7.3+b*2.1)*10000 % 1 + 1) % 1 * (b-a));
+    // QR-заглушка (не сканируется — только для проверки раскладки/рамки)
+    const QR = 'data:image/svg+xml;utf8,' + encodeURIComponent(
+      '<svg xmlns="http://www.w3.org/2000/svg" width="100" height="100"><rect width="100" height="100" fill="#fff"/>' +
+      Array.from({length:100},(_,i)=>{const x=(i%10)*10,y=Math.floor(i/10)*10;return (Math.sin(i*12.9)*1e4%1>0.15?`<rect x="${x}" y="${y}" width="10" height="10" fill="#000"/>`:'')}).join('') +
+      '<rect x="0" y="0" width="30" height="30" fill="#fff"/><rect x="3" y="3" width="24" height="24" fill="#000"/><rect x="8" y="8" width="14" height="14" fill="#fff"/>' +
+      '</svg>');
+
+    const WORKS = ['Снятие/установка бампера переднего','Ремонт крыла переднего левого','Окраска двери передней правой',
+      'Полировка кузова абразивная','Замена лобового стекла','Регулировка развал-схождение','Диагностика подвески',
+      'Замена масла и фильтров','Кузовной ремонт капота','Антикоррозийная обработка порогов','Заправка кондиционера',
+      'Замена тормозных колодок','Сварочные работы днища','Восстановление геометрии кузова на стапеле',
+      'Шпаклёвка и грунтовка элемента','Снятие/установка обшивки двери','Подбор и колеровка краски',
+      'Локальная окраска сколов','Замена подкрылков','Мойка и обезжиривание перед окраской'];
+    const PARTS = [['77-1234','Бампер передний в сборе'],['81-0090','Крыло переднее левое'],['GLS-441','Стекло лобовое'],
+      ['A11-238','Фара левая'],['H4-990','Лампа H4'],['0W20-4','Масло моторное 4л'],['FLT-771','Фильтр масляный'],
+      ['FLT-AIR','Фильтр воздушный'],['BRK-220','Колодки тормозные пер.'],['BRK-DSK','Диск тормозной'],
+      ['CLP-01','Клипса крепёжная'],['PRM-2K','Грунт 2К'],['BSE-CLR','Лак бесцветный'],['PNT-045','Краска базовая'],
+      ['ABR-1500','Абразив P1500'],['SLR-BLK','Герметик кузовной'],['MLD-L','Молдинг левый'],['MLD-R','Молдинг правый'],
+      ['EMB-01','Эмблема'],['WSH-KIT','Комплект омывателя'],['SND-PRT','Подкрылок передний'],['ANT-CR','Антикор 1л'],
+      ['RIV-STL','Заклёпки стальные'],['TAPE-2','Скотч двусторонний'],['MASK-18','Плёнка малярная'],['DEG-1','Обезжириватель']];
+
+    // ---- данные ----
+    function buildData(){
+      const ns=+document.getElementById('ns').value||0, np=+document.getElementById('np').value||0;
+      const services=[],parts=[];
+      for(let i=0;i<ns;i++){const price=500+rnd(i,40)*100;const qty=1+(i%3===0?1:0);services.push({n:i+1,name:WORKS[i%WORKS.length],qty,price});}
+      for(let i=0;i<np;i++){const p=PARTS[i%PARTS.length];const price=300+rnd(i,60)*90;const qty=1+(i%4===0?2:0);parts.push({n:i+1,code:p[0],name:p[1],qty,unit:'шт.',price});}
+      const svcSum=services.reduce((s,x)=>s+x.qty*x.price,0), partSum=parts.reduce((s,x)=>s+x.qty*x.price,0);
+      const discount=0, total=svcSum+partSum-discount, prepay=20000, due=total-prepay;
+      return {services,parts,svcSum,partSum,total,prepay,due,discount};
+    }
+
+    // ---- общие куски (по DocSheet.jsx) ----
+    const kv=(k,v)=>`<div class="zn-kv"><span class="zn-k">${k}</span><span class="zn-v">${v||'—'}</span></div>`;
+    const insRows=()=>kv('Оплата','Страховая — Ингосстрах')+kv('№ убытка','У-2026-556677')+kv('Тип полиса','КАСКО');
+    const HEAD=(meta,kpp)=>`<div class="zn-top">
+      <div class="zn-brand"><div style="width:11mm;height:11mm;background:#222;border-radius:5px;flex:0 0 auto"></div>
+        <div><div class="zn-co-name">Авто Академия</div>
+        <div class="zn-co-sub">ИНН 771234567890${kpp?' · КПП 771201001':''} · ОГРНИП 321774600123456<br />г. Москва, ул. Кузовная, д. 7, стр. 2<br />Тел.: <b>+7 (495) 123-45-67</b></div></div>
+      </div><div class="zn-doc-meta">${meta}</div></div>`;
+    const CUST=()=>`<div class="zn-card"><div class="zn-card-h">Заказчик</div><div class="zn-card-b">
+      ${kv('ФИО / наименование','Иванов Иван Иванович')}${kv('Телефон','+7 (900) 111-22-33')}${insRows()}</div></div>`;
+    const VEH=()=>`<div class="zn-card"><div class="zn-card-h">Транспортное средство</div><div class="zn-card-b">
+      ${kv('Марка и модель','Toyota Camry')}${kv('Гос. номер','А123ВС 777')}${kv('VIN','XW7BF4FK00S123456')}${kv('Год выпуска','2021')}</div></div>`;
+    const worksTable=(d)=>`<div class="zn-sec">Перечень работ (услуг)</div>
+      <table class="zn-table"><thead><tr><th class="zn-c-num">№</th><th>Наименование работы</th><th class="zn-c-qty">Кол-во</th><th class="zn-c-price">Цена, ₽</th><th class="zn-c-sum">Сумма, ₽</th></tr></thead>
+      <tbody>${d.services.map(s=>`<tr><td class="zn-c-num">${s.n}</td><td>${s.name}</td><td class="zn-c-qty">${s.qty}</td><td class="zn-c-price">${money(s.price)}</td><td class="zn-c-sum">${money(s.qty*s.price)}</td></tr>`).join('')||'<tr><td class="zn-c-num">—</td><td colspan="4" style="color:#777">Работы не добавлены</td></tr>'}</tbody>
+      <tfoot><tr><td colspan="4" style="text-align:right">Итого по работам:</td><td class="zn-c-sum">${money(d.svcSum)}</td></tr></tfoot></table>`;
+    const partsTable=(d)=>`<div class="zn-sec">Запчасти и материалы</div>
+      <table class="zn-table"><thead><tr><th class="zn-c-num">№</th><th class="zn-c-code">Артикул</th><th>Наименование</th><th class="zn-c-qty">Кол-во</th><th class="zn-c-unit">Ед.</th><th class="zn-c-price">Цена, ₽</th><th class="zn-c-sum">Сумма, ₽</th></tr></thead>
+      <tbody>${d.parts.map(p=>`<tr><td class="zn-c-num">${p.n}</td><td>${p.code}</td><td>${p.name}</td><td class="zn-c-qty">${p.qty}</td><td class="zn-c-unit">${p.unit}</td><td class="zn-c-price">${money(p.price)}</td><td class="zn-c-sum">${money(p.qty*p.price)}</td></tr>`).join('')||'<tr><td class="zn-c-num">—</td><td colspan="6" style="color:#777">Запчасти не добавлены</td></tr>'}</tbody>
+      <tfoot><tr><td colspan="6" style="text-align:right">Итого по запчастям / материалам:</td><td class="zn-c-sum">${money(d.partSum)}</td></tr></tfoot></table>`;
+    const totalsBox=(d)=>`<div class="zn-totals">
+      <div class="zn-tr"><span class="zn-tl">Итого по работам</span><span class="zn-tv">${money(d.svcSum)}</span></div>
+      <div class="zn-tr"><span class="zn-tl">Итого по запчастям</span><span class="zn-tv">${money(d.partSum)}</span></div>
+      <div class="zn-tr zn-tr-total"><span class="zn-tl">ИТОГО</span><span class="zn-tv">${money(d.total)}</span></div>
+      <div class="zn-words">Двести сорок тысяч восемьсот пятьдесят рублей 00 копеек</div>
+      <div class="zn-tr"><span class="zn-tl">Предоплата</span><span class="zn-tv">${money(d.prepay)}</span></div>
+      <div class="zn-tr"><span class="zn-tl">К доплате</span><span class="zn-tv">${money(d.due)}</span></div></div>`;
+    const signs=(lt,ln,rt,rn,stamp=true)=>`<div class="zn-signs">
+      <div class="zn-sign"><div class="zn-sl">${lt}</div><div class="zn-sigline"><small>подпись</small>${stamp?'<small>М.П.</small>':''}</div><div class="zn-name">${ln}</div></div>
+      <div class="zn-sign"><div class="zn-sl">${rt}</div><div class="zn-sigline"><small>подпись</small><small>расшифровка</small></div><div class="zn-name">${rn}</div><div class="zn-date">«___» ______________ 20___ г.</div></div></div>`;
+    const foot=(title)=>`<div class="zn-foot"><span>Авто Академия · ${title} № ЗН-2026-0042 от 09.07.2026</span></div>`;
+    const legalConsent=`<div class="zn-legal"><span class="zn-lh">Согласование по запчастям</span>
+      <p>• Оригинальная запчасть «Крыло переднее левое» (арт. 81-0090) заменена на аналог с согласия Заказчика.</p></div>`;
+
+    // ---- четыре типа ----
+    function sheetOrder(d){return `<div class="zn-sheet">
+      ${HEAD('<div class="zn-mrow"><span>Дата составления:</span><b>09.07.2026</b></div><div class="zn-mrow"><span>Плановая готовность:</span><b>18.07.2026</b></div>')}
+      <div class="zn-title"><h1>ЗАКАЗ-НАРЯД</h1><div class="zn-num">№ ЗН-2026-0042</div></div>
+      <div class="zn-info">${CUST()}${VEH()}</div>
+      <div class="zn-sec">Причина обращения / заявленные дефекты</div>
+      <div class="zn-textblock">Повреждения переднего левого крыла, бампера и двери в результате ДТП. Требуется кузовной ремонт с окраской.</div>
+      ${worksTable(d)}${partsTable(d)}
+      <div class="zn-bottom"><div class="zn-bottom-left"><div class="zn-sec">Рекомендации</div><div class="zn-textblock">Рекомендуется замена передних тормозных дисков при следующем ТО. Проверить состояние сайлентблоков.</div></div>${totalsBox(d)}</div>
+      ${legalConsent}
+      <div class="zn-legal"><span class="zn-lh">Гарантия</span><p>Гарантия на выполненные работы — 6 месяцев, на кузовные и окрасочные работы — 12 месяцев с даты выдачи ТС. Гарантия не распространяется на детали и материалы, предоставленные Заказчиком.</p>
+      <span class="zn-lh">Согласие заказчика</span><p>Заказчик ознакомлен и согласен с перечнем, стоимостью и сроками работ, указанными в настоящем заказ-наряде. Настоящий заказ-наряд после подписания сторонами имеет силу договора.</p></div>
+      ${signs('Исполнитель','Петров П. П.','Заказчик','Иванов Иван Иванович')}${foot('Заказ-наряд')}</div>`;}
+
+    function sheetAct(d){return `<div class="zn-sheet">
+      ${HEAD('<div class="zn-mrow"><span>Дата:</span><b>09.07.2026</b></div><div class="zn-mrow"><span>К заказ-наряду №:</span><b>ЗН-2026-0042</b></div>')}
+      <div class="zn-title"><h1>АКТ ВЫПОЛНЕННЫХ РАБОТ</h1><div class="zn-num">№ АКТ-2026-0018</div></div>
+      <div class="zn-info">${CUST()}${VEH()}</div>
+      ${worksTable(d)}${partsTable(d)}
+      <div class="zn-bottom"><div class="zn-bottom-left"><div class="zn-sec">Рекомендации</div><div class="zn-textblock">Рекомендуется замена передних тормозных дисков при следующем ТО.</div></div>${totalsBox(d)}</div>
+      ${legalConsent}
+      <div class="zn-legal"><p>Работы выполнены в полном объёме, в согласованные сроки и с надлежащим качеством. Заказчик к объёму, качеству и срокам выполненных работ претензий не имеет.</p>
+      <span class="zn-lh">Гарантия</span><p>Гарантия на выполненные работы — 6 месяцев, на кузовные и окрасочные работы — 12 месяцев с даты выдачи ТС.</p></div>
+      ${signs('Исполнитель','Петров П. П.','Заказчик','Иванов Иван Иванович')}${foot('Акт выполненных работ')}</div>`;}
+
+    function sheetHandover(d){return `<div class="zn-sheet">
+      ${HEAD('<div class="zn-mrow"><span>Дата составления:</span><b>09.07.2026</b></div>')}
+      <div class="zn-title"><h1>АКТ ПРИЁМА-ПЕРЕДАЧИ ТРАНСПОРТНОГО СРЕДСТВА</h1><div class="zn-num">№ ПП-2026-0009</div></div>
+      <div class="zn-info">${CUST()}${VEH()}</div>
+      <div class="zn-info">
+        <div class="zn-card"><div class="zn-card-h">При приёме ТС</div><div class="zn-card-b">${kv('Пробег при приёме, км','84 500')}${kv('Комплектация','Полная, 2 ключа, документы')}${kv('Повреждения / состояние','Царапины на переднем бампере, скол на капоте')}</div></div>
+        <div class="zn-card"><div class="zn-card-h">При выдаче ТС</div><div class="zn-card-b">${kv('Пробег при выдаче, км','84 520')}${kv('Состояние при выдаче','Работы выполнены, ТС исправно')}</div></div>
+      </div>
+      <div class="zn-legal"><p>Транспортное средство осмотрено сторонами. Стороны подтверждают соответствие фактического состояния, комплектности и показаний одометра сведениям, указанным в настоящем акте. Настоящий акт подтверждает факт приёма-передачи транспортного средства.</p></div>
+      ${signs('Исполнитель (ТС сдал)','Петров П. П.','Заказчик (ТС принял)','Иванов Иван Иванович')}${foot('Акт приёма-передачи')}</div>`;}
+
+    function sheetInvoice(d){
+      const items=[...d.services.map(s=>({name:s.name,qty:s.qty,unit:'усл.',price:s.price})),...d.parts.map(p=>({name:p.name,qty:p.qty,unit:p.unit,price:p.price}))];
+      const vat=Math.round((d.total*20/120)*100)/100;
+      return `<div class="zn-sheet">
+      ${HEAD('<div class="zn-mrow"><span>Дата счёта:</span><b>09.07.2026</b></div><div class="zn-mrow"><span>Основание:</span><b>Заказ-наряд № ЗН-2026-0042</b></div>', true)}
+      <table class="zn-bank"><thead><tr><th colspan="4">Реквизиты для оплаты</th></tr></thead><tbody>
+        <tr><td class="zn-bank-l">Банк получателя</td><td class="zn-bank-v">АО «Тинькофф Банк», г. Москва</td><td class="zn-bank-l">БИК</td><td class="zn-bank-v">044525974</td></tr>
+        <tr><td class="zn-bank-l" rowspan="2">Получатель</td><td class="zn-bank-v" rowspan="2">ИП Петров Пётр Петрович, ИНН 771234567890, КПП 771201001</td><td class="zn-bank-l">Сч. № (к/с)</td><td class="zn-bank-v">30101810145250000974</td></tr>
+        <tr><td class="zn-bank-l">Сч. № (р/с)</td><td class="zn-bank-v">40802810500000123456</td></tr>
+      </tbody></table>
+      <div class="zn-title"><h1>СЧЁТ НА ОПЛАТУ</h1><div class="zn-num">№ СЧ-2026-0031 от 09.07.2026</div></div>
+      <div class="zn-info">
+        <div class="zn-card"><div class="zn-card-h">Поставщик (Исполнитель)</div><div class="zn-card-b">${kv('Наименование','Авто Академия')}${kv('ИНН / ОГРНИП','771234567890 / 321774600123456')}${kv('Адрес','г. Москва, ул. Кузовная, д. 7, стр. 2')}${kv('Телефон','+7 (495) 123-45-67')}</div></div>
+        <div class="zn-card"><div class="zn-card-h">Покупатель (Заказчик)</div><div class="zn-card-b">${kv('ФИО / наименование','Иванов Иван Иванович')}${kv('Телефон','+7 (900) 111-22-33')}${kv('Автомобиль','Toyota Camry, А123ВС 777')}${insRows()}</div></div>
+      </div>
+      <div class="zn-sec">Товар (работы, услуги)</div>
+      <table class="zn-table"><thead><tr><th class="zn-c-num">№</th><th>Наименование</th><th class="zn-c-qty">Кол-во</th><th class="zn-c-unit">Ед.</th><th class="zn-c-price">Цена, ₽</th><th class="zn-c-sum">Сумма, ₽</th></tr></thead>
+      <tbody>${items.map((it,i)=>`<tr><td class="zn-c-num">${i+1}</td><td>${it.name}</td><td class="zn-c-qty">${it.qty}</td><td class="zn-c-unit">${it.unit}</td><td class="zn-c-price">${money(it.price)}</td><td class="zn-c-sum">${money(it.qty*it.price)}</td></tr>`).join('')||'<tr><td class="zn-c-num">—</td><td colspan="5" style="color:#777">Позиции не добавлены</td></tr>'}</tbody>
+      <tfoot>
+        <tr><td colspan="5" style="text-align:right">Итого:</td><td class="zn-c-sum">${money(d.total)}</td></tr>
+        <tr><td colspan="5" style="text-align:right">В том числе НДС 20%:</td><td class="zn-c-sum">${money2(vat)}</td></tr>
+        <tr><td colspan="5" style="text-align:right">Предоплата:</td><td class="zn-c-sum">− ${money(d.prepay)}</td></tr>
+        <tr><td colspan="5" style="text-align:right;font-weight:700">К доплате:</td><td class="zn-c-sum" style="font-weight:700">${money(d.due)}</td></tr>
+      </tfoot></table>
+      <div class="zn-invoice-total">Всего наименований ${items.length}, к доплате <b>${money(d.due)}</b><div class="zn-words">Двести двадцать тысяч восемьсот пятьдесят рублей 00 копеек</div></div>
+      <div class="zn-qr"><img src="${QR}" alt="QR" width="128" height="128" /><div class="zn-qr-cap">Отсканируйте в приложении банка<br />для оплаты счёта</div></div>
+      <div class="zn-legal"><p>Оплата настоящего счёта означает согласие с условиями оказания услуг. Счёт действителен к оплате в течение 5 банковских дней. Услуги/товары отпускаются по факту поступления оплаты.</p></div>
+      ${signs('Руководитель','Петров П. П.','Бухгалтер','Петров П. П.')}${foot('Счёт')}</div>`;}
+
+    const BUILDERS={order:sheetOrder,act:sheetAct,invoice:sheetInvoice,handover:sheetHandover};
+
+    function render(){
+      const d=buildData();
+      const type=document.getElementById('type').value;
+      document.getElementById('mount').innerHTML=`<div class="zn-root">${BUILDERS[type](d)}</div>`;
+      measure();
+      applyView();
+    }
+    function measure(){
+      const s=document.querySelector('.zn-sheet');const saved=s.getAttribute('style')||'';
+      s.style.cssText='width:186mm;min-height:0;padding:0 3mm;box-shadow:none;zoom:1;';
+      const hmm=Math.round(s.getBoundingClientRect().height/PX_PER_MM);
+      s.setAttribute('style',saved);
+      document.getElementById('hmm').textContent=hmm+'  (лимит 273)';
+      return hmm;
+    }
+    function applyView(){
+      const zoom=+document.getElementById('zoom').value||1;
+      const s=document.querySelector('.zn-sheet');if(s)s.style.zoom=zoom;
+      document.body.classList.toggle('printsim',document.getElementById('psim').checked);
+    }
+    document.getElementById('fit').addEventListener('click',()=>{
+      const h=measure();const sc=Math.max(0.55,Math.min(1,273/h));
+      document.getElementById('zoom').value=sc.toFixed(2);applyView();
+    });
+    ['ns','np','type'].forEach(id=>document.getElementById(id).addEventListener('input',render));
+    ['zoom','psim'].forEach(id=>document.getElementById(id).addEventListener('input',applyView));
+    render();
+    window.__render=render;
+  </script>
+</body>
+</html>

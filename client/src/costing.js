@@ -1,4 +1,5 @@
-import { uid } from './orderDoc';
+import { uid } from './orderDoc.js';
+import { STREAM_CLIENT, itemsForStream, orderMatchesStream, claimsOf } from './billing.js';
 
 // Pure helpers for the себестоимость (repair cost / profit) calculation.
 // No React, no Firestore here — same style as orderDoc.js.
@@ -28,9 +29,59 @@ function sumSale(arr) {
 
 // Pick the works/parts to base the costing on: prefer the LAST issued заказ-наряд
 // (curated list the shop actually bills), fall back to the car's own imported data.
+//
+// Страховая машина биллится НЕСКОЛЬКИМИ потоками: по одному на каждый убыток
+// (страховая может завести по машине два разных дела) плюс допродажи клиента.
+// Себестоимость пока считаем «как одна машина»: складываем ВСЕ потоки — раздельная
+// экономика по убытку появится отдельным этапом (job.costings).
+//
+// ВАЖНО, ПОЧЕМУ ЭТО НЕ ПРОСТО filter().flatMap(): переиздание заказ-наряда СОЗДАЁТ
+// ВТОРОЙ документ (DocEditor.save/OrderDocumentEditor зовут orderDocuments.update
+// только когда документ открыт из истории, иначе create). Слепое суммирование всех
+// ЗН потока удвоило бы выручку. Поэтому: сгруппировать по потоку → взять НОВЕЙШИЙ
+// в каждом (docs приходят newest-first из listByJob) → сложить.
+const hasLines = (d) => d && (((d.services || []).length) || ((d.parts || []).length));
+
 export function pickCostingSource(job = {}, docs = []) {
-  const lastOrder = (docs || []).find((d) => d.type === 'order');
-  if (lastOrder && ((lastOrder.services || []).length || (lastOrder.parts || []).length)) {
+  const orders = (docs || []).filter((d) => d.type === 'order');
+
+  if (job.payment_type === 'insurance') {
+    // Потоки машины: каждый убыток + допродажи. У старых машин claimsOf вернёт один
+    // убыток №1 (id 'insurance'), собранный из плоских полей → поведение как раньше.
+    const streamIds = [...claimsOf(job).map((c) => c.id), STREAM_CLIENT];
+    const services = [];
+    const parts = [];
+    let discount = 0;
+    let anyOrder = false;
+    let sourceNumber = '';
+
+    for (const sid of streamIds) {
+      // Новейший ЗН ЭТОГО потока (find по newest-first списку), иначе — позиции
+      // карточки, отфильтрованные по потоку. Оба потока сопоставляем ОДНИМ правилом:
+      // у 'insurance' есть легаси-люк для старых ЗН без поля recipient.
+      const order = orders.find((d) => orderMatchesStream(d, sid) && hasLines(d));
+      services.push(...(order ? (order.services || []) : itemsForStream(job.services, sid)));
+      parts.push(...(order ? (order.parts || []) : itemsForStream(job.parts, sid)));
+      // Скидка карточки относится к убытку №1 (там же лежит job.discount).
+      const fallbackDiscount = sid === STREAM_CLIENT ? 0 : num(claimsOf(job).find((c) => c.id === sid)?.discount, 0);
+      discount += num(order ? order.discount : fallbackDiscount, 0);
+      if (order) {
+        anyOrder = true;
+        if (!sourceNumber && sid !== STREAM_CLIENT) sourceNumber = order.doc_number || '';
+      }
+    }
+
+    return {
+      services,
+      parts,
+      discount,
+      source: anyOrder ? 'order' : 'job',
+      source_number: sourceNumber,
+    };
+  }
+
+  const lastOrder = orders.find(hasLines);
+  if (lastOrder) {
     return {
       services: lastOrder.services || [],
       parts: lastOrder.parts || [],

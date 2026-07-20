@@ -194,7 +194,7 @@ export function confirmedPrepayment(job = {}) {
   return job.prepayment_paid ? num(job.prepayment_paid_amount, 0) : 0;
 }
 
-export function computeCashFlow({ jobs = [], invoices = [], transactions = [], period = 'all', now = dayjs() } = {}) {
+export function computeCashFlow({ jobs = [], invoices = [], transactions = [], salaryPayments = [], supplierInvoices = [], period = 'all', now = dayjs() } = {}) {
   const range = periodRange(period, now);
   const jobsById = new Map(jobs.map((j) => [j.id, j]));
   // Drop invoices whose car was deleted (see computeFinance) — keeps the лента and
@@ -261,6 +261,39 @@ export function computeCashFlow({ jobs = [], invoices = [], transactions = [], p
       kind: dir, direction: dir,
       title: t.category || 'Прочее', sub: t.note || '',
       amount: num(t.amount, 0), tx_id: t.id,
+    });
+  }
+
+  // Выплаты зарплаты мастерам (аванс / расчёт) — реальный расход наличных, поэтому
+  // в кассовой ленте показываем ВСЕ (и сдельные, и оклады): здесь нет costing.labor,
+  // так что задвоения нет (в P&L — своя логика, см. computeFinance/salaryExpenseTx).
+  // `salary_id` даёт «Ленте» удалять (=отменять) их через api.salaryPayments.
+  for (const p of salaryPayments) {
+    events.push({
+      id: `salary-${p.id}`,
+      ts: num(p.created_at, 0),
+      kind: 'expense', direction: 'expense',
+      title: p.kind === 'advance' ? 'Аванс мастеру' : 'Зарплата мастеру',
+      sub: p.master_name || '',
+      amount: num(p.amount, 0), salary_id: p.id,
+    });
+  }
+
+  // Оплаченные счета поставщиков (учредитель оплатил запчасти) — реальный расход
+  // наличных, поэтому в кассовой ленте показываем. Но в чистую прибыль их НЕ
+  // добавляем (computeFinance): себестоимость запчастей уже в costing → repairs.cost,
+  // иначе двойной счёт. Тот же приём, что salaryPayments (сдельные уже в costing.labor).
+  for (const inv of supplierInvoices) {
+    if (!(inv && (inv.status === 'paid' || inv.paid_at))) continue;
+    const amt = num(inv.amount, 0);
+    if (amt <= 0) continue;
+    events.push({
+      id: `supinv-${inv.id}`,
+      ts: num(inv.paid_at, 0) || num(inv.created_at, 0),
+      kind: 'expense', direction: 'expense',
+      title: 'Оплата поставщику',
+      sub: [inv.supplier, inv.number].filter(Boolean).join(' · '),
+      amount: amt, supplier_invoice_id: inv.id,
     });
   }
 

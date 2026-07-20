@@ -13,25 +13,40 @@ export const ROLES = {
   owner: {
     label: 'Управленец',
     hint: 'Полный доступ ко всей системе',
-    tabs: ['approval', 'gantt', 'board', 'warehouse', 'parts', 'finance', 'staffexpenses', 'history', 'config'],
+    tabs: ['approval', 'gantt', 'board', 'warehouse', 'parts', 'receiving-history', 'requests', 'purchasing', 'supplier-invoices', 'finance', 'payroll', 'staffexpenses', 'history', 'config'],
     home: 'gantt',
   },
   master: {
     label: 'Мастер',
-    hint: 'График работ (позже — личный экран со своими работами и заработком)',
-    tabs: ['gantt'],
-    home: 'gantt',
+    hint: 'Свои машины и сроки, свой заработок, общий график цеха, заявки на закупку',
+    tabs: ['mywork', 'earnings', 'gantt', 'requests'],
+    home: 'mywork',
   },
   expeditor: {
     label: 'Экспедитор',
-    hint: 'Приёмка запчастей и свои траты',
-    tabs: ['receiving', 'expenses'],
+    hint: 'Приёмка, история приёмки, закупка одобренных расходников, свои траты',
+    tabs: ['receiving', 'receiving-history', 'purchasing', 'expenses'],
     home: 'receiving',
+  },
+  partsman: {
+    label: 'Запчастист',
+    hint: 'Запчасти по машинам и склад',
+    tabs: ['parts', 'warehouse'],
+    home: 'parts',
+  },
+  // Инвестор: даёт деньги на запчасти. Видит ТОЛЬКО счета поставщиков (к оплате и
+  // оплаченные), отмечает оплату → позиции уходят в «Заказано». Оперативные экраны
+  // и финансы цеха ему не нужны — отдельная узкая роль (не «Управленец»).
+  founder: {
+    label: 'Учредитель',
+    hint: 'Счета поставщиков: к оплате и оплаченные',
+    tabs: ['supplier-invoices'],
+    home: 'supplier-invoices',
   },
 };
 
 // Order the admin screen offers roles in.
-export const ROLE_ORDER = ['owner', 'master', 'expeditor'];
+export const ROLE_ORDER = ['owner', 'master', 'expeditor', 'partsman', 'founder'];
 
 export const isKnownRole = (r) => Object.prototype.hasOwnProperty.call(ROLES, r);
 

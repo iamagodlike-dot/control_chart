@@ -24,7 +24,7 @@ import { PHASE, DEFAULT_APPROVAL_STATUS } from '../phase';
 //   onChanged: optional — called after any mutation so a host can refresh (screens
 //              backed by a live subscription, like «Запчасти», don't need it).
 //   now:       optional dayjs clock for status/deadline calc (defaults to now).
-export default function CarDetailModal({ jobId, onClose, onChanged, now }) {
+export default function CarDetailModal({ jobId, onClose, onChanged, now, isOwner = false }) {
   const [job, setJob] = useState(null);
   const [posts, setPosts] = useState([]);
   const [masters, setMasters] = useState([]);
@@ -78,6 +78,7 @@ export default function CarDetailModal({ jobId, onClose, onChanged, now }) {
         posts={posts}
         masters={masters}
         now={clock}
+        isOwner={isOwner}
         onClose={onClose}
         onOpenDocs={async () => setDocsJob(await api.jobs.get(job.job_id))}
         onFinalize={async () => {
@@ -145,7 +146,13 @@ export default function CarDetailModal({ jobId, onClose, onChanged, now }) {
           job={docsJob}
           company={company}
           onClose={() => setDocsJob(null)}
-          onJobUpdated={async () => setDocsJob(await api.jobs.get(docsJob.id))}
+          onJobUpdated={async () => {
+            // Документ обновил карточку («Обновить карточку машины») — подтягиваем
+            // свежий job, чтобы ОТКРЫТАЯ под окном карточка сразу показала изменения
+            // (иначе form/допродажи сидированы один раз, см. CarCard jobSyncSig).
+            await refresh();
+            setDocsJob(await api.jobs.get(docsJob.id));
+          }}
         />
       )}
 

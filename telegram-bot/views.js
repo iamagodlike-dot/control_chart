@@ -1,11 +1,12 @@
 'use strict';
 const dayjs = require('dayjs');
 const config = require('./config');
-const { loadGraph, getCompany, getDocsForJob, getJobById } = require('./data');
+const { loadGraph, getCompany, getDocsForJob, getJobById, listUnpaidSupplierInvoices } = require('./data');
 const {
   badge, effectiveStageStatus, jobOverallStatus, currentStage,
   fmtDate, money, relativeDeadline, esc, plural, toMs,
   PART_STATUS_META, partStatusMeta, partKindLabel, paintStatusMeta, PAYMENT_SHORT, partsSummary, progressBar, carLabel,
+  partsReadiness, isApproval, isRepair, APPROVAL_STATUS_META, approvalStatusMeta,
 } = require('./format');
 
 // Тонкий разделитель между смысловыми блоками карточки.
@@ -519,6 +520,157 @@ async function eveningReminder() {
   return L.join('\n').trimEnd();
 }
 
+// ─── Согласование со страховой: доска в виде списка ───
+// Разворот кнопки «Согласования» под сводкой учредителя: машины по под-статусам,
+// в том же порядке, что колонки доски на сайте. Возвращает {text, cars}.
+async function approvals() {
+  const g = await loadGraph();
+  const now = dayjs();
+  const onApproval = g.activeJobs.filter(isApproval);
+  if (!onApproval.length) {
+    return { text: '<b>Согласование со страховой</b>\n\nСейчас на согласовании нет ни одной машины.', cars: [] };
+  }
+
+  // Сколько машина уже висит на согласовании. approval_since проставляется при
+  // переводе на доску; у заведённых сразу на согласование его нет — берём created_at.
+  const daysOn = (j) => {
+    const ms = toMs(j.approval_since) ?? toMs(j.created_at);
+    if (ms == null) return '';
+    const d = now.startOf('day').diff(dayjs(ms).startOf('day'), 'day');
+    if (d <= 0) return 'сегодня';
+    return `${d} ${plural(d, 'день', 'дня', 'дней')}`;
+  };
+
+  const byStatus = new Map();
+  for (const j of onApproval) {
+    const m = approvalStatusMeta(j.approval_status);
+    if (!byStatus.has(m.id)) byStatus.set(m.id, []);
+    byStatus.get(m.id).push(j);
+  }
+
+  const L = [`<b>Согласование со страховой</b> — ${onApproval.length} ${plural(onApproval.length, 'авто', 'авто', 'авто')}`, ''];
+  for (const m of APPROVAL_STATUS_META) {
+    const list = byStatus.get(m.id);
+    if (!list || !list.length) continue;
+    L.push(`${m.dot} <b>${m.label}</b> — ${list.length}`);
+    list.slice(0, 12).forEach((j) => {
+      const since = daysOn(j);
+      const ins = j.insurer_name ? ` · ${esc(j.insurer_name)}` : '';
+      L.push(`  • ${carLabel(j)}${ins}${since ? ` · ${since}` : ''}`);
+    });
+    if (list.length > 12) L.push(`  …и ещё ${list.length - 12}`);
+    L.push('');
+  }
+
+  const cars = onApproval.slice(0, 18).map((j) => ({ id: j.id, plate: j.plate_number || '—' }));
+  return { text: L.join('\n').trimEnd(), cars };
+}
+
+// ─── Сводка учредителя: состояние ремонтов одним экраном ───
+// Ровно то, за чем учредитель следит каждый день: что приехало нового, где стоит
+// согласование, каким машинам не хватает запчастей и сколько счетов ждут оплаты.
+// Возвращает {text, cars, invoices, approvals} — кнопки под сообщением рисует index.js.
+
+const NEW_CARS_WINDOW_H = 24; // «недавно добавленные» — за сутки (сводка ежедневная)
+const SHORT_LIST = 5;         // сколько машин с нехваткой показываем списком
+
+async function founderDigest(now = dayjs()) {
+  const [g, unpaid] = await Promise.all([loadGraph(), listUnpaidSupplierInvoices()]);
+  const active = g.activeJobs;
+  const onApproval = active.filter(isApproval);
+  const repair = active.filter(isRepair);
+
+  // 1. Недавно добавленные — по created_at (пишется при заведении машины).
+  const since = now.subtract(NEW_CARS_WINDOW_H, 'hour').valueOf();
+  const fresh = active
+    .filter((j) => {
+      const t = toMs(j.created_at);
+      return t != null && t >= since;
+    })
+    .sort((a, b) => (toMs(b.created_at) || 0) - (toMs(a.created_at) || 0));
+
+  // 2. Укомплектованность — только машины в ремонте, где запчасти вообще заведены
+  // (у машины без позиций считать нечего, она не «недоукомплектована»).
+  const withParts = repair
+    .map((j) => ({ j, r: partsReadiness(j.parts) }))
+    .filter((x) => x.r.total > 0);
+  const complete = withParts.filter((x) => x.r.complete);
+  const short = withParts
+    .filter((x) => !x.r.complete)
+    .sort((a, b) => b.r.missing - a.r.missing || a.r.obtained - b.r.obtained);
+  const missingTotal = short.reduce((s, x) => s + x.r.missing, 0);
+
+  // 3. Счета поставщиков к оплате.
+  const invSum = unpaid.reduce((s, i) => s + (Number(i.amount) || 0), 0);
+
+  const L = ['<b>Состояние ремонтов</b>', ''];
+  L.push(`В работе — <b>${active.length}</b> ${plural(active.length, 'авто', 'авто', 'авто')}: ${repair.length} в ремонте, ${onApproval.length} на согласовании.`);
+  L.push(DIV);
+
+  // Новые авто.
+  if (fresh.length) {
+    L.push(`<b>Новые за сутки</b> — ${fresh.length}`);
+    fresh.slice(0, 10).forEach((j) => L.push(`  • ${carLabel(j)}`));
+    if (fresh.length > 10) L.push(`  …и ещё ${fresh.length - 10}`);
+  } else {
+    L.push('<b>Новые за сутки</b> — нет');
+  }
+  L.push('');
+
+  // Согласования — счётчики по под-статусам доски.
+  if (onApproval.length) {
+    const counts = new Map();
+    for (const j of onApproval) {
+      const m = approvalStatusMeta(j.approval_status);
+      counts.set(m.id, (counts.get(m.id) || 0) + 1);
+    }
+    L.push(`<b>Согласование со страховой</b> — ${onApproval.length}`);
+    APPROVAL_STATUS_META.filter((m) => counts.get(m.id)).forEach((m) => {
+      L.push(`  ${m.dot} ${m.label} — ${counts.get(m.id)}`);
+    });
+  } else {
+    L.push('<b>Согласование со страховой</b> — нет машин');
+  }
+  L.push('');
+
+  // Укомплектованность по запчастям.
+  if (!withParts.length) {
+    L.push('<b>Запчасти</b> — ни по одной машине позиции ещё не заведены');
+  } else {
+    L.push(`<b>Запчасти</b> — укомплектованы ${complete.length} из ${withParts.length}`);
+    if (short.length) {
+      L.push(`  Ждём ${missingTotal} ${plural(missingTotal, 'позицию', 'позиции', 'позиций')} на ${short.length} ${plural(short.length, 'авто', 'авто', 'авто')}:`);
+      short.slice(0, SHORT_LIST).forEach(({ j, r }) => {
+        L.push(`  • ${carLabel(j)} — ${progressBar(r.obtained, r.total)} ${r.obtained}/${r.total} · ждём ${r.missing}`);
+      });
+      if (short.length > SHORT_LIST) L.push(`  …и ещё ${short.length - SHORT_LIST}`);
+    }
+  }
+  L.push('');
+
+  // Счета поставщиков.
+  L.push(unpaid.length
+    ? `<b>Счета к оплате</b> — ${unpaid.length} на <b>${money(invSum)}</b>`
+    : '<b>Счета к оплате</b> — нет');
+
+  // Кнопки-номера: сначала те, где не хватает запчастей, затем новые машины.
+  const cars = [];
+  const seen = new Set();
+  for (const j of [...short.slice(0, SHORT_LIST).map((x) => x.j), ...fresh]) {
+    if (seen.has(j.id)) continue;
+    seen.add(j.id);
+    cars.push({ id: j.id, plate: j.plate_number || '—' });
+    if (cars.length >= 6) break;
+  }
+
+  return {
+    text: L.join('\n').trimEnd(),
+    cars,
+    invoices: unpaid.length,
+    approvals: onApproval.length,
+  };
+}
+
 // Список сохранённых документов машины: заголовок с машиной + кнопки по каждому.
 const DOC_LABEL = { order: 'Заказ-наряд', invoice: 'Счёт', act: 'Акт работ', handover: 'Акт приёма-передачи' };
 
@@ -535,7 +687,10 @@ async function jobDocuments(jobId) {
 // ─── Запчасти по машине (полный список) ───
 const PARTS_PER_GROUP = 30; // на всякий случай — не упереться в лимит длины сообщения
 
-async function partsView(jobId, { isManager }) {
+// canSeeSupply — показывать поставщика и закупку. Это управляющий ИЛИ запчастист:
+// поставщик и цена закупки — его рабочий инструмент. Продажная цена остаётся только
+// у управляющего, поэтому флаг отдельный (по умолчанию — как раньше, по isManager).
+async function partsView(jobId, { isManager, canSeeSupply = isManager }) {
   const job = await getJobById(jobId);
   if (!job) return 'Машина не найдена.';
   const parts = Array.isArray(job.parts) ? job.parts : [];
@@ -557,8 +712,8 @@ async function partsView(jobId, { isManager }) {
       const code = p.code ? ` · арт. ${esc(p.code)}` : '';
       const kind = partKindLabel(p.kind) ? ` · ${partKindLabel(p.kind)}` : '';
       let line = `  • ${esc(p.name || 'без названия')}${code} · ×${Number(p.qty) || 1}${kind}`;
-      if (meta.id === 'ordered' && p.eta) line += ` · ждём ${esc(p.eta)}`; // срок — всем
-      if (isManager && p.supplier) line += ` · ${esc(p.supplier)}`;         // поставщик — управляющим
+      if (meta.id === 'ordered' && p.eta) line += ` · ждём ${esc(p.eta)}`;   // срок — всем
+      if (canSeeSupply && p.supplier) line += ` · ${esc(p.supplier)}`;       // поставщик — управляющим и запчастисту
       body.push(line);
     });
     if (group.length > PARTS_PER_GROUP) body.push(`  …и ещё ${group.length - PARTS_PER_GROUP}`);
@@ -573,11 +728,13 @@ async function partsView(jobId, { isManager }) {
     L.push(`<b>Покраска</b>: ${pm.dot} ${pm.label}${extra ? ` · ${extra}` : ''}`);
   }
 
-  // Деньги по запчастям — только управляющим.
-  if (isManager && parts.length) {
+  // Деньги по запчастям. Управляющий видит обе суммы; запчастист — только закупку
+  // (по ней он и работает), продажная цена = маржа, её ему не показываем.
+  if (canSeeSupply && parts.length) {
     const sale = parts.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.price) || 0), 0);
     const cost = parts.reduce((s, p) => s + (Number(p.qty) || 0) * (Number(p.cost) || 0), 0);
-    if (sale || cost) L.push(`Закупка: ${money(cost)} · продажа: ${money(sale)}`);
+    if (isManager && (sale || cost)) L.push(`Закупка: ${money(cost)} · продажа: ${money(sale)}`);
+    else if (cost) L.push(`Закупка: ${money(cost)}`);
   }
   if (parts.length) {
     const obtained = parts.filter((p) => p.status === 'in' || p.status === 'issued').length;
@@ -606,4 +763,4 @@ async function jobPhotos(jobId) {
   };
 }
 
-module.exports = { search, carsInWork, mastersLoad, dailySummary, carCard, debts, revenue, analytics, upcoming, eveningReminder, jobDocuments, partsView, jobPhotos, openCar, carsBrowse, PERIOD_LABEL };
+module.exports = { search, carsInWork, mastersLoad, dailySummary, carCard, debts, revenue, analytics, upcoming, eveningReminder, jobDocuments, partsView, jobPhotos, openCar, carsBrowse, founderDigest, approvals, PERIOD_LABEL };

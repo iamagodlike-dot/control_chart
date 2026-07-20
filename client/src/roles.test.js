@@ -58,12 +58,39 @@ test('tab maps: owner sees финансы+настройки, line staff do not'
   assert.ok(!roleTabs('master').includes('finance'));
   assert.ok(!roleTabs('expeditor').includes('finance'));
   assert.ok(!roleTabs('expeditor').includes('config'));
-  // Кабинет экспедитора: приёмка + свои траты (без финансов/настроек).
-  assert.deepEqual(roleTabs('expeditor'), ['receiving', 'expenses']);
+  // Кабинет экспедитора: приёмка + история приёмки + закупки (видит одобренное) +
+  // свои траты. Заявки НЕ создаёт — вкладки 'requests' у него нет.
+  assert.ok(!roleTabs('expeditor').includes('requests'));
+  assert.deepEqual(roleTabs('expeditor'), ['receiving', 'receiving-history', 'purchasing', 'expenses']);
+});
+
+test('запчастист: только склад и запчасти, без денег и настроек', () => {
+  const tabs = roleTabs('partsman');
+  assert.deepEqual(tabs, ['parts', 'warehouse']);
+  assert.ok(!tabs.includes('finance'));
+  assert.ok(!tabs.includes('config'));
+  // Известная роль — не должна проваливаться в fallback «owner».
+  const d = decideAccess([{ email: 'zap@shop.ru', role: 'partsman', active: true }], 'zap@shop.ru');
+  assert.equal(d.role, 'partsman');
 });
 
 test('each role home tab is within its own allowed tabs', () => {
-  for (const r of ['owner', 'master', 'expeditor']) {
+  for (const r of ['owner', 'master', 'expeditor', 'partsman', 'founder']) {
     assert.ok(roleTabs(r).includes(roleHome(r)), `home of ${r} must be an allowed tab`);
   }
+});
+
+test('учредитель: только счета поставщиков, без прочих экранов; роль не падает в fallback', () => {
+  const tabs = roleTabs('founder');
+  assert.deepEqual(tabs, ['supplier-invoices']);
+  assert.ok(!tabs.includes('finance'));
+  assert.ok(!tabs.includes('config'));
+  assert.ok(!tabs.includes('parts'));
+  const d = decideAccess([{ email: 'inv@shop.ru', role: 'founder', active: true }], 'inv@shop.ru');
+  assert.equal(d.status, 'ready');
+  assert.equal(d.role, 'founder'); // известная роль, не «owner»
+});
+
+test('управленец видит вкладку «Счета поставщиков»', () => {
+  assert.ok(roleTabs('owner').includes('supplier-invoices'));
 });

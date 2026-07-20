@@ -8,6 +8,7 @@ import {
   periodRange, inRange, jobDate,
 } from '../finance';
 import { PAYMENT_SHORT, isInsurance } from '../insurance';
+import { salaryExpenseTx } from '../salary';
 import { isRepair } from '../phase';
 import FinancePanel from './FinancePanel';
 import MoneyFeed from './MoneyFeed';
@@ -42,6 +43,8 @@ export default function Finance() {
   const [docs, setDocs] = useState([]);
   const [transactions, setTransactions] = useState([]);
   const [staffExpenses, setStaffExpenses] = useState([]);
+  const [salaryPayments, setSalaryPayments] = useState([]);
+  const [supplierInvoices, setSupplierInvoices] = useState([]);
   const [company, setCompany] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -51,12 +54,14 @@ export default function Finance() {
 
   const load = async () => {
     setLoading(true);
-    const [all, d, tx, exp, comp] = await Promise.all([
+    const [all, d, tx, exp, comp, sal, supinv] = await Promise.all([
       api.jobs.listAllBrief().catch(() => []),
       api.orderDocuments.listAll().catch(() => []),
       api.transactions.list().catch(() => []),
       api.expenses.listAll().catch(() => []),
       api.settings.getCompany().catch(() => ({})),
+      api.salaryPayments.listAll().catch(() => []),
+      api.supplierInvoices.listAll().catch(() => []),
     ]);
     // В финансах учитываем только машины в ремонте (в т.ч. выданные/архивные);
     // машины на согласовании со страховой — ещё не выручка, их исключаем.
@@ -64,12 +69,15 @@ export default function Finance() {
     setDocs(d);
     setTransactions(tx);
     setStaffExpenses(exp);
+    setSalaryPayments(sal);
+    setSupplierInvoices(supinv);
     setCompany(comp);
     setLoading(false);
   };
   const loadJobs = async () => setAllJobs((await api.jobs.listAllBrief().catch(() => [])).filter(isRepair));
   const loadDocs = async () => setDocs(await api.orderDocuments.listAll().catch(() => []));
   const loadTx = async () => setTransactions(await api.transactions.list().catch(() => []));
+  const loadSalary = async () => setSalaryPayments(await api.salaryPayments.listAll().catch(() => []));
 
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/set-state-in-effect
 
@@ -106,16 +114,18 @@ export default function Finance() {
       note: (e.created_by_name || e.created_by || 'сотрудник') + (e.note ? ` — ${e.note}` : ''),
       created_at: e.created_at,
     }));
-    return [...transactions, ...staff];
-  }, [transactions, staffExpenses]);
+    // Выплаты ОКЛАДНИКАМ → расход P&L (сдельные не берём — уже в себестоимости).
+    // В «Ленту» их, как и траты сотрудников, НЕ добавляем (удаление в др. коллекции).
+    return [...transactions, ...staff, ...salaryExpenseTx(salaryPayments)];
+  }, [transactions, staffExpenses, salaryPayments]);
 
   const fin = useMemo(
     () => computeFinance({ jobs: allJobs, invoices, transactions: financeTx, company, period }),
     [allJobs, invoices, financeTx, company, period],
   );
   const cash = useMemo(
-    () => computeCashFlow({ jobs: allJobs, invoices, transactions, period }),
-    [allJobs, invoices, transactions, period],
+    () => computeCashFlow({ jobs: allJobs, invoices, transactions, salaryPayments, supplierInvoices, period }),
+    [allJobs, invoices, transactions, salaryPayments, supplierInvoices, period],
   );
   const periodLabel = PERIODS.find((p) => p.id === period)?.label || '';
 
@@ -213,7 +223,7 @@ export default function Finance() {
 
       {view === 'overview' && <FinancePanel fin={fin} periodLabel={periodLabel} />}
 
-      {view === 'feed' && <MoneyFeed cash={cash} onTxChanged={loadTx} />}
+      {view === 'feed' && <MoneyFeed cash={cash} onTxChanged={() => { loadTx(); loadSalary(); }} />}
 
       {view === 'cars' && (
         <>

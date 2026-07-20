@@ -5,12 +5,19 @@ import { auth } from '../firebase';
 import { uploadPhoto, deletePhotoFile } from '../photos';
 import { parseAudatexPdf } from '../audatexParse';
 import { PAYMENT_TYPES, POLICY_TYPES, isInsurance, OSAGO_MAX_REPAIR_WORKDAYS, OSAGO_PENALTY_PER_DAY, workdaysBetween, addWorkdays } from '../insurance';
+import { genPartId, partStatusMeta, psMeta } from '../parts';
+import {
+  STREAM_INSURANCE, STREAM_CLIENT, STREAM_ALL,
+  claimsOf, streamsOf, itemsForStream, defaultStream, claimLabel, streamOf,
+} from '../billing';
 import { PHASE, DEFAULT_APPROVAL_STATUS, isRepair } from '../phase';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState, nextStatusAction } from './Gantt';
 import { CellPickerModal } from './Warehouse';
 import CostingModal from './CostingModal';
+import MasterPayModal from './MasterPayModal';
 import Icon from './Icon';
 import DateTimeField from './DateTimeField';
+import PhotoViewer from './PhotoViewer';
 
 const FMT = 'YYYY-MM-DDTHH:mm';
 const PREVIEW_HOUR_WIDTH = 16;
@@ -22,6 +29,26 @@ const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
 const ORIG_PREP_KINDS = { used_orig: 'Б/У под ориг.', analog_orig: 'Аналог под ориг.' };
 // Ярлык вида запчасти для списка в карточке (кроме «Новое» — его не помечаем).
 const KIND_BADGES = { used: 'Б/У', used_orig: 'Б/У под ориг.', analog: 'Замена', analog_orig: 'Аналог под ориг.' };
+
+// Разделы карточки — второй ряд вкладок (под вкладками убытков). Группируют секции
+// тела, чтобы всё не сыпалось одним длинным скроллом. Шапка и футер закреплены и
+// видны на всех разделах; полоса вкладок убытков (cc-claims) — отдельный ВЕРХНИЙ
+// ряд (сначала выбираешь дело, потом раздел). В create разделов меньше: фото и
+// журнал требуют сохранённой машины, поэтому их там нет.
+const TABS_EDIT = [
+  { id: 'overview', label: 'Обзор' },
+  { id: 'works', label: 'Работы и запчасти' },
+  { id: 'route', label: 'Маршрут' },
+  { id: 'money', label: 'Деньги и страховая' },
+  { id: 'photos', label: 'Фото' },
+  { id: 'journal', label: 'Журнал' },
+];
+const TABS_CREATE = [
+  { id: 'overview', label: 'Обзор' },
+  { id: 'works', label: 'Работы и запчасти' },
+  { id: 'route', label: 'Маршрут' },
+  { id: 'money', label: 'Оплата' },
+];
 
 function toLocalInput(iso) {
   return iso ? dayjs(iso).format(FMT) : '';
@@ -73,19 +100,12 @@ function progressOf(startAt, endAt, status, now) {
   return Math.max(0, Math.min(100, Math.round(now.diff(dayjs(startAt), 'minute') / total * 100)));
 }
 
-/**
- * One screen for both adding a car (mode="create") and viewing/editing a car
- * (mode="edit"). Same layout, same route editor — the only differences are the
- * header, the footer actions and whether stage edits hit the API immediately.
- */
-export default function CarCard({
-  mode, job, posts, masters, now, onClose,
-  onCreate,                                   // create
-  onSaveInfo, onAddStage, onUpdateStage, onRemoveStage, onOpenDocs, onFinalize, onRemove, onReturnToApproval, // edit
-}) {
-  const isEdit = mode === 'edit';
-
-  const [form, setForm] = useState(() => ({
+// Seed the editable «info» form from the job. Extracted so the initial mount AND
+// the live re-sync effect (see below) produce an identical shape — an external
+// update to the car (e.g. «Обновить карточку машины» из документа, or another
+// device) then flows into the открытую карточку without a reopen.
+function formFromJob(job) {
+  return {
     car_model: job?.car_model || '',
     plate_number: job?.plate_number || '',
     vin: job?.vin || '',
@@ -103,7 +123,36 @@ export default function CarCard({
     insurer_name: job?.insurer_name || '',
     claim_number: job?.claim_number || '',
     policy_type: job?.policy_type || '',
-  }));
+    franchise: job?.franchise || '',
+  };
+}
+// Клиентские допродажи (payer:'client') — редактируемая копия для карточки.
+function clientServicesFromJob(job) {
+  return (job?.services || []).filter((s) => s.payer === 'client')
+    .map((s) => ({ id: s.id || genPartId(), name: s.name || '', qty: s.qty ?? 1, price: s.price ?? 0 }));
+}
+function clientPartsFromJob(job) {
+  return (job?.parts || []).filter((p) => p.payer === 'client')
+    .map((p) => ({ id: p.id || genPartId(), code: p.code || '', name: p.name || '', qty: p.qty ?? 1, unit: p.unit || 'шт.', price: p.price ?? 0 }));
+}
+
+/**
+ * One screen for both adding a car (mode="create") and viewing/editing a car
+ * (mode="edit"). Same layout, same route editor — the only differences are the
+ * header, the footer actions and whether stage edits hit the API immediately.
+ */
+export default function CarCard({
+  mode, job, posts, masters, now, onClose, isOwner = false,
+  onCreate,                                   // create
+  onSaveInfo, onAddStage, onUpdateStage, onRemoveStage, onOpenDocs, onFinalize, onRemove, onReturnToApproval, // edit
+}) {
+  const isEdit = mode === 'edit';
+  const tabs = isEdit ? TABS_EDIT : TABS_CREATE;
+  const [activeTab, setActiveTab] = useState('overview');
+  // «Обзор» — это сводка (чтение). Формы карточки открываются кнопкой «Редактировать».
+  const [ovEdit, setOvEdit] = useState(false);
+
+  const [form, setForm] = useState(() => formFromJob(job));
   const [stages, setStages] = useState(() => seedStages(job));
   const [editIdx, setEditIdx] = useState(null);
   const [dirtyInfo, setDirtyInfo] = useState(false);
@@ -111,6 +160,7 @@ export default function CarCard({
   const [busyStage, setBusyStage] = useState(false);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [costingOpen, setCostingOpen] = useState(false);
+  const [payOpen, setPayOpen] = useState(false);
   const [localCosting, setLocalCosting] = useState(job?.costing || null);
   const [existingStages, setExistingStages] = useState([]);
   const [insurers, setInsurers] = useState([]);
@@ -124,6 +174,78 @@ export default function CarCard({
   const [extractInfo, setExtractInfo] = useState('');
   const [extractError, setExtractError] = useState('');
 
+  // Допродажи клиента: доп. работы/запчасти, которые клиент оплачивает сам (отдельным
+  // документом от того, что уходит в страховую). Живут в тех же job.services/job.parts,
+  // что и страховые позиции, но помечены payer:'client'. Здесь — редактируемая копия
+  // ТОЛЬКО клиентских позиций; страховые остаются как есть. Сидируется один раз.
+  const [extraServices, setExtraServices] = useState(() => clientServicesFromJob(job));
+  const [extraParts, setExtraParts] = useState(() => clientPartsFromJob(job));
+
+  // ===== Убытки (страховые дела) =====
+  // По одной машине страховая может завести несколько дел. Вкладка = поток биллинга:
+  // «Убыток 1» | «Убыток 2» | «Допродажи клиента» (допродажи — ТАКАЯ ЖЕ вкладка, а не
+  // секция вне вкладок: полоса вкладок означает «всё ниже относится к активной», и
+  // секция, которая этому не подчиняется, — ловушка для приёмщика).
+  // Поля активного дела (страховая/№ убытка/полис/франшиза) живут в том же `form` —
+  // при переключении вкладки пере-сидируются из выбранного убытка.
+  const [activeStreamRaw, setActiveStream] = useState(() => defaultStream(job));
+  const [claimBusy, setClaimBusy] = useState(false);
+  // Убытки держим в ЛОКАЛЬНОМ состоянии (как stages/photos/extraParts): `job` в
+  // карточке НЕ живой — Gantt хранит detailJob отдельным useState и обновляет его
+  // вручную через refreshDetailJob. Без локальной копии заведённый убыток не появился
+  // бы на экране до переоткрытия карточки. Пере-сидируется из job при внешней правке
+  // (см. jobSyncSig) и обновляется возвратом api.jobs.addClaim/removeClaim.
+  const [claims, setClaims] = useState(() => claimsOf(job || {}));
+  const isInsCarForm = isInsurance(form);
+  const streams = useMemo(
+    () => streamsOf({ payment_type: form.payment_type, claims }),
+    [form.payment_type, claims],
+  );
+  // Активный поток ВЫЧИСЛЯЕМ при рендере, а не синхронизируем эффектом: выбранная
+  // вкладка может перестать существовать (машину перевели из страховой в наличные;
+  // убыток удалили с другого устройства), и эффект чинил бы это лишним рендером —
+  // с мигающей пустотой в кадре между ними.
+  const activeStream = !isInsCarForm
+    ? STREAM_ALL
+    : (activeStreamRaw === STREAM_ALL || (activeStreamRaw !== STREAM_CLIENT && !claims.some((c) => c.id === activeStreamRaw))
+      ? STREAM_INSURANCE
+      : activeStreamRaw);
+  // Активная вкладка = допродажи? Тогда страховой блок и списки дела не показываем.
+  const onExtrasTab = isInsCarForm && activeStream === STREAM_CLIENT;
+  const activeClaimIdx = claims.findIndex((c) => c.id === activeStream);
+  const activeClaim = onExtrasTab ? null : (claims[activeClaimIdx] || claims[0] || null);
+
+  function addExtraService() { setExtraServices((a) => [...a, { id: genPartId(), name: '', qty: 1, price: 0 }]); setDirtyInfo(true); }
+  function updateExtraService(id, f) { setExtraServices((a) => a.map((s) => (s.id === id ? { ...s, ...f } : s))); setDirtyInfo(true); }
+  function removeExtraService(id) { setExtraServices((a) => a.filter((s) => s.id !== id)); setDirtyInfo(true); }
+  function addExtraPart() { setExtraParts((a) => [...a, { id: genPartId(), code: '', name: '', qty: 1, unit: 'шт.', price: 0 }]); setDirtyInfo(true); }
+  function updateExtraPart(id, f) { setExtraParts((a) => a.map((p) => (p.id === id ? { ...p, ...f } : p))); setDirtyInfo(true); }
+  function removeExtraPart(id) { setExtraParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
+  const extraServicesSum = extraServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
+  const extraPartsSum = extraParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+
+  // Запчасти НОВОЙ машины (режим создания): редактируемая таблица. Пополняется из
+  // импорта Audatex (см. handleAudatexUpload) и/или вручную, редактируется до
+  // сохранения. При «Добавить автомобиль» уходит в job.parts — оттуда попадает на
+  // экран «Запчасти» для закупки. У каждой позиции стабильный id (genPartId), как
+  // того требует экран «Запчасти» (иначе правка/удаление там молча ломаются).
+  const [createParts, setCreateParts] = useState([]);
+  // Audatex распознал лакокрасочные материалы → у новой машины сразу заводим блок
+  // «Подготовка краски» (внутренний учёт себестоимости краски). См. импорт ниже.
+  const [createPaint, setCreatePaint] = useState(false);
+  function addCreatePart() { setCreateParts((a) => [...a, { id: genPartId(), code: '', name: '', qty: 1, unit: 'шт.', price: 0 }]); setDirtyInfo(true); }
+  function updateCreatePart(id, f) { setCreateParts((a) => a.map((p) => (p.id === id ? { ...p, ...f } : p))); setDirtyInfo(true); }
+  function removeCreatePart(id) { setCreateParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
+
+  // Услуги НОВОЙ машины (режим создания): ручной ввод работ, симметрично запчастям.
+  // Импорт Audatex наполняет отдельный блок «Распознанные работы» выше; здесь —
+  // работы, добавленные руками. При «Добавить автомобиль» обе группы уходят в
+  // job.services (см. submitCreate). id держим только для React-ключей.
+  const [createServices, setCreateServices] = useState([]);
+  function addCreateService() { setCreateServices((a) => [...a, { id: genPartId(), name: '', qty: 1, price: 0 }]); setDirtyInfo(true); }
+  function updateCreateService(id, f) { setCreateServices((a) => a.map((s) => (s.id === id ? { ...s, ...f } : s))); setDirtyInfo(true); }
+  function removeCreateService(id) { setCreateServices((a) => a.filter((s) => s.id !== id)); setDirtyInfo(true); }
+
   // Photos of the car (edit mode only — need a saved job id to attach files to).
   // Split into two zones by `category`: 'before' (до ремонта) / 'after' (после).
   const [photos, setPhotos] = useState(() => job?.photos || []);
@@ -132,6 +254,25 @@ export default function CarCard({
   const [photoErrCat, setPhotoErrCat] = useState(null); // под какой зоной показать ошибку
   const [photoProgress, setPhotoProgress] = useState(0); // 0..100 during upload
   const [viewer, setViewer] = useState(null); // фото, открытое на весь экран (объект), или null
+
+  // Фото приёмки запчастей (category:'receiving' + partId) — отдельная галерея на
+  // карточке: управленец видит, что реально привезли, по каждой позиции. Читаем из
+  // того же `photos`-стейта, что и зоны «до/после», чтобы удаление было согласованным.
+  const partNameById = useMemo(() => {
+    const m = {};
+    for (const p of (job?.parts || [])) m[p.id] = p.name || '—';
+    return m;
+  }, [job?.parts]);
+  const receivingByPart = useMemo(() => {
+    const groups = {};
+    for (const p of photos) {
+      if ((p.category || '') !== 'receiving') continue;
+      const key = p.partId || '_none';
+      if (!groups[key]) groups[key] = [];
+      groups[key].push(p);
+    }
+    return groups;
+  }, [photos]);
 
   // Other cars' stages, for the mini-gantt conflict preview.
   useEffect(() => {
@@ -170,9 +311,145 @@ export default function CarCard({
     setStages((prev) => [...seedStages(job), ...prev.filter((s) => !s.id)]); // eslint-disable-line react-hooks/set-state-in-effect
   }, [stagesSig, editIdx]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Live re-sync of the info form + допродажи when the job changes underneath us
+  // (an external update — «Обновить карточку машины» из документа, правка с другого
+  // устройства, синхронизация запчастей). Без этого form/extraServices/extraParts
+  // сидируются один раз и открытая карточка не показывает изменений («не вижу
+  // изменений в карточке авто»). Пропускаем, пока есть НЕсохранённые правки
+  // (dirtyInfo) — любое ручное изменение выставляет dirtyInfo, поэтому черновые
+  // строки допродаж не затираются; при dirtyInfo=false несохранённого нет.
+  const jobSyncSig = JSON.stringify([
+    job?.car_model, job?.plate_number, job?.vin, job?.mileage, job?.color,
+    job?.client_name, job?.client_phone, job?.order_number, job?.cell_ids, job?.cell_id,
+    job?.expected_at, job?.deadline, job?.notes, job?.payment_type,
+    job?.insurer_id, job?.insurer_name, job?.claim_number, job?.policy_type, job?.franchise,
+    // 'claims' ОБЯЗАТЕЛЕН в подписи: без него карточка не увидит правку убытка с
+    // другого устройства — ровно тот баг «не вижу изменений в карточке авто».
+    job?.claims,
+    job?.services, job?.parts,
+  ]);
+  useEffect(() => {
+    if (!isEdit || dirtyInfo) return;
+    setForm(formFromJob(job)); // eslint-disable-line react-hooks/set-state-in-effect
+    setExtraServices(clientServicesFromJob(job));
+    setExtraParts(clientPartsFromJob(job));
+    // Убытки — из job; поля формы для АКТИВНОЙ вкладки пере-сидируем из её дела,
+    // иначе formFromJob (он читает плоские поля = убыток №1) показал бы реквизиты
+    // первого дела, пока открыта вкладка второго.
+    const next = claimsOf(job || {});
+    setClaims(next);
+    const cur = next.find((c) => c.id === activeStream);
+    if (cur) {
+      setForm((f) => ({
+        ...f,
+        insurer_id: cur.insurer_id || '', insurer_name: cur.insurer_name || '',
+        claim_number: cur.claim_number || '', policy_type: cur.policy_type || '',
+        franchise: cur.franchise ?? '',
+      }));
+    }
+  }, [jobSyncSig]); // eslint-disable-line react-hooks/exhaustive-deps
+
   function patchForm(patch) {
     setForm((f) => ({ ...f, ...patch }));
     setDirtyInfo(true);
+  }
+
+  // Переключение вкладки убытка. Правки СНАЧАЛА сохраняем — тем же приёмом, что и
+  // flushOpenRow для этапов маршрута. Иначе несохранённые реквизиты одного дела
+  // «перетекли» бы в другое: эффект jobSyncSig пере-сидирует форму только при
+  // !dirtyInfo, а любой patchForm ставит dirtyInfo=true.
+  // Трюк с key/remount (как в DocumentsModal) здесь НЕ подходит: карточка держит фото
+  // и маршрут — remount их убьёт.
+  async function switchStream(id) {
+    if (id === activeStream || claimBusy) return;
+    if (isEdit && dirtyInfo) {
+      if (!window.confirm('Есть несохранённые правки по этому убытку. Сохранить и переключиться?')) return;
+      await saveInfo();
+    }
+    setActiveStream(id);
+    // Пере-сидируем поля дела из выбранного убытка. Для допродаж страховой блок не
+    // показывается вовсе, поэтому там сидировать нечего.
+    if (id !== STREAM_CLIENT) {
+      const c = claims.find((x) => x.id === id) || {};
+      setForm((f) => ({
+        ...f,
+        insurer_id: c.insurer_id || '',
+        insurer_name: c.insurer_name || '',
+        claim_number: c.claim_number || '',
+        policy_type: c.policy_type || '',
+        franchise: c.franchise ?? '',
+      }));
+    }
+    setDirtyInfo(false);
+  }
+
+  // «+ Ещё убыток»: страховая завела по этой машине второе дело. Новое дело получает
+  // СВОЙ номер заказ-наряда из годовой очереди (страховая заводит дело по номеру ЗН,
+  // поэтому два дела с одним номером недопустимы) — его выдаёт api.jobs.addClaim.
+  async function addClaim() {
+    const jobId = job?.id || job?.job_id;
+    if (!jobId || claimBusy) return;
+    if (isEdit && dirtyInfo) {
+      if (!window.confirm('Есть несохранённые правки. Сохранить и завести новый убыток?')) return;
+      await saveInfo();
+    }
+    setClaimBusy(true);
+    try {
+      // Страховую наследуем от убытка №1 — по одной машине дела почти всегда ведёт
+      // одна компания; при необходимости она меняется прямо в реквизитах дела.
+      const first = claims[0] || {};
+      const created = await api.jobs.addClaim(jobId, {
+        insurer_id: first.insurer_id || '',
+        insurer_name: first.insurer_name || '',
+      });
+      const next = created?.claims || [];
+      const fresh = next[next.length - 1];
+      setClaims(next);
+      if (fresh) {
+        setActiveStream(fresh.id);
+        setForm((f) => ({
+          ...f,
+          insurer_id: fresh.insurer_id || '', insurer_name: fresh.insurer_name || '',
+          claim_number: '', policy_type: '', franchise: '',
+        }));
+        setDirtyInfo(false);
+      }
+    } catch (e) {
+      alert('Не удалось завести убыток: ' + (e?.message || e));
+    } finally {
+      setClaimBusy(false);
+    }
+  }
+
+  // Удаление дела. Позиции переезжают в убыток №1 (api.jobs.removeClaim меняет только
+  // метку, сохраняя id/закупку/историю приёмки) — иначе они осиротели бы.
+  async function removeClaim(id) {
+    const jobId = job?.id || job?.job_id;
+    if (!jobId || id === STREAM_INSURANCE || claimBusy) return;
+    const n = claims.findIndex((x) => x.id === id);
+    if (n < 0) return;
+    if (!window.confirm(`Удалить «${claimLabel(claims[n], n)}»? Его работы и запчасти вернутся в Убыток 1 — ничего не потеряется, но раскладку по делам придётся делать заново.`)) return;
+    setClaimBusy(true);
+    try {
+      const synced = await api.jobs.removeClaim(jobId, id);
+      const next = claimsOf(synced || {});
+      setClaims(next);
+      // Возвращаемся на убыток №1 БЕЗ switchStream: его правки уже неактуальны (дело
+      // удалено), и предлагать «сохранить перед переключением» было бы бессмыслицей.
+      const first = next[0] || {};
+      setActiveStream(STREAM_INSURANCE);
+      setForm((f) => ({
+        ...f,
+        insurer_id: first.insurer_id || '', insurer_name: first.insurer_name || '',
+        claim_number: first.claim_number || '', policy_type: first.policy_type || '',
+        franchise: first.franchise ?? '',
+      }));
+      setDirtyInfo(false);
+    } catch (e) {
+      alert('Не удалось удалить убыток: ' + (e?.message || e));
+    } finally {
+      setClaimBusy(false);
+    }
   }
 
   // Store both the insurer id (for the picker) and its name (denormalised, so
@@ -213,13 +490,24 @@ export default function CarCard({
       setDirtyInfo(true);
       setImported({
         services: data.services.map((x) => ({ name: x.name || '', qty: Number(x.qty) || 1, price: Number(x.price) || 0 })),
-        parts: data.parts.map((p) => ({ code: p.code || '', name: p.name || '', qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0 })),
         discount: Number(data.meta?.discount) || 0,
       });
+      // Распознанные запчасти кладём в редактируемую таблицу (дополняя уже добавленные
+      // вручную) — их можно поправить/дополнить до сохранения машины.
+      if (data.parts.length) {
+        setCreateParts((cur) => [
+          ...cur,
+          ...data.parts.map((p) => ({ id: genPartId(), code: p.code || '', name: p.name || '', qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0 })),
+        ]);
+      }
+      // Калькуляция содержит лакокрасочные материалы → машину красят: заводим блок
+      // «Подготовка краски» у новой машины (строка ЛКМ при этом остаётся в запчастях).
+      if (data.meta?.hasPaint) setCreatePaint(true);
       const bits = [];
       if (v.car_model) bits.push(v.car_model);
       bits.push(`работ: ${data.services.length}`);
       bits.push(`запчастей: ${data.parts.length}`);
+      if (data.meta?.hasPaint) bits.push('краска: да');
       if (Number(data.meta?.discount) > 0) bits.push(`скидка: ${Number(data.meta.discount).toLocaleString('ru-RU')} ₽`);
       if (data.meta?.repair_total > 0) bits.push(`итог: ${Number(data.meta.repair_total).toLocaleString('ru-RU')} ₽`);
       setExtractInfo(`Распознано — ${bits.join(' · ')}`);
@@ -438,6 +726,7 @@ export default function CarCard({
   }
   async function openDocs() { await flushOpenRow(); onOpenDocs(); }
   async function openCosting() { await flushOpenRow(); setCostingOpen(true); }
+  async function openPay() { await flushOpenRow(); setPayOpen(true); }
   async function finalize() { await flushOpenRow(); onFinalize(); }
   async function returnToApproval() {
     if (!window.confirm('Вернуть машину на согласование со страховой? Она уедет с графика на доску «Согласование».')) return;
@@ -461,11 +750,73 @@ export default function CarCard({
     }
     setSavingInfo(true);
     try {
+      const jobId = job?.id || job?.job_id;
+      const insCar = isInsurance(form);
+      // Работы: страховые (без изменений) + допродажи клиента (payer:'client').
+      // Карточка — единственный, кто пишет job.services после создания, поэтому
+      // массив можно отдавать целиком. Пустые строки допродаж отбрасываем.
+      // `payer !== 'client'` оставляет нетронутыми позиции ВСЕХ убытков (и №1, и
+      // 'cl_*'), а не только первого — перезапись массива их не теряет.
+      const insuranceServices = (job?.services || []).filter((s) => s.payer !== 'client');
+      const cleanExtraServices = extraServices
+        .filter((s) => String(s.name || '').trim())
+        .map((s) => ({ id: s.id, name: s.name.trim(), qty: Number(s.qty) || 1, price: Number(s.price) || 0, payer: 'client' }));
+      const mergedServices = [...insuranceServices, ...cleanExtraServices];
+
+      // Реквизиты дела. Убыток №1 едет плоскими полями — api.jobs.update зеркало-
+      // осознан и сам дописывает их в claims[0], поэтому источник правды один.
+      // Убытки 2..N — только через saveClaim (мерж по id: двое правят разные дела
+      // одной машины и не затирают друг друга).
+      const claimFields = {
+        insurer_id: form.insurer_id,
+        insurer_name: form.insurer_name,
+        claim_number: form.claim_number,
+        policy_type: form.policy_type,
+        franchise: Number(form.franchise) || null,
+      };
+      // Открыт НЕ убыток №1 → плоские страховые поля из payload вырезаем. Это верно и
+      // для вкладки «Допродажи»: страховой блок там скрыт, но `form` всё ещё держит
+      // реквизиты дела, с которого ушли, — сохранение затёрло бы ими зеркало убытка №1.
+      const stripClaimFields = isEdit && insCar && activeStream !== STREAM_INSURANCE && activeStream !== STREAM_ALL;
+      const editingSecondaryClaim = stripClaimFields && !onExtrasTab;
+      if (editingSecondaryClaim) {
+        const synced = await api.jobs.saveClaim(jobId, { id: activeStream, ...claimFields });
+        setClaims(claimsOf(synced || {}));
+      }
+
       await onSaveInfo({
         ...form,
+        ...(stripClaimFields
+          ? { insurer_id: undefined, insurer_name: undefined, claim_number: undefined, policy_type: undefined, franchise: undefined }
+          : { franchise: Number(form.franchise) || null }),
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
+        ...(insCar ? { services: mergedServices } : {}),
       });
+
+      // Допродажные запчасти — пооперационно (транзакция + синхронизация склада),
+      // чтобы не затирать правки страховых запчастей с экрана «Запчасти». Для уже
+      // существующих позиций сохраняем поверх оригинала (сохраняем закупку/статус).
+      if (insCar && jobId) {
+        const origById = new Map((job?.parts || []).map((p) => [p.id, p]));
+        const persistedClientIds = (job?.parts || []).filter((p) => p.payer === 'client' && p.id).map((p) => p.id);
+        const keep = new Set(extraParts.map((p) => p.id));
+        for (const id of persistedClientIds) if (!keep.has(id)) {
+          await api.jobs.removePart(jobId, id);
+          // removePart заодно удаляет фото приёмки этой позиции (Этап 2). Подчищаем
+          // локальный `photos`, иначе галерея «Фото приёмки» показывала бы фантом
+          // (битую картинку / «Деталь удалена») до переоткрытия карточки.
+          setPhotos((prev) => prev.filter((ph) => !(ph.category === 'receiving' && ph.partId === id)));
+        }
+        for (const p of extraParts) {
+          if (!String(p.name || '').trim() && !String(p.code || '').trim()) continue; // пустую строку не пишем
+          const orig = origById.get(p.id) || {};
+          await api.jobs.savePart(jobId, {
+            ...orig, id: p.id, code: (p.code || '').trim(), name: (p.name || '').trim(),
+            qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0, payer: 'client',
+          });
+        }
+      }
       setDirtyInfo(false);
     } finally {
       setSavingInfo(false);
@@ -476,6 +827,18 @@ export default function CarCard({
     if (!form.car_model.trim()) { alert('Укажите марку и модель автомобиля'); return; }
     // Страховая машина заводится сразу на «Согласование»; наличные/юрлицо — в ремонт.
     const toApproval = isInsurance(form);
+    // Запчасти (импорт Audatex и/или добавленные вручную): убираем пустые строки,
+    // нормализуем числа, сохраняем стабильный id каждой позиции.
+    const cleanCreateParts = createParts
+      .map((p) => ({ id: p.id, code: (p.code || '').trim(), name: (p.name || '').trim(), qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0 }))
+      .filter((p) => p.name || p.code);
+    // Услуги новой машины: распознанные Audatex (imported.services) + добавленные
+    // вручную. Уходят в job.services без payer — как основной поток работ (страховая
+    // машина: payer!=='client'; наличные/юрлицо: recipient 'all'). Пустые отбрасываем.
+    const cleanCreateServices = createServices
+      .map((s) => ({ name: (s.name || '').trim(), qty: Number(s.qty) || 1, price: Number(s.price) || 0 }))
+      .filter((s) => s.name);
+    const mergedCreateServices = [...((imported && imported.services) || []), ...cleanCreateServices];
     setSavingInfo(true);
     try {
       const payload = {
@@ -496,12 +859,17 @@ export default function CarCard({
         insurer_name: form.insurer_name,
         claim_number: form.claim_number,
         policy_type: form.policy_type,
+        franchise: Number(form.franchise) || null,
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
-        // From an Audatex import — carried onto the job so the заказ-наряд + warehouse cell auto-fill.
-        ...(imported && (imported.services.length || imported.parts.length)
-          ? { services: imported.services, parts: imported.parts, discount: imported.discount || undefined }
-          : {}),
+        // Работы: распознанные Audatex + добавленные вручную (см. mergedCreateServices).
+        ...(mergedCreateServices.length ? { services: mergedCreateServices } : {}),
+        ...(imported && imported.discount ? { discount: imported.discount } : {}),
+        // Запчасти: импорт Audatex и/или добавленные вручную в таблице ниже. Уходят в
+        // job.parts (с id) → заказ-наряд, ячейка склада и экран «Запчасти» автозаполняются.
+        ...(cleanCreateParts.length ? { parts: cleanCreateParts } : {}),
+        // Краска (Audatex распознал ЛКМ): пустой блок «Подготовка краски» под себестоимость.
+        ...(createPaint ? { paint: { status: 'need', cost: 0 } } : {}),
         stages: stages
           .filter((s) => s.post_id && s.start_at && s.end_at)
           .map((s, i) => ({
@@ -523,7 +891,8 @@ export default function CarCard({
   const dlState = isEdit ? deadlineState(job, now) : null;
   const routeSet = stages.filter((s) => s.post_id && s.start_at && s.end_at);
   const svcSum = (imported?.services || []).reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
-  const partsSum = (imported?.parts || []).reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+  const partsSum = createParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+  const createServicesSum = createServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
 
   // Payment status across this car's invoices.
   const invAmount = invoices.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
@@ -570,6 +939,13 @@ export default function CarCard({
   // per-event timestamps) so its times are the stages' scheduled ones.
   const works = isEdit ? (job?.services || []) : [];
   const jobParts = isEdit ? (job?.parts || []) : [];
+  // Страховая машина показывает работы/запчасти ПО АКТИВНОМУ УБЫТКУ (вкладка сверху),
+  // а допродажи клиента — своей вкладкой (редактируемый блок ниже). Раньше здесь был
+  // фильтр «всё, что не client», то есть один общий список; с несколькими делами он
+  // смешал бы их в кучу — а приёмщик должен видеть ровно то дело, что открыто.
+  const isInsCar = isEdit && isInsurance(form);
+  const insWorks = isInsCar ? itemsForStream(works, activeStream) : works;
+  const insParts = isInsCar ? itemsForStream(jobParts, activeStream) : jobParts;
   // Предупреждения по видам запчастей (см. блок ниже). Три категории:
   //  • Б/У и Замена — нужно согласие клиента; оно попадает в заказ-наряд и акт
   //    (блок «Согласование по запчастям», см. orderDoc.buildPartsConsentText).
@@ -583,23 +959,65 @@ export default function CarCard({
   if (usedParts.length) partNotices.push({
     key: 'used', icon: 'history', tag: 'Б/У',
     title: 'Б/У запчасти — нужно согласие клиента',
-    names: names(usedParts),
+    names: names(usedParts), parts: usedParts,
     text: `В заказ-наряд и акт добавлена отметка о согласии клиента на установку Б/У: ${names(usedParts)}.`,
   });
   if (analogParts.length) partNotices.push({
     key: 'analog', icon: 'refresh', tag: 'Аналог',
     title: 'Замена на аналог — нужно согласие клиента',
-    names: names(analogParts),
+    names: names(analogParts), parts: analogParts,
     text: `В заказ-наряд и акт добавлена отметка о замене оригинала на аналог с согласия клиента: ${names(analogParts)}.`,
   });
   if (origPrepParts.length) partNotices.push({
     key: 'orig', icon: 'wrench', tag: 'Под ориг.',
     title: 'Детали «под оригинал» — требуют отдельного внимания',
-    names: names(origPrepParts),
+    names: names(origPrepParts), parts: origPrepParts,
     text: `Подготовьте к должному (товарному) виду перед установкой: ${names(origPrepParts)}.`,
   });
-  const worksSum = works.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
-  const jobPartsSum = jobParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+  // ── Сводка вкладки «Обзор» (режим чтения) ────────────────────────────────
+  // Полоса «Требуют внимания» показывает согласия по ВСЕЙ машине, а не только по
+  // открытому убытку: приёмщик должен видеть их всегда, на какой бы вкладке ни
+  // стоял. Чтобы не гадать, откуда взялась чужая деталь, у каждой пишем её дело.
+  // На машине с одним убытком и без допродаж подпись не нужна — она была бы
+  // одинаковой у всех (то же правило, что у заголовка «Оплата и страховая»).
+  const showPartClaim = isInsCar
+    && (claims.length > 1 || jobParts.some((p) => streamOf(p) === STREAM_CLIENT));
+  const partClaimLabel = (p) => {
+    if (!showPartClaim) return '';
+    const sid = streamOf(p);
+    if (sid === STREAM_CLIENT) return 'Допродажи';
+    const i = claims.findIndex((c) => c.id === sid);
+    return i >= 0 ? `Убыток ${i + 1}` : '';
+  };
+  // Плоский список «деталь → вид → дело» для полосы внимания.
+  const noticeParts = partNotices.flatMap((n) => n.parts.map((p) => {
+    const cl = partClaimLabel(p);
+    return { key: `${n.key}-${p.id}`, text: `${p.name || '—'} (${cl ? `${n.tag} · ${cl}` : n.tag})` };
+  }));
+  // Всё считается по АКТИВНОМУ убытку (insParts), поэтому при переключении
+  // вкладки убытка сводка пересчитывается сама.
+  // Запчасти, ждущие действий, по приоритету статуса — показываем до 4 шт.
+  const partsWaiting = [...insParts]
+    .filter((p) => ['need', 'invoiced', 'ordered', 'arrived'].includes(p.status || 'need'))
+    .sort((a, b) => psMeta(a.status).pr - psMeta(b.status).pr)
+    .slice(0, 4);
+  // Разбивка по статусам — сегменты полоски прогресса (только непустые).
+  const partCounts = partStatusMeta
+    .map((s) => ({ ...s, n: insParts.filter((p) => (p.status || 'need') === s.id).length }))
+    .filter((s) => s.n > 0);
+  // Ответственный этап маршрута → пост/мастер в шапке сводки.
+  const activeStage = routeSet.find((s) => effectiveStatus(s, now) === 'in_progress')
+    || routeSet.find((s) => effectiveStatus(s, now) !== 'done');
+  const activePost = activeStage ? posts.find((p) => p.id === activeStage.post_id) : null;
+  const activeMaster = activeStage ? masters.find((m) => m.id === activeStage.master_id) : null;
+  // Календарных дней до дедлайна (отрицательное — просрочен).
+  const daysLeft = form.deadline
+    ? dayjs(form.deadline).startOf('day').diff(dayjs(now).startOf('day'), 'day')
+    : null;
+  // Суммы страхового ремонта (без допродаж) — идут в оценку неустойки по ОСАГО и в
+  // подпись «Итого работ» страхового блока.
+  const worksSum = insWorks.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
+  const jobPartsSum = insParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
   // Ориентировочная неустойка по ОСАГО за просрочку ремонта: 0,5% в день от суммы
   // возмещения за каждый календарный день сверх законного срока (но не более самой
   // суммы возмещения). База возмещения: счёт → работы+запчасти → распознанная смета.
@@ -612,14 +1030,14 @@ export default function CarCard({
         - Date.UTC(legal.getFullYear(), legal.getMonth(), legal.getDate())) / 86400000,
     ));
     const worksParts = worksSum + jobPartsSum;
-    const estimate = svcSum + partsSum;
+    const estimate = svcSum + createServicesSum + partsSum;
     const [base, baseLabel] = hasInvoice ? [invAmount, 'счёта']
       : worksParts > 0 ? [worksParts, 'работ и запчастей']
         : estimate > 0 ? [estimate, 'сметы']
           : [0, ''];
     const amount = base ? Math.round(Math.min(base, base * OSAGO_PENALTY_PER_DAY * overrunDays)) : 0;
     return { overrunDays, base, baseLabel, amount };
-  }, [osagoTermWorkdays, osagoStart, form.deadline, hasInvoice, invAmount, worksSum, jobPartsSum, svcSum, partsSum]);
+  }, [osagoTermWorkdays, osagoStart, form.deadline, hasInvoice, invAmount, worksSum, jobPartsSum, svcSum, createServicesSum, partsSum]);
   const journal = useMemo(() => {
     if (!isEdit) return [];
     const ev = [];
@@ -686,35 +1104,186 @@ export default function CarCard({
           </div>
         </div>
 
+        {/* Полоса убытков. Страховая может завести по одной машине несколько дел —
+            у каждого свои реквизиты, свой номер ЗН и свой комплект документов.
+            Живёт МЕЖДУ шапкой и телом: тут работает flex-shrink:0, полоса закреплена,
+            тело скроллится под ней. Внутрь .cc-cols нельзя — columns:2 разорвёт.
+            Только в режиме правки: у новой машины дело всегда одно. */}
+        {isEdit && isInsCarForm && (
+          <div className="cc-claims">
+            {streams.map((s, i) => (
+              <button
+                key={s.id}
+                className={`cc-claim-tab${activeStream === s.id ? ' active' : ''}${s.kind === 'client' ? ' is-extras' : ''}`}
+                onClick={() => switchStream(s.id)}
+                disabled={claimBusy}
+                title={s.kind === 'client'
+                  ? 'Работы и запчасти, которые клиент оплачивает сам — общие на машину'
+                  : `Страховое дело${s.claim?.order_number ? ' · заказ-наряд ' + s.claim.order_number : ''}`}
+              >
+                {s.kind === 'client' ? <Icon name="wallet" size={12} /> : <Icon name="shield" size={12} />}
+                <span>{s.kind === 'client' ? 'Допродажи клиента' : claimLabel(s.claim, i)}</span>
+              </button>
+            ))}
+            <button className="cc-claim-add" onClick={addClaim} disabled={claimBusy} title="Страховая завела по этой машине ещё одно дело — у него будет свой номер заказ-наряда">
+              <Icon name="plus" size={12} />Ещё убыток
+            </button>
+            {claims.length > 1 && (
+              <span className="cc-claims-hint">
+                Раздельные по делам: документы, номера ЗН, франшиза. Общие на машину: маршрут, склад, фото, прибыль.
+              </span>
+            )}
+          </div>
+        )}
+
+        {/* Разделы карточки — второй ряд вкладок. Закреплён (flex-shrink:0), тело
+            скроллится под ним. Секции ниже помечены `activeTab === …` и показываются
+            только на своём разделе — содержимое секций не меняется, просто спрятано. */}
+        <div className="cc-tabs" role="tablist">
+          {tabs.map((t) => (
+            <button
+              key={t.id}
+              type="button"
+              role="tab"
+              aria-selected={activeTab === t.id}
+              className={`cc-tab${activeTab === t.id ? ' active' : ''}`}
+              onClick={() => setActiveTab(t.id)}
+            >
+              {t.label}
+            </button>
+          ))}
+        </div>
+
         <div className="cc-body">
-         <div className="cc-cols">
-          {isEdit && (
-            <div className="cc-spec cc-full">
-              <SpecItem label="VIN" value={form.vin} />
-              <SpecItem label="Пробег" value={form.mileage ? `${form.mileage} км` : ''} />
-              <SpecItem label="Цвет" value={form.color} />
-              <div className="cc-spec-item">
-                <span className="cc-spec-label">Дедлайн</span>
-                <span className={`cc-spec-value${!form.deadline ? ' is-empty' : (dlState === 'missed' || dlState === 'at-risk') ? ' is-risk' : ''}`}>
-                  {form.deadline ? dayjs(form.deadline).format('DD.MM.YY HH:mm') : '—'}
-                </span>
+         <div className="cc-cols" data-tab={activeTab}>
+          {/* «Обзор» одним взглядом: статус · ответственный · дедлайн · маршрут,
+              затем деньги и запчасти. Правка карточки — по кнопке (ovEdit). */}
+          {isEdit && activeTab === 'overview' && !ovEdit && (
+            <div className="cc-ov cc-full">
+
+              <div className="cc-ov-hero">
+                <div className="cc-ov-hero-top">
+                  <div className="cc-ov-status">
+                    <span className="cc-ov-dot" style={{ background: STATUS_COLORS[overall] }} />
+                    <span className="cc-ov-status-label">{STATUS_LABELS[overall]}</span>
+                    {activePost && (
+                      <span className="cc-ov-status-sub">· {activePost.name}{activeMaster ? ` · ${activeMaster.name}` : ''}</span>
+                    )}
+                  </div>
+                  {form.deadline && (
+                    <div className={`cc-ov-deadline${dlState === 'missed' || dlState === 'at-risk' ? ' is-risk' : ''}`}>
+                      <b>{daysLeft <= 0 ? 'просрочен' : `${daysLeft} дн`}</b>
+                      <span>до {dayjs(form.deadline).format('DD.MM.YY')}</span>
+                    </div>
+                  )}
+                </div>
+                {routeSet.length > 0 && (
+                  <div className="cc-ov-route">
+                    {routeSet.slice(0, 4).map((s, i) => {
+                      const post = posts.find((p) => p.id === s.post_id);
+                      const master = masters.find((m) => m.id === s.master_id);
+                      const st = effectiveStatus(s, now);
+                      return (
+                        <div className="cc-ov-route-node" key={s.id || `st-${i}`}>
+                          <div className="cc-ov-route-head">
+                            <span className={`cc-ov-route-mark is-${st}`} style={{ '--mc': STATUS_COLORS[st] }}>
+                              {st === 'done' && <Icon name="check" size={9} strokeWidth={3} />}
+                            </span>
+                            <span className="cc-ov-route-name">{post?.name || 'Пост'}</span>
+                          </div>
+                          <span className="cc-ov-route-sub">{master ? master.name : 'не назначен'} · {STATUS_LABELS[st]}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Согласия по запчастям: Б/У, аналог, «под оригинал». */}
+              {partNotices.length > 0 && (
+                <div className="cc-ov-attention">
+                  <span className="cc-ov-attention-ico"><Icon name="warning" size={15} /></span>
+                  <span className="cc-ov-attention-title">Требуют внимания</span>
+                  {/* Строка длинная и режется многоточием — полный список в title. */}
+                  <span className="cc-ov-attention-parts" title={noticeParts.map((n) => n.text).join(' · ')}>
+                    {noticeParts.map((n) => n.text).join(' · ')}
+                  </span>
+                </div>
+              )}
+
+              <div className="cc-ov-split">
+
+                <div className="cc-ov-card">
+                  <div className="cc-ov-cardhead"><span className="cc-ov-cardbar" />Деньги</div>
+                  {hasInvoice ? (
+                    <>
+                      <div className="cc-ov-money-val">{fmtMoney(invAmount)}</div>
+                      <div className="cc-ov-money-state">
+                        <span className="cc-ov-dot" style={{ background: allPaid ? STATUS_COLORS.done : 'var(--color-danger)' }} />
+                        {allPaid ? 'Оплачено' : 'Не оплачено'}
+                        {!onExtrasTab && Number(form.franchise) > 0 ? ` · франшиза ${fmtMoney(form.franchise)}` : ''}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="cc-ov-empty">Счёт не выставлен</div>
+                  )}
+                  {/* На «Допродажах» страховую не показываем — клиент платит их сам,
+                      ни полиса, ни № убытка, ни франшизы у них нет (см. блок
+                      «Оплата и страховая» ниже — там то же правило). */}
+                  {isInsCarForm && !onExtrasTab && form.insurer_name && (
+                    <div className="cc-ov-insurer">
+                      <Icon name="shield" size={14} />
+                      <span className="cc-ov-insurer-name">{form.insurer_name}</span>
+                      {(activeClaim?.claim_number || form.claim_number) && (
+                        <span className="cc-ov-claimno">{activeClaim?.claim_number || form.claim_number}</span>
+                      )}
+                    </div>
+                  )}
+                </div>
+
+                <div className="cc-ov-card">
+                  <div className="cc-ov-cardhead">
+                    <span className="cc-ov-cardbar" />Запчасти
+                    <span className="cc-ov-cardmeta">
+                      {insParts.length}{form.cell_ids.length ? ` · ${form.cell_ids.join(', ')}` : ''}
+                    </span>
+                  </div>
+                  {insParts.length > 0 ? (
+                    <>
+                      <div className="cc-ov-bar">
+                        {partCounts.map((s) => <span key={s.id} style={{ flex: s.n, background: s.color }} />)}
+                      </div>
+                      <div className="cc-ov-waiting">
+                        {partsWaiting.length > 0 ? partsWaiting.map((p) => (
+                          <div className="cc-ov-waiting-row" key={p.id}>
+                            <span className="cc-ov-waiting-name">{p.name || '—'}</span>
+                            <span className="cc-ov-waiting-status">
+                              <span className="cc-ov-dot" style={{ background: psMeta(p.status).color }} />
+                              {psMeta(p.status).label}
+                            </span>
+                          </div>
+                        )) : (
+                          <div className="cc-ov-empty">Все позиции на складе</div>
+                        )}
+                      </div>
+                    </>
+                  ) : (
+                    <div className="cc-ov-empty">Запчасти не заведены</div>
+                  )}
+                </div>
+              </div>
+
+              <div className="cc-ov-meta">
+                {form.mileage && <span>{form.mileage} км</span>}
+                {form.color && <span>{form.color}</span>}
+                {form.vin && <span className="cc-ov-vin">VIN {form.vin}</span>}
+                <button type="button" className="cc-ov-edit-btn" onClick={() => setOvEdit(true)}>
+                  <Icon name="edit" size={12} />Редактировать
+                </button>
               </div>
             </div>
           )}
-          {isEdit && partNotices.length > 0 && (
-            <div className="cc-notices cc-full">
-              {partNotices.map((n) => (
-                <div key={n.key} className={`cc-notice cc-notice--${n.key}`} title={n.text}>
-                  <span className="cc-notice-ico"><Icon name={n.icon} size={16} /></span>
-                  <div className="cc-notice-body">
-                    <div className="cc-notice-title">{n.title}</div>
-                    <div className="cc-notice-parts">{n.names}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-          )}
-          {!isEdit && (
+          {!isEdit && activeTab === 'overview' && (
             <div className="cc-audatex cc-full">
               <div className="cc-audatex-row">
                 <label className={`audatex-upload-btn${extracting ? ' is-busy' : ''}`}>
@@ -728,6 +1297,18 @@ export default function CarCard({
             </div>
           )}
 
+          {/* Формы «Обзора». В режиме создания карточки они видны всегда (сводки
+              ещё нет), в режиме правки — только под кнопкой «Редактировать». */}
+          {isEdit && activeTab === 'overview' && ovEdit && (
+            <div className="cc-ov-editbar cc-full">
+              <span>Правка карточки</span>
+              <button type="button" className="cc-ov-done-btn" onClick={() => setOvEdit(false)}>
+                <Icon name="check" size={13} strokeWidth={2} />Готово
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'overview' && (!isEdit || ovEdit) && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">🚘</span>Автомобиль и клиент</div>
             <div className="cc-grid">
@@ -765,10 +1346,42 @@ export default function CarCard({
               </label>
             </div>
           </section>
+          )}
 
-          {isEdit && renderPhotoZone('before', '📷', 'Фото — до ремонта', 'Снимите машину при приёмке: повреждения, общий вид, VIN.')}
-          {isEdit && renderPhotoZone('after', '✨', 'Фото — после ремонта', 'Снимите готовую машину перед выдачей клиенту.')}
+          {isEdit && activeTab === 'photos' && renderPhotoZone('before', '📷', 'Фото — до ремонта', 'Снимите машину при приёмке: повреждения, общий вид, VIN.')}
+          {isEdit && activeTab === 'photos' && renderPhotoZone('after', '✨', 'Фото — после ремонта', 'Снимите готовую машину перед выдачей клиенту.')}
 
+          {/* Галерея фото приёмки запчастей — только просмотр и удаление; снимают
+              их на экране «Приёмка». Показываем секцию, лишь когда фото есть. */}
+          {isEdit && activeTab === 'photos' && Object.keys(receivingByPart).length > 0 && (
+            <section className="cc-section">
+              <div className="cc-section-head"><span className="cc-section-icon">🧾</span>Фото приёмки запчастей</div>
+              {Object.entries(receivingByPart)
+                .sort((a, b) => String(partNameById[a[0]] || '').localeCompare(String(partNameById[b[0]] || ''), 'ru'))
+                .map(([partId, list]) => (
+                  <div className="cc-recv-group" key={partId}>
+                    <div className="cc-section-subhead">{partNameById[partId] || 'Деталь удалена'}</div>
+                    <div className="cc-photos">
+                      {list.map((p) => (
+                        <div className="cc-photo" key={p.id}>
+                          <img src={p.url} alt="Фото приёмки запчасти" loading="lazy" onClick={() => setViewer(p)} />
+                          <button
+                            type="button"
+                            className="cc-photo-del"
+                            onClick={() => handlePhotoDelete(p)}
+                            aria-label="Удалить фото"
+                          >
+                            <Icon name="trash" size={14} strokeWidth={2} />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                ))}
+            </section>
+          )}
+
+          {activeTab === 'overview' && (!isEdit || ovEdit) && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">⏱️</span>Сроки и хранение</div>
             <div className="cc-grid">
@@ -822,13 +1435,32 @@ export default function CarCard({
               </div>
             )}
           </section>
+          )}
 
+          {/* На вкладке «Допродажи» страховой блок не показываем: допродажи — это то,
+              что клиент платит сам, у них нет ни полиса, ни № убытка, ни франшизы. */}
+          {activeTab === 'money' && !onExtrasTab && (
           <section className="cc-section">
-            <div className="cc-section-head"><span className="cc-section-icon">💳</span>Оплата и страховая</div>
+            <div className="cc-section-head">
+              <span className="cc-section-icon">💳</span>
+              {claims.length > 1 && activeClaimIdx >= 0 ? `Оплата и страховая · ${claimLabel(activeClaim, activeClaimIdx)}` : 'Оплата и страховая'}
+              {/* Номер ЗН этого дела — по нему страховая заводит дело, поэтому он
+                  должен быть виден там же, где реквизиты, а не только в документах. */}
+              {isEdit && isInsCarForm && activeClaim?.order_number && (
+                <span className="cc-claim-num" title="Номер заказ-наряда этого дела — под ним оно уходит в страховую">
+                  {activeClaim.order_number}
+                </span>
+              )}
+              {isEdit && claims.length > 1 && activeStream !== STREAM_INSURANCE && (
+                <button type="button" className="cc-claim-del" onClick={() => removeClaim(activeStream)} disabled={claimBusy} title="Удалить это дело — его позиции вернутся в Убыток 1">
+                  <Icon name="trash" size={13} />
+                </button>
+              )}
+            </div>
             <div className="cc-grid">
               <label className="cc-field">
                 <span>Тип оплаты</span>
-                <select value={form.payment_type} onChange={(e) => patchForm({ payment_type: e.target.value })}>
+                <select value={form.payment_type} onChange={(e) => patchForm({ payment_type: e.target.value })} disabled={isEdit && claims.length > 1}>
                   {PAYMENT_TYPES.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
                 </select>
               </label>
@@ -859,54 +1491,59 @@ export default function CarCard({
                   </select>
                 </label>
               )}
+              {form.payment_type === 'insurance' && (
+                <label className="cc-field">
+                  <span>Франшиза, ₽</span>
+                  <input
+                    type="number"
+                    min="0"
+                    placeholder="напр. 15000"
+                    value={form.franchise}
+                    onChange={(e) => patchForm({ franchise: e.target.value })}
+                  />
+                </label>
+              )}
             </div>
+            {form.payment_type === 'insurance' && Number(form.franchise) > 0 && (
+              <div className="cc-hint">Эту сумму платит клиент, остальное — страховая. Отражается в заказ-наряде, акте и счёте.</div>
+            )}
             {form.payment_type === 'insurance' && !insurers.length && (
               <div className="cc-hint">Справочник страховых пуст — добавьте их в разделе «Посты и мастера».</div>
             )}
+            {isEdit && claims.length > 1 && (
+              <div className="cc-hint">Тип оплаты не меняется, пока по машине заведено несколько убытков — сначала удалите лишние дела.</div>
+            )}
           </section>
+          )}
 
+          {activeTab === 'overview' && (!isEdit || ovEdit) && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">📝</span>Примечания</div>
             <textarea className="cc-notes" placeholder="Комментарии по работе, договорённости с клиентом…" value={form.notes} onChange={(e) => patchForm({ notes: e.target.value })} />
           </section>
+          )}
 
-          {!isEdit && imported && (imported.services.length > 0 || imported.parts.length > 0) && (
+          {!isEdit && activeTab === 'works' && imported && imported.services.length > 0 && (
             <section className="cc-section cc-full">
               <button type="button" className="cc-imported-head" onClick={() => setImportedOpen((o) => !o)}>
-                <span className="cc-section-icon">🧾</span>Распознанные позиции
-                <span className="cc-imported-count">работ {imported.services.length} · запчастей {imported.parts.length}</span>
+                <span className="cc-section-icon">🧾</span>Распознанные работы
+                <span className="cc-imported-count">работ {imported.services.length}</span>
                 <span className="cc-imported-chevron"><Icon name={importedOpen ? 'chevron-down' : 'chevron-right'} size={13} /></span>
               </button>
               {importedOpen && (
                 <div className="cc-imported-body">
-                  {imported.services.length > 0 && (
-                    <div className="cc-imported-group">
-                      <div className="cc-imported-sub"><span>Работы</span><span>{svcSum.toLocaleString('ru-RU')} ₽</span></div>
-                      <div className="cc-imported-list">
-                        {imported.services.map((s, i) => (
-                          <div className="cc-imported-row" key={`svc-${i}`}>
-                            <span className="cc-imported-name">{s.name || '—'}</span>
-                            {s.qty > 1 && <span className="cc-imported-qty">{s.qty} ×</span>}
-                            <span className="cc-imported-price">{Number(s.price).toLocaleString('ru-RU')} ₽</span>
-                          </div>
-                        ))}
-                      </div>
+                  <div className="cc-imported-group">
+                    <div className="cc-imported-sub"><span>Работы</span><span>{svcSum.toLocaleString('ru-RU')} ₽</span></div>
+                    <div className="cc-imported-list">
+                      {imported.services.map((s, i) => (
+                        <div className="cc-imported-row" key={`svc-${i}`}>
+                          <span className="cc-imported-name">{s.name || '—'}</span>
+                          {s.qty > 1 && <span className="cc-imported-qty">{s.qty} ×</span>}
+                          <span className="cc-imported-price">{Number(s.price).toLocaleString('ru-RU')} ₽</span>
+                        </div>
+                      ))}
                     </div>
-                  )}
-                  {imported.parts.length > 0 && (
-                    <div className="cc-imported-group">
-                      <div className="cc-imported-sub"><span>Запчасти</span><span>{partsSum.toLocaleString('ru-RU')} ₽</span></div>
-                      <div className="cc-imported-list">
-                        {imported.parts.map((p, i) => (
-                          <div className="cc-imported-row" key={`part-${i}`}>
-                            <span className="cc-imported-name">{p.name || '—'}{p.code ? ` · ${p.code}` : ''}</span>
-                            <span className="cc-imported-qty">{p.qty} {p.unit || 'шт.'}</span>
-                            <span className="cc-imported-price">{Number(p.price).toLocaleString('ru-RU')} ₽</span>
-                          </div>
-                        ))}
-                      </div>
-                    </div>
-                  )}
+                  </div>
                   <div className="cc-imported-foot">
                     {imported.discount > 0 ? <span>Скидка Audatex: {imported.discount.toLocaleString('ru-RU')} ₽</span> : <span />}
                     <span className="cc-imported-note">итоговый расчёт с НДС — в заказ-наряде</span>
@@ -916,6 +1553,76 @@ export default function CarCard({
             </section>
           )}
 
+          {/* Услуги новой машины — ручной ввод работ (create-режим). Распознанные
+              Audatex работы показаны выше отдельным блоком; здесь — добавленные
+              руками. Обе группы уходят в job.services при сохранении. */}
+          {!isEdit && activeTab === 'works' && (
+            <section className="cc-section cc-full cc-extras">
+              <div className="cc-section-head">
+                <span className="cc-section-icon">🛠️</span>Услуги
+                <span className="cc-section-hint">добавьте работы вручную — вместе с распознанными уйдут в заказ-наряд</span>
+              </div>
+              {createServices.length > 0 ? (
+                <table className="items-table cc-extras-table">
+                  <thead><tr><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th /></tr></thead>
+                  <tbody>
+                    {createServices.map((s) => (
+                      <tr key={s.id}>
+                        <td><input value={s.name} onChange={(e) => updateCreateService(s.id, { name: e.target.value })} placeholder="напр. Окраска бампера" /></td>
+                        <td><input type="number" min="0" value={s.qty} onChange={(e) => updateCreateService(s.id, { qty: e.target.value })} /></td>
+                        <td><input type="number" min="0" value={s.price} onChange={(e) => updateCreateService(s.id, { price: e.target.value })} /></td>
+                        <td className="items-table-sum">{fmtMoney((Number(s.price) || 0) * (Number(s.qty) || 1))}</td>
+                        <td><button className="danger small" onClick={() => removeCreateService(s.id)}>×</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="cc-hint" style={{ marginTop: 0 }}>Пока пусто. Добавьте работы вручную кнопкой ниже{imported && imported.services.length ? ' — распознанные Audatex работы показаны выше' : ''}.</div>
+              )}
+              <button className="cc-add-stage" onClick={addCreateService}>+ Добавить услугу</button>
+              {createServices.length > 0 && (
+                <div className="cc-sum-total"><span>Итого услуги (вручную)</span><b>{fmtMoney(createServicesSum)}</b></div>
+              )}
+            </section>
+          )}
+
+          {/* Запчасти новой машины — редактируемая таблица (create-режим). Всегда видна:
+              можно добавить вручную, а импорт Audatex наполняет её же. Правится до
+              сохранения; уходит в job.parts и на экран «Запчасти». */}
+          {!isEdit && activeTab === 'works' && (
+            <section className="cc-section cc-full cc-extras">
+              <div className="cc-section-head">
+                <span className="cc-section-icon">📦</span>Запчасти
+                <span className="cc-section-hint">добавьте вручную или импортом из Audatex — потом уйдут на экран «Запчасти»</span>
+              </div>
+              {createParts.length > 0 ? (
+                <table className="items-table cc-extras-table">
+                  <thead><tr><th>Код</th><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th /></tr></thead>
+                  <tbody>
+                    {createParts.map((p) => (
+                      <tr key={p.id}>
+                        <td><input value={p.code} onChange={(e) => updateCreatePart(p.id, { code: e.target.value })} placeholder="артикул" /></td>
+                        <td><input value={p.name} onChange={(e) => updateCreatePart(p.id, { name: e.target.value })} placeholder="напр. Бампер передний" /></td>
+                        <td><input type="number" min="0" value={p.qty} onChange={(e) => updateCreatePart(p.id, { qty: e.target.value })} /></td>
+                        <td><input type="number" min="0" value={p.price} onChange={(e) => updateCreatePart(p.id, { price: e.target.value })} /></td>
+                        <td className="items-table-sum">{fmtMoney((Number(p.price) || 0) * (Number(p.qty) || 1))}</td>
+                        <td><button className="danger small" onClick={() => removeCreatePart(p.id)}>×</button></td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              ) : (
+                <div className="cc-hint" style={{ marginTop: 0 }}>Пока пусто. Добавьте запчасти вручную кнопкой ниже или импортируйте калькуляцию Audatex — распознанные позиции появятся здесь, и их можно будет поправить.</div>
+              )}
+              <button className="cc-add-stage" onClick={addCreatePart}>+ Добавить запчасть</button>
+              {createParts.length > 0 && (
+                <div className="cc-sum-total"><span>Итого запчасти</span><b>{fmtMoney(partsSum)}</b></div>
+              )}
+            </section>
+          )}
+
+          {activeTab === 'route' && (
           <section className="cc-section cc-full">
             <div className="cc-section-head">
               <span className="cc-section-icon">🛠️</span>Маршрут по постам
@@ -1017,12 +1724,13 @@ export default function CarCard({
               </>
             )}
           </section>
+          )}
 
-          {isEdit && works.length > 0 && (
+          {isEdit && activeTab === 'works' && insWorks.length > 0 && (
             <section className="cc-section">
-              <div className="cc-section-head"><span className="cc-section-icon" />Работы<span className="cc-section-hint">{works.length} поз.</span></div>
+              <div className="cc-section-head"><span className="cc-section-icon" />{isInsCar ? 'Работы по страховой' : 'Работы'}<span className="cc-section-hint">{insWorks.length} поз.</span></div>
               <div className="cc-sum-list">
-                {works.map((s, i) => (
+                {insWorks.map((s, i) => (
                   <div className="cc-sum-row" key={`w-${i}`}>
                     <span className="cc-sum-ico"><Icon name="wrench" size={15} /></span>
                     <span className="cc-sum-name">{s.name || '—'}</span>
@@ -1035,21 +1743,78 @@ export default function CarCard({
             </section>
           )}
 
-          {isEdit && (jobParts.length > 0 || invoices.length > 0) && (
+          {/* Допродажи — СВОЯ вкладка, а не секция рядом с убытком. Полоса вкладок
+              означает «всё ниже относится к активной вкладке»; секция, которая этому
+              не подчиняется, — ловушка: приёмщик правил бы допродажи, стоя на «Убытке
+              2», и не понимал, куда они уехали. Список общий на машину (решение
+              владельца: клиент один, счёт ему один). */}
+          {isEdit && activeTab === 'works' && isInsCar && onExtrasTab && (
+            <section className="cc-section cc-extras">
+              <div className="cc-section-head">
+                <span className="cc-section-icon">➕</span>Допродажи клиента
+                <span className="cc-section-hint">оплачивает клиент отдельно от страховой</span>
+              </div>
+              <div className="cc-hint" style={{ marginTop: 0 }}>
+                Доп. работы и запчасти, которые клиент заказывает сверх страхового ремонта — общие на машину, независимо от количества убытков. В окне «Документы» для них формируется отдельный комплект («Кому: Клиенту»).
+              </div>
+
+              <div className="cc-section-subhead">Работы</div>
+              <table className="items-table cc-extras-table">
+                <thead><tr><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th /></tr></thead>
+                <tbody>
+                  {extraServices.map((s) => (
+                    <tr key={s.id}>
+                      <td><input value={s.name} onChange={(e) => updateExtraService(s.id, { name: e.target.value })} placeholder="напр. Полировка фар" /></td>
+                      <td><input type="number" min="0" value={s.qty} onChange={(e) => updateExtraService(s.id, { qty: e.target.value })} /></td>
+                      <td><input type="number" min="0" value={s.price} onChange={(e) => updateExtraService(s.id, { price: e.target.value })} /></td>
+                      <td className="items-table-sum">{fmtMoney((Number(s.price) || 0) * (Number(s.qty) || 1))}</td>
+                      <td><button className="danger small" onClick={() => removeExtraService(s.id)}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="cc-add-stage" onClick={addExtraService}>+ Добавить работу</button>
+
+              <div className="cc-section-subhead" style={{ marginTop: 14 }}>Запчасти</div>
+              <table className="items-table cc-extras-table">
+                <thead><tr><th>Код</th><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th /></tr></thead>
+                <tbody>
+                  {extraParts.map((p) => (
+                    <tr key={p.id}>
+                      <td><input value={p.code} onChange={(e) => updateExtraPart(p.id, { code: e.target.value })} placeholder="артикул" /></td>
+                      <td><input value={p.name} onChange={(e) => updateExtraPart(p.id, { name: e.target.value })} placeholder="напр. Коврики" /></td>
+                      <td><input type="number" min="0" value={p.qty} onChange={(e) => updateExtraPart(p.id, { qty: e.target.value })} /></td>
+                      <td><input type="number" min="0" value={p.price} onChange={(e) => updateExtraPart(p.id, { price: e.target.value })} /></td>
+                      <td className="items-table-sum">{fmtMoney((Number(p.price) || 0) * (Number(p.qty) || 1))}</td>
+                      <td><button className="danger small" onClick={() => removeExtraPart(p.id)}>×</button></td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              <button className="cc-add-stage" onClick={addExtraPart}>+ Добавить запчасть</button>
+
+              {(extraServices.length > 0 || extraParts.length > 0) && (
+                <div className="cc-sum-total"><span>Итого допродажи</span><b>{fmtMoney(extraServicesSum + extraPartsSum)}</b></div>
+              )}
+              <div className="cc-hint" style={{ marginTop: 8 }}>Не забудьте нажать «Сохранить» внизу. Запчасти попадут на экран «Запчасти» для закупки.</div>
+            </section>
+          )}
+
+          {isEdit && activeTab === 'works' && (insParts.length > 0 || invoices.length > 0) && (
             <section className="cc-section">
               <div className="cc-section-head"><span className="cc-section-icon" />Запчасти и документы</div>
               <div className="cc-2col">
                 <div>
-                  <div className="cc-section-subhead">Запчасти</div>
+                  <div className="cc-section-subhead">{isInsCar ? 'Запчасти по страховой' : 'Запчасти'}</div>
                   {partNotices.map((n) => (
                     <div key={n.key} style={{ display: 'flex', alignItems: 'flex-start', gap: 6, margin: '0 0 8px', padding: '7px 10px', borderRadius: 8, fontSize: 12, lineHeight: 1.35, background: 'color-mix(in srgb, var(--color-warning) 12%, transparent)', border: '1px solid color-mix(in srgb, var(--color-warning) 55%, transparent)', color: 'var(--color-warning)' }}>
                       <span style={{ flexShrink: 0, display: 'inline-flex', marginTop: 1 }}><Icon name={n.icon} size={13} /></span>
                       <span>{n.title}</span>
                     </div>
                   ))}
-                  {jobParts.length ? (
+                  {insParts.length ? (
                     <div className="cc-sum-list">
-                      {jobParts.map((p, i) => (
+                      {insParts.map((p, i) => (
                         <div className="cc-sum-row" key={`p-${i}`}>
                           <span className="cc-sum-ico"><Icon name="box" size={15} /></span>
                           <span className="cc-sum-name">
@@ -1082,7 +1847,7 @@ export default function CarCard({
             </section>
           )}
 
-          {isEdit && journal.length > 0 && (
+          {isEdit && activeTab === 'journal' && journal.length > 0 && (
             <section className="cc-section">
               <div className="cc-section-head"><span className="cc-section-icon" />Журнал</div>
               <div className="cc-journal">
@@ -1098,6 +1863,15 @@ export default function CarCard({
               </div>
             </section>
           )}
+          {/* Пустые разделы: короткая подсказка вместо белого экрана. Деньги на
+              вкладке допродаж (у них нет страховых реквизитов) и работы у машины,
+              по которой ещё ничего не заведено. */}
+          {activeTab === 'money' && onExtrasTab && (
+            <div className="cc-tab-empty cc-full">Допродажи клиент оплачивает отдельным счётом — страховых реквизитов у них нет. Их работы и запчасти — на вкладке «Работы и запчасти».</div>
+          )}
+          {isEdit && activeTab === 'works' && !insWorks.length && !insParts.length && !invoices.length && !(isInsCar && onExtrasTab) && (
+            <div className="cc-tab-empty cc-full">Работы и запчасти пока не добавлены. Их можно внести в окне «Документы» или импортом Audatex при создании машины.</div>
+          )}
          </div>
         </div>
 
@@ -1110,7 +1884,8 @@ export default function CarCard({
                   <button className="cc-btn-ico" onClick={returnToApproval}><Icon name="shield" size={15} />Вернуть в согласование</button>
                 )}
                 <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
-                <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>
+                {isOwner && <button className="cc-btn-ico" onClick={openPay}><Icon name="receipt" size={15} />Оплата мастерам</button>}
+                {isOwner && <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>}
                 {routeSet.length > 0 && <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>}
                 <button className="primary" disabled={savingInfo || !dirtyInfo} onClick={saveInfo}>
                   {savingInfo ? 'Сохраняем…' : dirtyInfo ? 'Сохранить' : 'Сохранено'}
@@ -1147,21 +1922,15 @@ export default function CarCard({
         />
       )}
 
-      {viewer && (
-        // stopPropagation ОБЯЗАТЕЛЕН: просмотрщик — прямой ребёнок cc-backdrop, у
-        // которого onClick закрывает карточку. Без остановки всплытия закрытие
-        // фото заодно роняло бы всю карточку. Закрываем только сам просмотрщик.
-        <div className="cc-viewer" onClick={(e) => { e.stopPropagation(); setViewer(null); }}>
-          <button
-            className="cc-viewer-close"
-            onClick={(e) => { e.stopPropagation(); setViewer(null); }}
-            aria-label="Закрыть"
-          >
-            <Icon name="x" size={24} strokeWidth={2} />
-          </button>
-          <img src={viewer.url} alt="Фото автомобиля" onClick={(e) => e.stopPropagation()} />
-        </div>
+      {payOpen && (
+        <MasterPayModal
+          job={costingJob}
+          onSaved={(c) => setLocalCosting(c)}
+          onClose={() => setPayOpen(false)}
+        />
       )}
+
+      <PhotoViewer photo={viewer} onClose={() => setViewer(null)} alt="Фото автомобиля" />
     </div>
   );
 }
@@ -1264,16 +2033,6 @@ function RoutePreview({ posts, draftStages, existingStages, deadline, highlightS
         </div>
       </div>
       <div className="route-preview-hint">Серые блоки — занято другими машинами, синие — этапы этого заказа, красные — конфликт по времени</div>
-    </div>
-  );
-}
-
-// One cell of the header spec-strip (VIN · Пробег · Цвет · Дедлайн).
-function SpecItem({ label, value }) {
-  return (
-    <div className="cc-spec-item">
-      <span className="cc-spec-label">{label}</span>
-      <span className={`cc-spec-value${value ? '' : ' is-empty'}`}>{value || '—'}</span>
     </div>
   );
 }

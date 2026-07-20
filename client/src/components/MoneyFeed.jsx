@@ -52,6 +52,13 @@ export default function MoneyFeed({ cash, onTxChanged }) {
     try { await api.transactions.remove(id); onTxChanged(); } catch { /* сеть/правила */ }
   }
 
+  // Выплата зарплаты живёт в отдельной коллекции — удаление здесь = отмена выдачи
+  // (аванса/расчёта), она исчезнет и на экране «Зарплата мастерам».
+  async function removeSalary(id) {
+    if (!window.confirm('Отменить эту выплату? Она исчезнет и на экране «Зарплата мастерам».')) return;
+    try { await api.salaryPayments.remove(id); onTxChanged(); } catch { /* сеть/правила */ }
+  }
+
   // Group the period's events by calendar day (feed is already sorted desc).
   const days = useMemo(() => {
     const m = new Map();
@@ -123,7 +130,9 @@ export default function MoneyFeed({ cash, onTxChanged }) {
                   </span>
                   {e.tx_id
                     ? <button className="fin-tx-del" title="Удалить" onClick={() => removeTx(e.tx_id)}>×</button>
-                    : <span className="fin-tx-del-spacer" />}
+                    : e.salary_id
+                      ? <button className="fin-tx-del" title="Отменить выплату" onClick={() => removeSalary(e.salary_id)}>×</button>
+                      : <span className="fin-tx-del-spacer" />}
                 </div>
               ))}
             </div>

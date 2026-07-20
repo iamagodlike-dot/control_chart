@@ -3,7 +3,7 @@
 
 // Categories offered in the add form. Tailored to what an экспедитор actually
 // spends on, not the shop's accounting chart.
-export const EXPENSE_CATEGORIES = ['Запчасти', 'Бензин / дорога', 'Доставка', 'Инструмент', 'Прочее'];
+export const EXPENSE_CATEGORIES = ['Запчасти', 'Расходники', 'Бензин / дорога', 'Доставка', 'Инструмент', 'Прочее'];
 
 export function expensesTotal(list = []) {
   return (Array.isArray(list) ? list : []).reduce((s, e) => s + (Number(e && e.amount) || 0), 0);

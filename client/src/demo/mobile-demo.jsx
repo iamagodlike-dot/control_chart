@@ -24,7 +24,7 @@ const JOBS = [
   {
     id: 'j2', car_model: 'KIA RIO', plate: 'A007KX124', order_number: '102', client_name: 'Кузнецов Д.', cell_ids: ['B3'],
     parts: [
-      { id: 'p3', name: 'Капот', code: '', qty: 1, supplier: 'Разборка на Калинина', status: 'ordered', eta: '01.07' },
+      { id: 'p3', name: 'Капот', code: '', qty: 1, supplier: 'Разборка на Калинина', status: 'arrived', eta: '01.07' },
       { id: 'p4', name: 'Крыло переднее правое', code: '53801-06', qty: 1, supplier: 'Exist', status: 'ordered', eta: '06.07' },
     ],
   },
@@ -47,7 +47,7 @@ function MobileDemo() {
   useEffect(() => { document.documentElement.dataset.theme = theme; }, [theme]);
 
   const [jobs, setJobs] = useState(JOBS);
-  const [rfilter, setRfilter] = useState('ordered');
+  const [rfilter, setRfilter] = useState('arrived');
   const recv = useMemo(() => buildReceiving(jobs, rfilter), [jobs, rfilter]);
   function onSetStatus(jobId, partId, status) {
     setJobs((js) => js.map((j) => (j.id !== jobId ? j : { ...j, parts: j.parts.map((p) => (p.id === partId ? { ...p, status } : p)) })));

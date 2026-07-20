@@ -3,21 +3,25 @@ import { createPortal, flushSync } from 'react-dom';
 import QRCode from 'qrcode';
 import { api } from '../api';
 import DocSheet from './DocSheet';
+import DocLineItems from './DocLineItems';
+import DocPreviewPane from './DocPreviewPane';
+import CollapsibleSection from './CollapsibleSection';
+import DocTotal from './DocTotal';
+import DiscountField from './DiscountField';
 import DateTimeField from './DateTimeField';
 import { printFitted } from '../printDoc';
 import {
   buildActSnapshot, buildInvoiceSnapshot, buildHandoverSnapshot, pickSeedItems,
-  computeDocTotals, buildPaymentQrString, qrIsComplete, uid, money, lineTotal,
-  formatDocDate, buildPartsConsentText, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT,
+  computeDocTotals, buildPaymentQrString, qrIsComplete, uid,
+  formatDocDate, buildPartsConsentText, orderMatchesRecipient, planDocItemsToCar, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT, DEFAULT_INTAKE_TEXT,
 } from '../orderDoc';
+import { genPartId } from '../parts';
 import '../orderDoc.css';
 
-const A4_WIDTH_PX = 794;
-
-function buildInitial(type, job, company) {
-  if (type === 'act') return buildActSnapshot(job, company);
-  if (type === 'invoice') return buildInvoiceSnapshot(job, company);
-  return buildHandoverSnapshot(job, company);
+function buildInitial(type, job, company, recipient, direction = 'intake') {
+  if (type === 'act') return buildActSnapshot(job, company, null, recipient);
+  if (type === 'invoice') return buildInvoiceSnapshot(job, company, null, recipient);
+  return buildHandoverSnapshot(job, company, recipient, direction);
 }
 
 function seedFromExisting(existingDoc) {
@@ -25,17 +29,18 @@ function seedFromExisting(existingDoc) {
   return rest;
 }
 
-export default function DocEditor({ type, job, company, onClose }) {
-  const [snapshot, setSnapshot] = useState(() => buildInitial(type, job, company));
+export default function DocEditor({ type, job, company, recipient = 'all', onClose, onJobUpdated }) {
+  // Направление акта приёма-передачи: 'intake' (приём в сервис) / 'issue' (выдача клиенту).
+  const [direction, setDirection] = useState('intake');
+  const [snapshot, setSnapshot] = useState(() => buildInitial(type, job, company, recipient, 'intake'));
   const [docId, setDocId] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState('');
   const [savedToCar, setSavedToCar] = useState(false);
-  const [scale, setScale] = useState(0.6);
+  const [showPreview, setShowPreview] = useState(true);
   const [history, setHistory] = useState([]);
   const [qrDataUrl, setQrDataUrl] = useState('');
-  const paneRef = useRef(null);
   const touchedRef = useRef(false);
 
   const isAct = type === 'act';
@@ -43,24 +48,15 @@ export default function DocEditor({ type, job, company, onClose }) {
   const isHandover = type === 'handover';
   const hasItems = isAct || isInvoice;
 
-  // Fit A4 preview to pane width.
-  useEffect(() => {
-    const pane = paneRef.current;
-    if (!pane) return undefined;
-    const fit = () => setScale(Math.max(0.25, Math.min(1, (pane.clientWidth - 32) / A4_WIDTH_PX)));
-    fit();
-    const ro = new ResizeObserver(fit);
-    ro.observe(pane);
-    return () => ro.disconnect();
-  }, []);
-
   useEffect(() => { const img = new Image(); img.src = '/logo-mark.png'; }, []);
 
   async function refresh() {
     if (!job?.id) return [];
     try {
       const all = await api.orderDocuments.listByJob(job.id);
-      setHistory(all.filter((d) => d.type === type));
+      // Ранее выданные — только этого типа И этого получателя (страховой/клиент),
+      // чтобы страховые и клиентские документы не смешивались.
+      setHistory(all.filter((d) => d.type === type && (recipient === 'all' || orderMatchesRecipient(d, recipient))));
       return all;
     } catch {
       setHistory([]);
@@ -73,9 +69,9 @@ export default function DocEditor({ type, job, company, onClose }) {
     (async () => {
       const all = await refresh();
       if (hasItems && !touchedRef.current) {
-        const seed = pickSeedItems(job, all);
+        const seed = pickSeedItems(job, all, recipient);
         if (seed.source === 'order') {
-          setSnapshot((s) => (touchedRef.current ? s : (isAct ? buildActSnapshot(job, company, seed) : buildInvoiceSnapshot(job, company, seed))));
+          setSnapshot((s) => (touchedRef.current ? s : (isAct ? buildActSnapshot(job, company, seed, recipient) : buildInvoiceSnapshot(job, company, seed, recipient))));
         }
       }
     })();
@@ -95,7 +91,9 @@ export default function DocEditor({ type, job, company, onClose }) {
   function patch(fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, ...fields })); setSaved(false); }
   function patchGroup(group, fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, [group]: { ...s[group], ...fields } })); setSaved(false); setSavedToCar(false); }
 
-  // Opt-in: push the document's vehicle + client data back onto the car card.
+  // Opt-in: push the document's vehicle + client data AND услуги/запчасти back onto
+  // the car card. Услуги/запчасти — «добавить и обновить, не удалять» по получателю
+  // (см. planDocItemsToCar); совпадающие запчасти сохраняют закупку/приёмку.
   async function saveToCar() {
     if (!job?.id) return;
     const veh = snapshot.vehicle || {};
@@ -108,11 +106,18 @@ export default function DocEditor({ type, job, company, onClose }) {
     if (veh.mileage) upd.mileage = veh.mileage;
     if (cust.name) upd.client_name = cust.name;
     if (cust.phone) upd.client_phone = cust.phone;
-    if (!Object.keys(upd).length) return;
-    if (!window.confirm('Обновить данные машины в карточке данными из документа? Заполненные поля перезапишут карточку.')) return;
+    const { services, partOps } = planDocItemsToCar(job, snapshot, recipient, genPartId);
+    const hasDocItems = (snapshot.services || []).some((s) => String((s && s.name) || '').trim())
+      || (snapshot.parts || []).some((p) => String((p && p.code) || '').trim() || String((p && p.name) || '').trim());
+    if (!Object.keys(upd).length && !hasDocItems) return;
+    if (!window.confirm('Обновить карточку машины данными из документа?\n\n• Марка, гос. номер, VIN, пробег и клиент — перезапишут карточку.\n• Услуги и запчасти из документа — добавятся в карточку и обновят совпадающие. Ничего не удаляется (удалить позицию можно на экране «Запчасти»).')) return;
     try {
-      await api.jobs.update(job.id, upd);
+      const payload = { ...upd };
+      if ((snapshot.services || []).some((s) => String((s && s.name) || '').trim())) payload.services = services;
+      if (Object.keys(payload).length) await api.jobs.update(job.id, payload);
+      for (const p of partOps) await api.jobs.savePart(job.id, p); // последовательно: транзакции на один job-док не должны конфликтовать
       setSavedToCar(true);
+      if (onJobUpdated) onJobUpdated();
     } catch {
       alert('Не удалось обновить карточку машины.');
     }
@@ -126,8 +131,20 @@ export default function DocEditor({ type, job, company, onClose }) {
   function updatePart(id, f) { patch({ parts: snapshot.parts.map((p) => (p.id === id ? { ...p, ...f } : p)) }); }
   function removePart(id) { patch({ parts: snapshot.parts.filter((p) => p.id !== id) }); }
 
-  function openExisting(d) { touchedRef.current = true; setSnapshot(seedFromExisting(d)); setDocId(d.id); setSaved(true); }
-  function newDoc() { touchedRef.current = true; setSnapshot(buildInitial(type, job, company)); setDocId(null); setSaved(false); }
+  function openExisting(d) { touchedRef.current = true; setSnapshot(seedFromExisting(d)); setDocId(d.id); setSaved(true); if (isHandover) setDirection(d.direction || 'issue'); }
+  function newDoc() { touchedRef.current = true; setSnapshot(buildInitial(type, job, company, recipient, direction)); setDocId(null); setSaved(false); }
+
+  // Смена направления акта: заголовок, подписи и стандартный текст берутся из направления.
+  function changeDirection(dir) {
+    setDirection(dir);
+    patch({
+      direction: dir,
+      handover_text: dir === 'intake' ? DEFAULT_INTAKE_TEXT : DEFAULT_HANDOVER_TEXT,
+      show_handover_text: true,
+      show_intake: true,
+      show_issue: dir === 'issue',
+    });
+  }
 
   async function save() {
     setSaving(true);
@@ -136,11 +153,16 @@ export default function DocEditor({ type, job, company, onClose }) {
       const n = (v) => Number(v) || 0;
       const payload = { ...snapshot };
       if (hasItems) {
+        const t = computeDocTotals(snapshot);
         payload.services = (snapshot.services || []).map((s) => ({ ...s, qty: n(s.qty), price: n(s.price) }));
         payload.parts = (snapshot.parts || []).map((p) => ({ ...p, qty: n(p.qty), price: n(p.price) }));
-        payload.discount = n(snapshot.discount);
+        // discount ПЕРСИСТИМ рублями (эффективную сумму) — costing/печать читают рублями;
+        // режим/процент сохраняем отдельно для повторного открытия.
+        payload.discount = t.discount;
+        payload.discount_mode = snapshot.discount_mode === 'pct' ? 'pct' : 'rub';
+        payload.discount_pct = n(snapshot.discount_pct);
         payload.prepayment = n(snapshot.prepayment);
-        payload.totals = computeDocTotals(snapshot);
+        payload.totals = t;
       }
       if (isInvoice) {
         payload.paid = !!snapshot.paid;
@@ -200,7 +222,7 @@ export default function DocEditor({ type, job, company, onClose }) {
             <h4>Документ</h4>
             <div className="oe-grid">
               <label className="oe-field">№ документа
-                <input value={snapshot.doc_number} onChange={(e) => patch({ doc_number: e.target.value })} placeholder="присвоится автоматически при сохранении" />
+                <input value={snapshot.doc_number} onChange={(e) => patch({ doc_number: e.target.value })} placeholder="присвоится при сохранении" />
               </label>
               <label className="oe-field">Дата
                 <DateTimeField mode="date" value={snapshot.doc_date} onChange={(v) => patch({ doc_date: v })} />
@@ -248,50 +270,39 @@ export default function DocEditor({ type, job, company, onClose }) {
             <>
               <div className="oe-section">
                 <h4>Работы</h4>
-                <table className="items-table">
-                  <thead><tr><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th><th></th></tr></thead>
-                  <tbody>
-                    {(snapshot.services || []).map((s) => (
-                      <tr key={s.id}>
-                        <td><input value={s.name} onChange={(e) => updateService(s.id, { name: e.target.value })} placeholder="напр. Окраска двери" /></td>
-                        <td><input type="number" min="0" value={s.qty} onChange={(e) => updateService(s.id, { qty: e.target.value })} /></td>
-                        <td><input type="number" min="0" value={s.price} onChange={(e) => updateService(s.id, { price: e.target.value })} /></td>
-                        <td className="items-table-sum">{money(lineTotal(s))}</td>
-                        <td><button className="danger small" onClick={() => removeService(s.id)}>×</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button onClick={addService}>+ Добавить работу</button>
+                <DocLineItems
+                  kind="services"
+                  items={snapshot.services}
+                  onAdd={addService}
+                  onUpdate={updateService}
+                  onRemove={removeService}
+                  addLabel="+ Добавить работу"
+                />
               </div>
 
               <div className="oe-section">
                 <h4>Запчасти / материалы</h4>
-                <table className="items-table">
-                  <thead><tr><th>Код</th><th>Наименование</th><th>Кол-во</th><th>Ед.</th><th>Цена</th><th>Сумма</th><th></th></tr></thead>
-                  <tbody>
-                    {(snapshot.parts || []).map((p) => (
-                      <tr key={p.id}>
-                        <td><input value={p.code} onChange={(e) => updatePart(p.id, { code: e.target.value })} placeholder="артикул" /></td>
-                        <td><input value={p.name} onChange={(e) => updatePart(p.id, { name: e.target.value })} placeholder="напр. Бампер" /></td>
-                        <td><input type="number" min="0" value={p.qty} onChange={(e) => updatePart(p.id, { qty: e.target.value })} /></td>
-                        <td><input value={p.unit} onChange={(e) => updatePart(p.id, { unit: e.target.value })} placeholder="шт." /></td>
-                        <td><input type="number" min="0" value={p.price} onChange={(e) => updatePart(p.id, { price: e.target.value })} /></td>
-                        <td className="items-table-sum">{money(lineTotal(p))}</td>
-                        <td><button className="danger small" onClick={() => removePart(p.id)}>×</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <button onClick={addPart}>+ Добавить запчасть</button>
+                <DocLineItems
+                  kind="parts"
+                  items={snapshot.parts}
+                  onAdd={addPart}
+                  onUpdate={updatePart}
+                  onRemove={removePart}
+                  addLabel="+ Добавить запчасть"
+                />
               </div>
 
               <div className="oe-section">
                 <h4>Итоги</h4>
                 <div className="oe-grid">
-                  <label className="oe-field">Скидка, ₽
-                    <input type="number" min="0" value={snapshot.discount} onChange={(e) => patch({ discount: e.target.value })} />
-                  </label>
+                  <DiscountField
+                    mode={snapshot.discount_mode}
+                    rub={snapshot.discount}
+                    pct={snapshot.discount_pct}
+                    effective={totals ? totals.discount : 0}
+                    subtotal={totals ? totals.subtotal : 0}
+                    onPatch={patch}
+                  />
                   {(isAct || isInvoice) && (
                     <label className="oe-field">Предоплата, ₽
                       <input type="number" min="0" value={snapshot.prepayment} onChange={(e) => patch({ prepayment: e.target.value })} />
@@ -306,12 +317,7 @@ export default function DocEditor({ type, job, company, onClose }) {
                     </label>
                   )}
                 </div>
-                {totals && (
-                  <div className="oe-hint">
-                    Итого: <b>{money(totals.total)}</b>
-                    {totals.prepayment > 0 && <> · Предоплата: {money(totals.prepayment)} · <b>К доплате: {money(totals.due)}</b></>}
-                  </div>
-                )}
+                {totals && <DocTotal totals={totals} />}
               </div>
             </>
           )}
@@ -319,8 +325,24 @@ export default function DocEditor({ type, job, company, onClose }) {
           {isInvoice && (
             <>
               <div className="oe-section">
-                <h4>Банковские реквизиты (для этого счёта)</h4>
-                <div className="oe-hint">По умолчанию из «Реквизиты компании». Правки здесь остаются только в этом счёте.</div>
+                <label className="oe-toggle">
+                  <input type="checkbox" checked={snapshot.show_qr} onChange={(e) => patch({ show_qr: e.target.checked })} />
+                  QR-код для оплаты
+                </label>
+                {snapshot.show_qr && !qrIsComplete(snapshot) && <div className="oe-hint">Заполните банковские реквизиты и ИНН — тогда QR будет рабочим.</div>}
+              </div>
+
+              <div className="oe-section">
+                <label className="oe-toggle">
+                  <input type="checkbox" checked={!!snapshot.paid} onChange={(e) => patch({ paid: e.target.checked })} />
+                  Счёт оплачен
+                </label>
+                <div className="oe-hint">Оплаченные счета попадают в «Оплачено» на борде аналитики (вкладка «История»).</div>
+              </div>
+
+              <div className="oe-group-label"><span>Дополнительно · реквизиты и тексты</span></div>
+
+              <CollapsibleSection title="Банковские реквизиты (для этого счёта)" hint="По умолчанию из «Реквизиты компании». Правки здесь остаются только в этом счёте." defaultOpen={!(bank.bank_name || bank.account)}>
                 <div className="oe-grid">
                   <label className="oe-field oe-full">Банк получателя
                     <input value={bank.bank_name || ''} onChange={(e) => patchBank({ bank_name: e.target.value })} />
@@ -338,81 +360,63 @@ export default function DocEditor({ type, job, company, onClose }) {
                     <input value={bank.corr_account || ''} onChange={(e) => patchBank({ corr_account: e.target.value })} />
                   </label>
                 </div>
-              </div>
+              </CollapsibleSection>
 
-              <div className="oe-section">
-                <label className="oe-toggle">
-                  <input type="checkbox" checked={snapshot.show_qr} onChange={(e) => patch({ show_qr: e.target.checked })} />
-                  QR-код для оплаты
-                </label>
-                {snapshot.show_qr && !qrIsComplete(snapshot) && <div className="oe-hint">Заполните банковские реквизиты и ИНН — тогда QR будет рабочим.</div>}
-              </div>
-
-              <div className="oe-section">
-                <div className="oe-toggle-row">
-                  <label className="oe-toggle">
-                    <input type="checkbox" checked={snapshot.show_invoice_note} onChange={(e) => patch({ show_invoice_note: e.target.checked })} />
-                    Примечание об оплате
-                  </label>
-                  <button className="small" onClick={() => patch({ invoice_note: DEFAULT_INVOICE_NOTE })}>Вернуть стандартный текст</button>
+              <CollapsibleSection title="Примечание об оплате" toggle={{ checked: snapshot.show_invoice_note, onChange: (v) => patch({ show_invoice_note: v }) }}>
+                <div className="oe-collapse-actions">
+                  {/* Заодно включаем блок: иначе при снятой галочке клик «ничего не делает» */}
+                  <button className="small" onClick={() => patch({ invoice_note: DEFAULT_INVOICE_NOTE, show_invoice_note: true })}>Вернуть стандартный текст</button>
                 </div>
                 <textarea className="oe-textarea" value={snapshot.invoice_note} disabled={!snapshot.show_invoice_note} onChange={(e) => patch({ invoice_note: e.target.value })} />
-              </div>
-
-              <div className="oe-section">
-                <label className="oe-toggle">
-                  <input type="checkbox" checked={!!snapshot.paid} onChange={(e) => patch({ paid: e.target.checked })} />
-                  Счёт оплачен
-                </label>
-                <div className="oe-hint">Оплаченные счета попадают в «Оплачено» на борде аналитики (вкладка «История»).</div>
-              </div>
+              </CollapsibleSection>
             </>
           )}
 
           {isAct && (
             <>
-              <div className="oe-section">
-                <label className="oe-toggle">
-                  <input type="checkbox" checked={snapshot.show_recommendations} onChange={(e) => patch({ show_recommendations: e.target.checked })} />
-                  Рекомендации
-                </label>
+              <div className="oe-group-label"><span>Дополнительно · тексты и реквизиты</span></div>
+
+              <CollapsibleSection title="Рекомендации" toggle={{ checked: snapshot.show_recommendations, onChange: (v) => patch({ show_recommendations: v }) }}>
                 <textarea className="oe-textarea" value={snapshot.recommendations} disabled={!snapshot.show_recommendations} onChange={(e) => patch({ recommendations: e.target.value })} placeholder="Рекомендации мастера" />
-              </div>
-              <div className="oe-section">
-                <div className="oe-toggle-row">
-                  <label className="oe-toggle">
-                    <input type="checkbox" checked={snapshot.show_act_text} onChange={(e) => patch({ show_act_text: e.target.checked })} />
-                    Текст акта (выполнено, претензий нет)
-                  </label>
-                  <button className="small" onClick={() => patch({ act_text: DEFAULT_ACT_TEXT })}>Вернуть стандартный текст</button>
+              </CollapsibleSection>
+
+              <CollapsibleSection title="Текст акта (выполнено, претензий нет)" toggle={{ checked: snapshot.show_act_text, onChange: (v) => patch({ show_act_text: v }) }}>
+                <div className="oe-collapse-actions">
+                  <button className="small" onClick={() => patch({ act_text: DEFAULT_ACT_TEXT, show_act_text: true })}>Вернуть стандартный текст</button>
                 </div>
                 <textarea className="oe-textarea" value={snapshot.act_text} disabled={!snapshot.show_act_text} onChange={(e) => patch({ act_text: e.target.value })} />
-              </div>
-              <div className="oe-section">
-                <div className="oe-toggle-row">
-                  <label className="oe-toggle">
-                    <input type="checkbox" checked={snapshot.show_warranty} onChange={(e) => patch({ show_warranty: e.target.checked })} />
-                    Гарантия
-                  </label>
-                  <button className="small" onClick={() => patch({ warranty_text: DEFAULT_WARRANTY })}>Вернуть стандартный текст</button>
+              </CollapsibleSection>
+
+              <CollapsibleSection title="Гарантия" toggle={{ checked: snapshot.show_warranty, onChange: (v) => patch({ show_warranty: v }) }}>
+                <div className="oe-collapse-actions">
+                  <button className="small" onClick={() => patch({ warranty_text: DEFAULT_WARRANTY, show_warranty: true })}>Вернуть стандартный текст</button>
                 </div>
                 <textarea className="oe-textarea" value={snapshot.warranty_text} disabled={!snapshot.show_warranty} onChange={(e) => patch({ warranty_text: e.target.value })} />
-              </div>
-              <div className="oe-section">
-                <div className="oe-toggle-row">
-                  <label className="oe-toggle">
-                    <input type="checkbox" checked={snapshot.show_parts_consent} onChange={(e) => patch({ show_parts_consent: e.target.checked })} />
-                    Согласование по запчастям (Б/У и замены)
-                  </label>
-                  <button className="small" onClick={() => patch({ parts_consent_text: buildPartsConsentText(snapshot.parts) })}>Собрать из запчастей</button>
+              </CollapsibleSection>
+
+              <CollapsibleSection title="Согласование по запчастям (Б/У и замены)" toggle={{ checked: snapshot.show_parts_consent, onChange: (v) => patch({ show_parts_consent: v }) }}>
+                <div className="oe-collapse-actions">
+                  <button className="small" onClick={() => patch({ parts_consent_text: buildPartsConsentText(snapshot.parts), show_parts_consent: true })}>Собрать из запчастей</button>
                 </div>
                 <textarea className="oe-textarea" value={snapshot.parts_consent_text || ''} disabled={!snapshot.show_parts_consent} onChange={(e) => patch({ parts_consent_text: e.target.value })} placeholder="Отметки о Б/У и заменах на аналог — по одной в строке" />
-              </div>
+              </CollapsibleSection>
             </>
           )}
 
           {isHandover && (
             <>
+              <div className="oe-section">
+                <h4>Тип акта</h4>
+                <div className="doc-recipient" style={{ marginTop: 0 }}>
+                  <button className={direction === 'intake' ? 'active' : ''} onClick={() => changeDirection('intake')}>Приём в сервис</button>
+                  <button className={direction === 'issue' ? 'active' : ''} onClick={() => changeDirection('issue')}>Выдача клиенту</button>
+                  <span className="doc-recipient-hint">
+                    {direction === 'intake'
+                      ? 'Приём: ТС сдаёт клиент, принимает сервис. Фиксируем пробег и состояние на входе.'
+                      : 'Выдача: ТС сдаёт сервис, принимает клиент. Фиксируем состояние на выходе.'}
+                  </span>
+                </div>
+              </div>
               <div className="oe-section">
                 <label className="oe-toggle">
                   <input type="checkbox" checked={snapshot.show_intake} onChange={(e) => patch({ show_intake: e.target.checked })} />
@@ -444,16 +448,15 @@ export default function DocEditor({ type, job, company, onClose }) {
                     <input type="checkbox" checked={snapshot.show_handover_text} onChange={(e) => patch({ show_handover_text: e.target.checked })} />
                     Текст приёма-передачи
                   </label>
-                  <button className="small" onClick={() => patch({ handover_text: DEFAULT_HANDOVER_TEXT })}>Вернуть стандартный текст</button>
+                  <button className="small" onClick={() => patch({ handover_text: direction === 'intake' ? DEFAULT_INTAKE_TEXT : DEFAULT_HANDOVER_TEXT, show_handover_text: true })}>Вернуть стандартный текст</button>
                 </div>
                 <textarea className="oe-textarea" value={snapshot.handover_text} disabled={!snapshot.show_handover_text} onChange={(e) => patch({ handover_text: e.target.value })} />
               </div>
+              <div className="oe-group-label"><span>Дополнительно · реквизиты</span></div>
             </>
           )}
 
-          <div className="oe-section">
-            <h4>Реквизиты компании (для этого документа)</h4>
-            <div className="oe-hint">По умолчанию из «Посты и мастера → Реквизиты». Правки здесь остаются только в этом документе.</div>
+          <CollapsibleSection title="Реквизиты компании (для этого документа)" hint="По умолчанию из «Посты и мастера → Реквизиты». Правки здесь остаются только в этом документе.">
             <div className="oe-grid">
               <label className="oe-field oe-full">Наименование
                 <input value={c.name} onChange={(e) => patchGroup('company', { name: e.target.value })} />
@@ -465,23 +468,26 @@ export default function DocEditor({ type, job, company, onClose }) {
                 <input value={c.director} onChange={(e) => patchGroup('company', { director: e.target.value })} />
               </label>
             </div>
-          </div>
+          </CollapsibleSection>
         </div>
 
-        <div className="order-editor-right" ref={paneRef} style={{ textAlign: 'center' }}>
-          <div style={{ zoom: scale, display: 'inline-block' }}>
-            <DocSheet snapshot={snapshot} qrDataUrl={qrDataUrl} />
-          </div>
-        </div>
+        <DocPreviewPane show={showPreview}>
+          <DocSheet snapshot={snapshot} qrDataUrl={qrDataUrl} />
+        </DocPreviewPane>
       </div>
 
       <div className="order-editor-actions">
-        <button onClick={onClose}>Закрыть</button>
+        <div className="oe-actions-left">
+          <button onClick={onClose}>Закрыть</button>
+          <button className="oe-preview-toggle" aria-pressed={showPreview} onClick={() => setShowPreview((v) => !v)}>
+            {showPreview ? '🙈 Скрыть лист' : '👁 Показать образец'}
+          </button>
+        </div>
         <div>
           {saveError && <span className="login-error">{saveError}</span>}
           {savedToCar && <span className="oe-saved">Карточка обновлена ✓</span>}
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
-          <button onClick={saveToCar} title="Перенести марку, гос. номер, VIN, пробег и клиента в карточку машины">↩ Обновить карточку машины</button>
+          <button onClick={saveToCar} title="Перенести данные ТС, клиента, а также услуги и запчасти из документа в карточку машины (новые добавит, совпадающие обновит, ничего не удалит)">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
           <button className="primary" onClick={printDoc}>🖨 Печать</button>
         </div>

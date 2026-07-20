@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { money, uid } from '../orderDoc';
+import { money } from '../orderDoc';
 import { buildCosting, computeCosting } from '../costing';
 import Icon from './Icon';
 
@@ -65,20 +65,6 @@ export default function CostingModal({ job, onClose, onSaved }) {
   function updatePart(id, fields) {
     patch({ parts: costing.parts.map((p) => (p.id === id ? { ...p, ...fields } : p)) });
   }
-  function updateLabor(id, fields) {
-    patch({ labor: costing.labor.map((l) => (l.id === id ? { ...l, ...fields } : l)) });
-  }
-  function addLabor() {
-    patch({ labor: [...costing.labor, { id: uid(), master_id: '', name: '', amount: 0 }] });
-  }
-  function removeLabor(id) {
-    patch({ labor: costing.labor.filter((l) => l.id !== id) });
-  }
-  function selectLaborMaster(id, masterId) {
-    const m = masters.find((x) => x.id === masterId);
-    updateLabor(id, { master_id: masterId, name: m ? m.name : '' });
-  }
-
   // Re-pull works & parts from the latest заказ-наряд, keeping purchase prices
   // and labour already entered.
   function reseedFromOrder() {
@@ -205,38 +191,31 @@ export default function CostingModal({ job, onClose, onSaved }) {
                 )}
               </section>
 
-              {/* ОПЛАТА МАСТЕРАМ */}
+              {/* ОПЛАТА МАСТЕРАМ — только для справки; задаётся на карточке машины */}
               <section className="oe-section">
                 <h4>Оплата мастерам (сдельно)</h4>
-                <table className="items-table costing-table">
-                  <thead><tr><th>Мастер</th><th>Сумма к выплате</th><th></th></tr></thead>
-                  <tbody>
-                    {costing.labor.map((l) => (
-                      <tr key={l.id}>
-                        <td>
-                          <select value={l.master_id} onChange={(e) => selectLaborMaster(l.id, e.target.value)}>
-                            <option value="">— выберите мастера —</option>
-                            {l.master_id && l.name && !masters.some((m) => m.id === l.master_id) && (
-                              <option value={l.master_id}>{l.name}</option>
-                            )}
-                            {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
-                          </select>
-                        </td>
-                        <td>
-                          <input
-                            type="number" min="0" className="costing-input"
-                            value={l.amount} onChange={(e) => updateLabor(l.id, { amount: e.target.value })}
-                          />
-                        </td>
-                        <td><button className="danger small" onClick={() => removeLabor(l.id)}>×</button></td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr><td>Итого оплата мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td><td></td></tr>
-                  </tfoot>
-                </table>
-                <button onClick={addLabor}>+ Добавить мастера</button>
+                <p className="cc-hint" style={{ marginTop: 0 }}>
+                  Задаётся на карточке машины — кнопка «Оплата мастерам». Здесь показано для справки
+                  (входит в себестоимость).
+                </p>
+                {costing.labor.filter((l) => l.master_id || Number(l.amount)).length === 0 ? (
+                  <div className="cc-hint">Оплата мастерам ещё не задана.</div>
+                ) : (
+                  <table className="items-table costing-table">
+                    <thead><tr><th>Мастер</th><th>Сумма за машину</th></tr></thead>
+                    <tbody>
+                      {costing.labor.filter((l) => l.master_id || Number(l.amount)).map((l) => (
+                        <tr key={l.id}>
+                          <td>{l.name || '—'}</td>
+                          <td className="costing-num">{money(l.amount)}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                    <tfoot>
+                      <tr><td>Итого оплата мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td></tr>
+                    </tfoot>
+                  </table>
+                )}
               </section>
 
               {/* МАТЕРИАЛЫ + НАКЛАДНЫЕ */}

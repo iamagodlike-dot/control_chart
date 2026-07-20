@@ -28,6 +28,19 @@ export default function RoleGate({ user, signOut, children }) {
 
   useEffect(() => {
     let alive = true;
+
+    // Страховка от «вечной» загрузки доступа: если чтение так и не завершилось
+    // (обычно устройство не может достучаться до базы — заблокированный или
+    // «глючный» интернет), через несколько секунд показываем экран «нет связи»
+    // с кнопкой «Обновить», а не крутим спиннер бесконечно. ВАЖНО: по таймауту
+    // роль НЕ выдаём — «fail open» ниже касается только реальной ошибки чтения
+    // (например, пока не задеплоены правила), иначе на медленной сети сотрудник
+    // мог бы случайно получить лишний доступ. Если чтение всё же дойдёт позже —
+    // экран сам сменится на приложение.
+    const timer = setTimeout(() => {
+      if (alive) setState((s) => (s.status === 'loading' ? { status: 'error', role: null, profile: null } : s));
+    }, 10000);
+
     (async () => {
       try {
         const list = await api.users.list();
@@ -39,9 +52,11 @@ export default function RoleGate({ user, signOut, children }) {
         // yet). Fail open — the UI gate is convenience, not the wall.
         console.warn('[RoleGate] could not load access records, defaulting to full access:', err?.code || err);
         setState({ status: 'ready', role: 'owner', profile: null });
+      } finally {
+        clearTimeout(timer);
       }
     })();
-    return () => { alive = false; };
+    return () => { alive = false; clearTimeout(timer); };
   }, [email]);
 
   if (state.status === 'loading') {
@@ -49,6 +64,18 @@ export default function RoleGate({ user, signOut, children }) {
       <div className="app">
         <div className="list-loading" style={{ minHeight: '60vh' }}>
           <div className="spinner" /><span>Загружаем доступ…</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (state.status === 'error') {
+    return (
+      <div className="app">
+        <div className="role-denied">
+          <h2>Нет связи с сервером</h2>
+          <p>Не удалось проверить доступ. Проверьте интернет на устройстве и попробуйте ещё раз. Если вы в мобильном интернете — подключитесь к Wi‑Fi.</p>
+          <button className="app-logout" onClick={() => window.location.reload()}>Обновить</button>
         </div>
       </div>
     );

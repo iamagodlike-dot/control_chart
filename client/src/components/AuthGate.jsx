@@ -51,8 +51,20 @@ export default function AuthGate({ children }) {
   const [password, setPassword] = useState('');
   const [error, setError] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const [checkTimedOut, setCheckTimedOut] = useState(false);
 
   useEffect(() => onAuthStateChanged(auth, setUser), []);
+
+  // Страховка от «вечной» проверки входа: если Firebase так и не ответил
+  // (обычно устройство не может достучаться до сервера — заблокированный или
+  // «глючный» интернет на телефоне), не крутим спиннер бесконечно, а через
+  // несколько секунд показываем понятное сообщение с кнопкой «Обновить».
+  // Если вход всё-таки подтвердится позже — экран сам сменится на приложение.
+  useEffect(() => {
+    if (user !== undefined) return;
+    const t = setTimeout(() => setCheckTimedOut(true), 10000);
+    return () => clearTimeout(t);
+  }, [user]);
 
   async function submit(e) {
     e.preventDefault();
@@ -69,6 +81,14 @@ export default function AuthGate({ children }) {
 
   // Пока проверяем сохранённый вход — та же заставка с полосой загрузки.
   if (user === undefined) {
+    if (checkTimedOut) {
+      return (
+        <AuthShell>
+          <div className="auth-hint">Не удаётся связаться с сервером. Проверьте интернет на устройстве. Если вы в мобильном интернете — подключитесь к Wi‑Fi и обновите.</div>
+          <button className="auth-submit" type="button" onClick={() => window.location.reload()} style={{ marginTop: 14 }}>Обновить</button>
+        </AuthShell>
+      );
+    }
     return (
       <AuthShell>
         <div className="auth-bar"><i /></div>

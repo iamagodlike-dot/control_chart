@@ -7,6 +7,7 @@ const EMPTY = {
   bank_name: '', bik: '', account: '', corr_account: '', vat_mode: 'none',
   workHourStart: 8, workHourEnd: 20,
   materials_pct: DEFAULT_MATERIALS_PCT, overhead_pct: DEFAULT_OVERHEAD_PCT,
+  requirePickupPhoto: false,
 };
 
 export default function CompanySettings() {
@@ -96,6 +97,17 @@ export default function CompanySettings() {
           />
         </label>
       </div>
+
+      <h3>Приёмка запчастей</h3>
+      <p className="panel-hint">Если включено — экспедитор не сможет отметить «Привёз к нам», пока не прикрепит хотя бы одно фото к позиции на экране «Приёмка».</p>
+      <label className="company-check">
+        <input
+          type="checkbox"
+          checked={!!form.requirePickupPhoto}
+          onChange={(e) => setForm({ ...form, requirePickupPhoto: e.target.checked })}
+        />
+        <span>Требовать фото при приёмке запчастей</span>
+      </label>
 
       <div className="inline-form">
         <button className="primary" onClick={save}>Сохранить реквизиты</button>

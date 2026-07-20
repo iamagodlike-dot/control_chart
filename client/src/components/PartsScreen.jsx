@@ -49,6 +49,7 @@ const I = {
   plus: '<path d="M12 5v14M5 12h14"></path>',
   clock: '<circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>',
   info: '<circle cx="12" cy="12" r="9"></circle><path d="M12 8h.01M11 12h1v4h1"></path>',
+  note: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"></path>',
 };
 
 export default function PartsScreen(props) {
@@ -56,12 +57,13 @@ export default function PartsScreen(props) {
     vm, search = '',
     onSearch, onFilter, onClearFilter,
     onStatus, onAdvance, onName, onArticle, onCopyArticle, onKind, onOpenRepl,
-    onOrderedAt, onEta, onQty, onSupplier, onCost, onRemove, onAdd,
-    onPaintCode, onPaintType, onPaintVolume, onPaintCost, onPaintStatus,
+    onOrderedAt, onEta, onQty, onSupplier, onCost, onPayer, onRemove, onAdd,
+    onPaintCode, onPaintType, onPaintVolume, onPaintCost, onPaintStatus, onAddPaint, onRemovePaint,
     supplierNames = [],
     orderPrompt, onOrderDraft, confirmOrder, cancelOrder,
     etaPrompt, onEtaDraft, confirmEta, cancelEta,
     replPrompt, onReplDraft, confirmRepl, cancelRepl,
+    notePrompt, onOpenNote, onNoteDraft, confirmNote, cancelNote,
     onOpenCar,
     banner,
   } = props;
@@ -71,7 +73,7 @@ export default function PartsScreen(props) {
   return (
     <div className="psx" style={wrap}>
       <style>{`
-        .psx{--bg:#080b10;--bg2:#0b0f15;--panel:#0e131a;--panel2:#121924;--line:#1e2732;--line2:#2b3644;--text:#e8edf4;--text2:#8e9bab;--text3:#5a6674;--brand:#29d3e8;--brand-soft:color-mix(in srgb,#29d3e8 16%,transparent);--planned:#6b7a8d;--progress:#2fbbd6;--done:#37d399;--delay:#ff5468;--wait:#f7a93a;--grid:rgba(255,255,255,.035)}
+        .psx{--bg:#080b10;--bg2:#0b0f15;--panel:#0e131a;--panel2:#121924;--line:#1e2732;--line2:#2b3644;--text:#e8edf4;--text2:#8e9bab;--text3:#5a6674;--brand:#29d3e8;--brand-soft:color-mix(in srgb,#29d3e8 16%,transparent);--planned:#6b7a8d;--progress:#2fbbd6;--done:#37d399;--delay:#ff5468;--wait:#f7a93a;--arrived:#a78bfa;--invoiced:#f472b6;--grid:rgba(255,255,255,.035)}
         [data-theme="light"] .psx{--bg:#e7ebf0;--bg2:#eef2f6;--panel:#ffffff;--panel2:#f4f7fa;--line:#d5dce4;--line2:#c3ccd7;--text:#141a22;--text2:#4c5766;--text3:#7d8896;--grid:rgba(0,0,0,.04)}
         .psx svg{flex:0 0 auto}
         .psx input:focus,.psx select:focus{border-color:var(--brand)!important}
@@ -80,9 +82,82 @@ export default function PartsScreen(props) {
         .psx .ps-carhead{cursor:pointer;padding:8px 12px;margin:-8px -12px;border-radius:10px;transition:background .15s}
         .psx .ps-carhead:hover{background:var(--brand-soft)}
         .psx .ps-carhead:active{background:color-mix(in srgb,var(--brand) 24%,transparent)}
+        /* ——— Мобильная адаптация (телефоны ≤640px) ———
+           На десктопе «Запчасти» — широкая таблица на 8 колонок. На телефоне
+           уходим от горизонтальной прокрутки: KPI-полоса сворачивается в
+           компактную сетку с переносом, а каждая строка детали превращается в
+           вертикальную карточку — статус+удалить сверху, затем название,
+           поставщик и мини-сетка Кол/Себест/Рентаб/Цена с подписями.
+           Класс-хуки: .psx-row (строка), .psx-head (заголовки колонок),
+           .psx-meta / .psx-meta-ids (строка под названием), .psx-cell (обёртки
+           полей Кол/Поставщик). Позиции полей адресуем через nth-child, а
+           инлайновые разделители/крупные числа — через [style*=…]. */
+        @media (max-width: 640px){
+          /* На телефоне фильтр+KPI не держим фиксированной шапкой (она съедала
+             ~2/3 экрана) — пусть весь экран прокручивается одним куском, чтобы
+             под список деталей оставалась вся высота. */
+          .psx .psx-body{overflow-y:auto!important;-webkit-overflow-scrolling:touch}
+          .psx .psx-scroll{flex:0 0 auto!important;overflow:visible!important}
+
+          /* поиск на всю ширину под фильтром */
+          .psx .psx-search{flex:1 1 100%!important;margin-left:0!important}
+
+          /* KPI-полоса: перенос вместо горизонтальной прокрутки */
+          .psx .psx-kpi{flex-wrap:wrap!important;overflow-x:visible!important;gap:12px 18px!important;padding:12px 14px!important;align-items:flex-start!important}
+          .psx .psx-kpi [style*="width: 1px"]{display:none!important}
+          .psx .psx-kpi [style*="font-size: 23px"]{font-size:19px!important;white-space:nowrap}
+          .psx .psx-kpi>div[style*="gap: 4px"]{padding:0!important;flex:1 1 42%;min-width:0}
+          .psx .psx-kpi>div[style*="margin-left: auto"]{margin-left:0!important}
+
+          /* список карточек авто */
+          .psx .psx-scroll{padding:12px!important;gap:12px!important}
+          .psx .psx-rows{padding:6px 12px 14px!important}
+          /* показатели в шапке авто переносим и ужимаем зазор */
+          .psx .psx-scroll [style*="gap: 18px"]{gap:12px!important;flex-wrap:wrap;margin-left:0!important}
+
+          /* строка детали → вертикальная карточка */
+          .psx .psx-head{display:none!important}
+          .psx .psx-row{
+            grid-template-columns:1fr 1fr!important;
+            grid-template-areas:"status remove" "name name" "sup sup" "qty cost" "rent ord"!important;
+            gap:10px 12px!important;align-items:start!important;padding:14px 2px!important;
+          }
+          .psx .psx-row>:nth-child(1){grid-area:status;min-width:0}
+          .psx .psx-row>:nth-child(2){grid-area:name;min-width:0}
+          .psx .psx-row>:nth-child(3){grid-area:qty}
+          .psx .psx-row>:nth-child(4){grid-area:sup}
+          .psx .psx-row>:nth-child(5){grid-area:cost}
+          .psx .psx-row>:nth-child(6){grid-area:rent}
+          .psx .psx-row>:nth-child(7){grid-area:ord}
+          .psx .psx-row>:nth-child(8){grid-area:remove;align-self:start}
+
+          /* поля Кол/Поставщик/Себест/Рентаб/Цена — колонкой, с подписью сверху */
+          .psx .psx-row>:nth-child(3),
+          .psx .psx-row>:nth-child(4),
+          .psx .psx-row>:nth-child(5),
+          .psx .psx-row>:nth-child(6),
+          .psx .psx-row>:nth-child(7){display:flex!important;flex-direction:column;align-items:stretch;gap:4px;text-align:left!important}
+          .psx .psx-row>:nth-child(6),
+          .psx .psx-row>:nth-child(7){align-items:flex-start}
+          .psx .psx-row>:nth-child(3)::before{content:'Кол-во'}
+          .psx .psx-row>:nth-child(4)::before{content:'Поставщик'}
+          .psx .psx-row>:nth-child(5)::before{content:'Себест., ₽/шт'}
+          .psx .psx-row>:nth-child(6)::before{content:'Рентаб.'}
+          .psx .psx-row>:nth-child(7)::before{content:'Цена по ЗН'}
+          .psx .psx-row>:nth-child(3)::before,
+          .psx .psx-row>:nth-child(4)::before,
+          .psx .psx-row>:nth-child(5)::before,
+          .psx .psx-row>:nth-child(6)::before,
+          .psx .psx-row>:nth-child(7)::before{font:700 9.5px/1.3 'JetBrains Mono',monospace;letter-spacing:.08em;text-transform:uppercase;color:var(--text3)}
+
+          /* мета-строка под названием: перенос, без фикс. ширины и разделителей */
+          .psx .psx-meta{flex-wrap:wrap!important;gap:7px 8px!important;padding-left:0!important}
+          .psx .psx-meta-ids{flex:1 1 100%!important;overflow:visible!important}
+          .psx .psx-meta [style*="width: 1px"]{display:none!important}
+        }
       `}</style>
       {banner}
-      <div style={css('flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:var(--bg)')}>
+      <div className="psx-body" style={css('flex:1 1 auto;display:flex;flex-direction:column;min-height:0;background:var(--bg)')}>
 
         {/* ---- filter chips + search ---- */}
         <div style={css('flex:0 0 auto;display:flex;align-items:center;gap:12px;padding:14px 22px;border-bottom:1px solid var(--line);flex-wrap:wrap')}>
@@ -105,14 +180,14 @@ export default function PartsScreen(props) {
               </button>
             )}
           </div>
-          <div style={css('margin-left:auto;position:relative;flex:0 0 260px')}>
+          <div className="psx-search" style={css('margin-left:auto;position:relative;flex:0 0 260px')}>
             <span style={css('position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text3);display:flex')}><Ico size={15} paths={I.search} /></span>
             <input value={search} onChange={(e) => onSearch(e.target.value)} placeholder="Поиск: деталь, артикул, машина…" style={vm.searchStyle} />
           </div>
         </div>
 
         {/* ---- KPI bar ---- */}
-        <div style={css('flex:0 0 auto;display:flex;align-items:stretch;gap:0;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--bg2)')}>
+        <div className="psx-kpi" style={css('flex:0 0 auto;display:flex;align-items:stretch;gap:0;padding:14px 22px;border-bottom:1px solid var(--line);background:var(--bg2)')}>
           <div style={css('display:flex;flex-direction:column;gap:4px;padding-right:26px')}>
             <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3)")}>В работе</span>
             <div style={css('display:flex;align-items:baseline;gap:7px')}><span style={css("font-family:'JetBrains Mono',monospace;font-size:23px;font-weight:800;color:var(--wait);line-height:1")}>{vm.actionNeeded}</span><span style={css('font-size:11px;color:var(--text3)')}>поз. · заказ/доставка</span></div>
@@ -143,16 +218,22 @@ export default function PartsScreen(props) {
             <span style={css("font-family:'JetBrains Mono',monospace;font-size:10.5px;letter-spacing:.06em;text-transform:uppercase")}>{vm.scopeLabel}</span>
           </div>
           {vm.missingCost > 0 && (
-            <div title={vm.missingHint} style={css('margin-left:auto;align-self:center;display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;background:color-mix(in srgb,var(--delay) 12%,transparent);border:1px solid color-mix(in srgb,var(--delay) 32%,transparent);color:var(--delay);cursor:help')}>
-              <Ico size={14} paths={I.alert} />
+            <button
+              onClick={() => onFilter('nocost')}
+              title={vm.missingActive ? 'Показать все позиции' : (vm.missingHint + ' — нажмите, чтобы показать только их')}
+              style={css('margin-left:auto;align-self:center;display:flex;align-items:center;gap:8px;padding:6px 12px;border-radius:8px;cursor:pointer;color:var(--delay);' + (vm.missingActive
+                ? 'background:var(--delay);color:#0a0e14;border:1px solid var(--delay);box-shadow:0 0 0 3px color-mix(in srgb,var(--delay) 30%,transparent)'
+                : 'background:color-mix(in srgb,var(--delay) 12%,transparent);border:1px solid color-mix(in srgb,var(--delay) 32%,transparent)'))}
+            >
+              <Ico size={14} paths={vm.missingActive ? I.close : I.alert} />
               <span style={css("font-family:'JetBrains Mono',monospace;font-weight:700;font-size:13px")}>{vm.missingCost}</span>
               <span style={css('font-size:11.5px')}>без себестоимости</span>
-            </div>
+            </button>
           )}
         </div>
 
         {/* ---- car groups ---- */}
-        <div style={css('flex:1 1 auto;overflow-y:auto;min-height:0;padding:22px;display:flex;flex-direction:column;gap:18px')}>
+        <div className="psx-scroll" style={css('flex:1 1 auto;overflow-y:auto;min-height:0;padding:22px;display:flex;flex-direction:column;gap:18px')}>
           {vm.isEmpty && (
             <div style={css('text-align:center;padding:44px 20px;color:var(--text3);border:1px dashed var(--line2);border-radius:12px;flex:0 0 auto')}>
               <div style={css('font-weight:600;font-size:14px;color:var(--text2)')}>Ничего не найдено</div>
@@ -174,6 +255,11 @@ export default function PartsScreen(props) {
                   <span style={css("font-family:'JetBrains Mono',monospace;font-size:12px;font-weight:700;color:var(--text2);padding:3px 9px;border:1px solid var(--line2);border-radius:6px")}>{g.plate}</span>
                   <span style={css("font-family:'JetBrains Mono',monospace;font-size:12px;color:var(--text3)")}>№{g.num} · {g.client}</span>
                 </div>
+                {g.isInsuranceCar && (
+                  <span title="Ремонт по страховой. У позиций можно отметить допродажи клиента." style={css("display:flex;align-items:center;gap:6px;height:24px;padding:0 10px;border-radius:7px;border:1px solid color-mix(in srgb,var(--wait) 34%,transparent);background:color-mix(in srgb,var(--wait) 11%,transparent);color:var(--wait);font-family:'Manrope';font-size:11px;font-weight:700;flex:0 0 auto")}>
+                    Страховая{g.extrasCount > 0 && <span style={css("color:var(--brand)")}>· допродажи {g.extrasCount}</span>}
+                  </span>
+                )}
                 {g.hasCells && (
                   <div style={css('display:flex;align-items:center;gap:6px;flex-wrap:wrap')}>
                     <Ico size={14} sw={1.7} stroke="var(--text3)" style={{ flex: '0 0 auto' }} paths={I.warehouse} />
@@ -195,30 +281,47 @@ export default function PartsScreen(props) {
               </div>
 
               {/* rows */}
-              <div style={css('padding:6px 18px 14px')}>
-                <div style={css("display:grid;grid-template-columns:186px 1fr 44px 118px 120px 96px 96px 40px;gap:12px;padding:9px 4px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--line)")}>
+              <div className="psx-rows" style={css('padding:6px 18px 14px')}>
+                <div className="psx-head" style={css("display:grid;grid-template-columns:186px 1fr 44px 118px 120px 96px 96px 40px;gap:12px;padding:9px 4px;font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.1em;text-transform:uppercase;color:var(--text3);border-bottom:1px solid var(--line)")}>
                   <span>Статус · переход</span><span>Деталь / артикул</span><span style={{ textAlign: 'center' }}>Кол</span><span>Поставщик</span><span>Себест., ₽/шт</span><span style={{ textAlign: 'right' }}>Рентаб.</span><span style={{ textAlign: 'right' }}>По ЗН</span><span />
                 </div>
                 {g.rows.map((p) => (
-                  <div key={p.id} style={p.rowStyle}>
+                  <div key={p.id} className="psx-row" style={p.rowStyle}>
                     {/* status + advance */}
                     <div style={css('display:flex;align-items:center;gap:6px;min-width:0')}>
                       <select value={p.status} onChange={(e) => onStatus(g.carId, p.id, e.target.value)} style={p.statusSelStyle}>
                         {p.statusOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
                       {p.advIsOrder && <button onClick={() => onAdvance(g.carId, p.id)} title="Заказать деталь" style={p.advOrderStyle}><Ico size={15} paths={I.cart} /></button>}
-                      {p.advIsArrive && <button onClick={() => onAdvance(g.carId, p.id)} title="Отметить поступление на склад" style={p.advArriveStyle}><Ico size={15} paths={I.inbox} /></button>}
+                      {p.advIsArrive && <button onClick={() => onAdvance(g.carId, p.id)} title="Приехало в ТК — можно забирать" style={p.advArriveStyle}><Ico size={15} paths={I.truck} /></button>}
+                      {p.advIsToStock && <button onClick={() => onAdvance(g.carId, p.id)} title="Забрал и привёз к нам на склад" style={p.advToStockStyle}><Ico size={15} paths={I.inbox} /></button>}
                       {p.advIsIssue && <button onClick={() => onAdvance(g.carId, p.id)} title="Выдать в работу" style={p.advIssueStyle}><Ico size={15} paths={I.issue} /></button>}
                       {p.advIsDone && <span title="Выдана — цикл завершён" style={css('width:32px;height:34px;border-radius:8px;border:1px solid var(--line2);background:transparent;color:var(--text3);display:flex;align-items:center;justify-content:center;flex:0 0 auto')}><Ico size={15} sw={2} paths={I.check} /></span>}
                     </div>
                     {/* name / identity */}
                     <div style={css('min-width:0')}>
                       <input value={p.name} onChange={(e) => onName(g.carId, p.id, e.target.value)} placeholder="Название детали" style={css("width:100%;height:30px;padding:0 8px;border-radius:7px;border:1px solid transparent;background:transparent;color:var(--text);font-family:'Manrope';font-weight:600;font-size:13.5px;outline:none")} />
-                      <div style={css('display:flex;align-items:center;gap:10px;margin-top:4px;padding-left:8px;min-width:0')}>
-                        <div style={css('display:flex;align-items:center;gap:9px;flex:0 0 380px;overflow:hidden')}>
+                      <div className="psx-meta" style={css('display:flex;align-items:center;gap:10px;margin-top:4px;padding-left:8px;min-width:0')}>
+                        <div className="psx-meta-ids" style={css('display:flex;align-items:center;gap:9px;flex:0 0 380px;overflow:hidden')}>
                           <select value={p.kind} onChange={(e) => onKind(g.carId, p.id, e.target.value)} title="Тип запчасти" style={p.kindBadgeStyle}>
                             {p.kindOptions.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
                           </select>
+                          {/* Поток биллинга. Один убыток → прежняя лампочка (клик
+                              переключает страховая ↔ допродажа). Несколько дел →
+                              селектор: лампочка не выразила бы, В КАКОЕ дело нести. */}
+                          {p.isInsuranceCar && !p.payerMulti && (
+                            <button type="button" onClick={() => onPayer(g.carId, p.id, p.payer === 'client' ? 'insurance' : 'client')} title={p.payerTitle} aria-label={p.payerLabel} style={p.payerDotStyle} />
+                          )}
+                          {p.isInsuranceCar && p.payerMulti && (
+                            <select
+                              value={p.payer}
+                              onChange={(e) => onPayer(g.carId, p.id, e.target.value)}
+                              title={`К какому делу относится позиция: ${p.payerStreamLabel}`}
+                              style={p.payerSelStyle}
+                            >
+                              {p.payerOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                            </select>
+                          )}
                           <div style={css('width:1px;height:14px;background:var(--line);flex:0 0 auto')} />
                           <div style={css('display:flex;align-items:center;gap:2px;flex:0 0 auto')}>
                             <input value={p.article} onChange={(e) => onArticle(g.carId, p.id, e.target.value)} placeholder="ориг. артикул" style={css("width:104px;height:24px;padding:0 6px;border-radius:6px;border:1px solid transparent;background:transparent;color:var(--text2);font-family:'JetBrains Mono',monospace;font-size:11px;outline:none")} />
@@ -248,12 +351,28 @@ export default function PartsScreen(props) {
                           </div>
                           {p.overdue && <span style={css("font-family:'JetBrains Mono',monospace;font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--delay);padding:2px 7px;border-radius:5px;background:color-mix(in srgb,var(--delay) 14%,transparent);flex:0 0 auto")}>ПРОСРОЧКА</span>}
                         </div>
+                        <div style={css('width:1px;height:14px;background:var(--line);flex:0 0 auto')} />
+                        {/* Комментарий к запчасти — то же поле part.comment, что и на «Приёмке». */}
+                        <button
+                          onClick={() => onOpenNote(g.carId, p.id)}
+                          title={p.hasComment ? p.comment : 'Добавить комментарий к запчасти'}
+                          style={css("display:flex;align-items:center;gap:5px;height:24px;max-width:190px;padding:0 9px;border-radius:6px;cursor:pointer;flex:0 1 auto;min-width:0;font-family:'Manrope';font-size:11px;font-weight:600;" + (p.hasComment ? "border:1px solid color-mix(in srgb,var(--wait) 34%,transparent);background:color-mix(in srgb,var(--wait) 11%,transparent);color:var(--wait)" : "border:1px dashed var(--line2);background:transparent;color:var(--text3)"))}
+                        >
+                          <Ico size={12} sw={1.8} style={{ flex: '0 0 auto' }} paths={I.note} />
+                          {p.hasComment
+                            ? <span style={css('overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0')}>{p.comment}</span>
+                            : <span style={{ flex: '0 0 auto' }}>заметка</span>}
+                        </button>
                       </div>
                     </div>
-                    {/* qty */}
-                    <input value={p.qty} onChange={(e) => onQty(g.carId, p.id, e.target.value)} style={css("width:100%;height:32px;padding:0;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;text-align:center;outline:none")} />
+                    {/* qty — обёртка нужна, чтобы на телефоне показать подпись через ::before */}
+                    <div className="psx-cell">
+                      <input value={p.qty} onChange={(e) => onQty(g.carId, p.id, e.target.value)} style={css("width:100%;height:32px;padding:0;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);font-family:'JetBrains Mono',monospace;font-size:13px;text-align:center;outline:none")} />
+                    </div>
                     {/* supplier */}
-                    <input value={p.supplier} onChange={(e) => onSupplier(g.carId, p.id, e.target.value)} list="supplier-presets" placeholder="—" style={css("width:100%;height:32px;padding:0 10px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--text2);font-family:'Manrope';font-size:12.5px;outline:none")} />
+                    <div className="psx-cell">
+                      <input value={p.supplier} onChange={(e) => onSupplier(g.carId, p.id, e.target.value)} list="supplier-presets" placeholder="—" style={css("width:100%;height:32px;padding:0 10px;border-radius:7px;border:1px solid var(--line2);background:var(--panel2);color:var(--text2);font-family:'Manrope';font-size:12.5px;outline:none")} />
+                    </div>
                     {/* cost */}
                     <div style={css('position:relative')}>
                       <input value={p.costStr} onChange={(e) => onCost(g.carId, p.id, e.target.value)} inputMode="numeric" placeholder="0" style={{ ...css("width:100%;height:32px;padding:0 10px;border-radius:7px;background:var(--panel2);color:var(--text);font-family:'JetBrains Mono',monospace;font-weight:600;font-size:13px;text-align:right;outline:none"), border: '1px solid ' + p.costBorder }} />
@@ -303,6 +422,16 @@ export default function PartsScreen(props) {
                       {g.paint.statusOptions.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                     </select>
                   </div>
+                  {/* убрать окрасные работы у машины (симметрично удалению запчасти) */}
+                  <button onClick={() => onRemovePaint(g.carId)} title="Убрать окрасные работы" style={css('width:30px;height:30px;border-radius:7px;border:1px solid var(--line2);background:transparent;color:var(--text3);display:flex;align-items:center;justify-content:center;cursor:pointer;flex:0 0 auto;align-self:flex-end')}><Ico size={13} sw={2} paths={I.close} /></button>
+                </div>
+              )}
+
+              {/* Нет карточки краски → кнопка «включить» окрасные работы для машины.
+                  Клик создаёт пустой объект краски (onAddPaint), и блок выше появляется. */}
+              {!g.paint && (
+                <div style={css('padding:12px 18px;border-top:1px solid var(--line)')}>
+                  <button onClick={() => onAddPaint(g.carId)} style={css("height:36px;padding:0 14px;border-radius:9px;border:1px dashed var(--line2);background:transparent;color:var(--text2);font-family:'Manrope';font-weight:600;font-size:12.5px;display:flex;align-items:center;gap:7px;cursor:pointer")}><Ico size={14} sw={2.2} paths={I.plus} />Окрасные работы</button>
                 </div>
               )}
             </div>
@@ -414,6 +543,10 @@ export default function PartsScreen(props) {
                     <input value={d.eta || ''} onChange={(e) => onOrderDraft('eta', e.target.value)} placeholder="дд.мм" style={{ ...css(fieldBase), border: '1px solid var(--line2)', background: 'var(--panel2)', fontFamily: "'JetBrains Mono',monospace", fontSize: '14px' }} />
                   </div>
                 </div>
+                <div>
+                  <label style={css("font-family:'JetBrains Mono',monospace;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--text3);margin-bottom:6px;display:block")}>Комментарий</label>
+                  <textarea value={d.comment || ''} onChange={(e) => onOrderDraft('comment', e.target.value)} rows={2} placeholder="напр. «б/у, состояние хорошее», «предоплата 50%»" style={{ ...css("width:100%;padding:9px 12px;border-radius:9px;color:var(--text);outline:none;resize:vertical;min-height:44px;line-height:1.4"), border: '1px solid var(--line2)', background: 'var(--panel2)', fontFamily: "'Manrope'", fontSize: '13px' }} />
+                </div>
                 {showErr && (
                   <div style={css('display:flex;gap:9px;align-items:flex-start;background:color-mix(in srgb,var(--delay) 10%,transparent);border:1px solid color-mix(in srgb,var(--delay) 40%,transparent);border-radius:10px;padding:10px 12px;color:var(--delay);font-size:12px;line-height:1.45')}>
                     <Ico size={15} sw={2} style={{ flex: '0 0 auto', marginTop: '1px' }} paths={I.alert} />
@@ -471,6 +604,31 @@ export default function PartsScreen(props) {
           </div>
         );
       })()}
+
+      {/* ================= NOTE (comment) PROMPT ================= */}
+      {notePrompt && (
+        <div style={css('position:absolute;inset:0;background:rgba(4,6,9,.68);backdrop-filter:blur(4px);z-index:61;display:flex;align-items:center;justify-content:center;padding:24px')}>
+          <div style={css('width:min(460px,94vw);background:var(--panel);border:1px solid var(--line2);border-radius:16px;box-shadow:0 30px 80px -30px #000;overflow:hidden')}>
+            <div style={css('padding:20px 22px 16px;border-bottom:1px solid var(--line)')}>
+              <div style={css('display:flex;align-items:center;gap:11px')}>
+                <span style={css('width:40px;height:40px;border-radius:11px;background:color-mix(in srgb,var(--wait) 15%,transparent);border:1px solid color-mix(in srgb,var(--wait) 40%,transparent);display:flex;align-items:center;justify-content:center;color:var(--wait);flex:0 0 auto')}><Ico size={20} paths={I.note} /></span>
+                <div><div style={css('font-size:16px;font-weight:800')}>Комментарий к запчасти</div><div style={css('font-size:12px;color:var(--text3);margin-top:2px')}>Свободная заметка — видна и на приёмке</div></div>
+              </div>
+            </div>
+            <div style={css('padding:18px 22px;display:flex;flex-direction:column;gap:14px')}>
+              <div style={css('background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:11px 13px')}>
+                <div style={css('font-weight:600;font-size:13.5px')}>{notePrompt.name}</div>
+                <div style={css("font-family:'JetBrains Mono',monospace;font-size:11.5px;color:var(--text3);margin-top:2px")}>{notePrompt.car}</div>
+              </div>
+              <textarea value={notePrompt.draft} onChange={(e) => onNoteDraft(e.target.value)} rows={3} autoFocus placeholder="напр. «коробка мятая», «привёз 1 из 2», «предоплата 50%»" style={css("width:100%;padding:11px 13px;border-radius:10px;border:1px solid var(--line2);background:var(--panel2);color:var(--text);font-family:'Manrope';font-size:14px;line-height:1.45;outline:none;resize:vertical;min-height:96px")} />
+            </div>
+            <div style={css('padding:0 22px 20px;display:flex;gap:10px;justify-content:flex-end')}>
+              <button onClick={cancelNote} style={css("height:42px;padding:0 18px;border-radius:10px;border:1px solid var(--line2);background:var(--panel);color:var(--text);font-family:'Manrope';font-weight:600;font-size:13.5px;cursor:pointer")}>Отмена</button>
+              <button onClick={confirmNote} style={css("height:42px;padding:0 22px;border-radius:10px;border:none;background:var(--wait);color:#170f02;font-family:'Manrope';font-weight:700;font-size:13.5px;cursor:pointer")}>Сохранить</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
