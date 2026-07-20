@@ -48,7 +48,9 @@ export function pickCostingSource(job = {}, docs = []) {
   };
 }
 
-// Labour rows seeded from the car's route: one row per assigned master, amount 0.
+// Labour rows seeded from the car's route: one row per assigned master.
+// `pct` is the master's сдельный процент от работ (from the справочник); the
+// row's payout = (сумма работ, назначенных мастеру) × pct/100 + amount (доплата).
 function seedLabor(job = {}, masters = []) {
   const mById = new Map((masters || []).map((m) => [m.id, m]));
   const seen = new Set();
@@ -57,7 +59,8 @@ function seedLabor(job = {}, masters = []) {
     const id = st.master_id;
     if (!id || seen.has(id)) continue;
     seen.add(id);
-    rows.push({ id: uid(), master_id: id, name: mById.get(id)?.name || '', amount: 0 });
+    const m = mById.get(id);
+    rows.push({ id: uid(), master_id: id, name: m?.name || '', pct: num(m?.rate_pct, 0), amount: 0 });
   }
   return rows;
 }
@@ -74,6 +77,20 @@ export function buildCosting(job = {}, docs = [], masters = [], prev = null) {
     const key = (p.code || '').trim() || (p.name || '').trim().toLowerCase();
     if (key) prevCostByKey.set(key, num(p.cost, 0));
   }
+
+  // Keep master assignments already made on works when re-seeding (matched by name).
+  const prevMasterByName = new Map();
+  for (const s of prev?.services || []) {
+    const key = (s.name || '').trim().toLowerCase();
+    if (key && s.master_id) prevMasterByName.set(key, s.master_id);
+  }
+  const services = (src.services || []).map((s) => ({
+    id: uid(),
+    name: s.name || '',
+    qty: num(s.qty, 1),
+    price: num(s.price, 0),                              // цена работы для клиента (из ЗН)
+    master_id: prevMasterByName.get((s.name || '').trim().toLowerCase()) || '', // кто выполняет (наряд)
+  }));
 
   const parts = (src.parts || []).map((p) => {
     const key = (p.code || '').trim() || (p.name || '').trim().toLowerCase();
@@ -92,12 +109,14 @@ export function buildCosting(job = {}, docs = [], masters = [], prev = null) {
     id: l.id || uid(),
     master_id: l.master_id || '',
     name: l.name || '',
+    pct: num(l.pct, 0),
     amount: num(l.amount, 0),
   })) : seedLabor(job, masters));
 
   return {
     source: src.source,
     source_number: src.source_number,
+    services,                                       // работы с назначением мастеров (наряды)
     services_sum: round2(sumSale(src.services)),    // сумма работ (для выручки и % материалов)
     discount: num(src.discount, 0),
     parts,
@@ -120,7 +139,20 @@ export function computeCosting(costing = {}, settings = {}) {
   const overhead_pct = num(settings.overhead_pct, DEFAULT_OVERHEAD_PCT);
 
   const parts_cost = round2((costing.parts || []).reduce((s, p) => s + num(p.qty, 0) * num(p.cost, 0), 0));
-  const labor_cost = round2((costing.labor || []).reduce((s, l) => s + num(l.amount, 0), 0));
+
+  // Per-master payout (наряд): works assigned to the master × его сдельный % +
+  // ручная доплата. Old costings have no `services`/`pct`, so works_sum and
+  // piece collapse to 0 and the row's total stays the manually-entered amount.
+  const labor_rows = (costing.labor || []).map((l) => {
+    const works_sum = round2((costing.services || [])
+      .filter((s) => l.master_id && s.master_id === l.master_id)
+      .reduce((s2, s) => s2 + num(s.qty, 0) * num(s.price, 0), 0));
+    const pct = num(l.pct, 0);
+    const piece = round2(works_sum * pct / 100);
+    const extra = num(l.amount, 0);
+    return { ...l, works_sum, pct, piece, extra, total: round2(piece + extra) };
+  });
+  const labor_cost = round2(labor_rows.reduce((s, l) => s + l.total, 0));
 
   const materials_auto = round2(services_sum * materials_pct / 100);
   const materials_cost = costing.materials != null ? round2(costing.materials) : materials_auto;
@@ -141,6 +173,7 @@ export function computeCosting(costing = {}, settings = {}) {
     materials_cost,
     materials_auto,
     materials_is_auto: costing.materials == null,
+    labor_rows,
     labor_cost,
     overhead_cost,
     overhead_auto,

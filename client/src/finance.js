@@ -117,16 +117,22 @@ export function computeFinance({ jobs = [], invoices = [], transactions = [], co
       const iRec = insurerMap.get(j.insurer_name) || { revenue: 0, count: 0 };
       iRec.revenue += t.revenue; iRec.count += 1; insurerMap.set(j.insurer_name, iRec);
     }
-    for (const l of j.costing.labor || []) {
+    // Per-master totals from the computed rows (piecework % + доплата), not the
+    // raw stored amount — computeCosting owns that math.
+    for (const l of t.labor_rows || []) {
       const name = (l.name || '').trim() || 'Без имени';
-      payrollMap.set(name, (payrollMap.get(name) || 0) + num(l.amount, 0));
+      payrollMap.set(name, (payrollMap.get(name) || 0) + num(l.total, 0));
     }
   }
   repairs.profit = repairs.revenue - repairs.cost;
   repairs.margin = repairs.revenue > 0 ? round1((repairs.profit / repairs.revenue) * 100) : 0;
 
   // ---- Прочие расходы / доходы (транзакции) ----
-  const txInPeriod = transactions.filter((t) => inRange(dayjs(t.date).valueOf(), range));
+  // Выплаты мастерам (транзакции с master_id, вкладка «Зарплата») в P&L НЕ
+  // участвуют: этот труд уже учтён в себестоимости ремонтов (labor_cost), и
+  // повторное вычитание задвоило бы расход. В кассовой ленте (computeCashFlow)
+  // они остаются — это реальные деньги из кассы.
+  const txInPeriod = transactions.filter((t) => !t.master_id && inRange(dayjs(t.date).valueOf(), range));
   const expenses = { total: 0, byCategory: new Map() };
   const otherIncome = { total: 0, byCategory: new Map() };
   for (const t of txInPeriod) {
@@ -237,7 +243,10 @@ export function computeCashFlow({ jobs = [], invoices = [], transactions = [], p
       id: `tx-${t.id}`,
       ts: dayjs(t.date).valueOf(),
       kind: dir, direction: dir,
-      title: t.category || 'Прочее', sub: t.note || '',
+      title: t.category || 'Прочее',
+      // Выплата мастеру подписывается его именем, чтобы лента читалась без
+      // открытия вкладки «Зарплата».
+      sub: [t.master_name, t.note].filter(Boolean).join(' — '),
       amount: num(t.amount, 0), tx_id: t.id,
     });
   }

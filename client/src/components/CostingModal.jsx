@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { money, uid } from '../orderDoc';
 import { buildCosting, computeCosting } from '../costing';
+import MasterWorksheetModal from './MasterWorksheet';
+import { buildWorksheet } from '../worksheet';
 import Icon from './Icon';
 
 // Internal repair-cost / profit editor for one car. Reads the latest заказ-наряд
@@ -18,6 +20,7 @@ export default function CostingModal({ job, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [reseeded, setReseeded] = useState(false);
+  const [worksheet, setWorksheet] = useState(null);
 
   // Load once per opened car, keyed on the STABLE job id — never on the whole
   // `job` object. The parent (CarCard/Gantt) hands us a fresh job object on every
@@ -55,17 +58,42 @@ export default function CostingModal({ job, onClose, onSaved }) {
     patch({ parts: costing.parts.map((p) => (p.id === id ? { ...p, ...fields } : p)) });
   }
   function updateLabor(id, fields) {
-    patch({ labor: costing.labor.map((l) => (l.id === id ? { ...l, ...fields } : l)) });
+    patch({ labor: costing.labor.map((l) => (l.id === id ? { ...l, ...(typeof fields === 'function' ? fields(l) : fields) } : l)) });
   }
   function addLabor() {
-    patch({ labor: [...costing.labor, { id: uid(), master_id: '', name: '', amount: 0 }] });
+    patch({ labor: [...costing.labor, { id: uid(), master_id: '', name: '', pct: 0, amount: 0 }] });
   }
   function removeLabor(id) {
     patch({ labor: costing.labor.filter((l) => l.id !== id) });
   }
   function selectLaborMaster(id, masterId) {
     const m = masters.find((x) => x.id === masterId);
-    updateLabor(id, { master_id: masterId, name: m ? m.name : '' });
+    // При выборе мастера подставляем его сдельный % из справочника, если в
+    // строке процент ещё не введён.
+    updateLabor(id, (l) => ({
+      master_id: masterId,
+      name: m ? m.name : '',
+      pct: Number(l.pct) > 0 ? l.pct : (Number(m?.rate_pct) || 0),
+    }));
+  }
+
+  // Назначить работу мастеру (наряд). Если строки оплаты для этого мастера ещё
+  // нет — добавляем её автоматически с процентом из справочника.
+  function assignWorkMaster(serviceId, masterId) {
+    setCosting((c) => {
+      const services = (c.services || []).map((s) => (s.id === serviceId ? { ...s, master_id: masterId } : s));
+      let labor = c.labor;
+      if (masterId && !labor.some((l) => l.master_id === masterId)) {
+        const m = masters.find((x) => x.id === masterId);
+        labor = [...labor, { id: uid(), master_id: masterId, name: m?.name || '', pct: Number(m?.rate_pct) || 0, amount: 0 }];
+      }
+      return { ...c, services, labor };
+    });
+    setSaved(false);
+  }
+
+  function openWorksheet(laborRow) {
+    setWorksheet(buildWorksheet(job, settings, laborRow, costing.services || []));
   }
 
   // Re-pull works & parts from the latest заказ-наряд, keeping purchase prices
@@ -84,8 +112,9 @@ export default function CostingModal({ job, onClose, onSaved }) {
       const n = (v) => Number(v) || 0;
       const payload = {
         ...costing,
+        services: (costing.services || []).map((s) => ({ ...s, qty: n(s.qty), price: n(s.price), master_id: s.master_id || '' })),
         parts: costing.parts.map((p) => ({ ...p, qty: n(p.qty), price: n(p.price), cost: n(p.cost) })),
-        labor: costing.labor.map((l) => ({ ...l, amount: n(l.amount) })),
+        labor: costing.labor.map((l) => ({ ...l, pct: n(l.pct), amount: n(l.amount) })),
         materials: costing.materials == null ? null : n(costing.materials),
         overhead: costing.overhead == null ? null : n(costing.overhead),
         updated_at: Date.now(),
@@ -183,13 +212,44 @@ export default function CostingModal({ job, onClose, onSaved }) {
                 )}
               </section>
 
+              {/* НАРЯДЫ: РАБОТЫ ПО МАСТЕРАМ */}
+              <section className="oe-section">
+                <h4>Наряды — кто выполняет работы</h4>
+                {(costing.services || []).length === 0 ? (
+                  <div className="cc-hint">
+                    {costing.source === 'order'
+                      ? 'В этом расчёте ещё нет списка работ — нажмите «Обновить из заказ-наряда» выше, чтобы распределить работы по мастерам.'
+                      : 'Работ в заказ-наряде нет.'}
+                  </div>
+                ) : (
+                  <table className="items-table costing-table">
+                    <thead><tr><th>Работа</th><th>Сумма</th><th>Мастер</th></tr></thead>
+                    <tbody>
+                      {costing.services.map((s) => (
+                        <tr key={s.id}>
+                          <td>{s.name || '—'}</td>
+                          <td className="costing-num">{money((Number(s.qty) || 0) * (Number(s.price) || 0))}</td>
+                          <td>
+                            <select value={s.master_id || ''} onChange={(e) => assignWorkMaster(s.id, e.target.value)}>
+                              <option value="">— не назначен —</option>
+                              {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
+                            </select>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </section>
+
               {/* ОПЛАТА МАСТЕРАМ */}
               <section className="oe-section">
                 <h4>Оплата мастерам (сдельно)</h4>
+                <div className="cc-hint">Сдельно = сумма работ мастера × его %. Доплата — ручная сумма сверх сдельной (или вся оплата, если работы не распределены).</div>
                 <table className="items-table costing-table">
-                  <thead><tr><th>Мастер</th><th>Сумма к выплате</th><th></th></tr></thead>
+                  <thead><tr><th>Мастер</th><th>Работы</th><th>%</th><th>Сдельно</th><th>Доплата</th><th>Итого</th><th></th></tr></thead>
                   <tbody>
-                    {costing.labor.map((l) => (
+                    {totals.labor_rows.map((l) => (
                       <tr key={l.id}>
                         <td>
                           <select value={l.master_id} onChange={(e) => selectLaborMaster(l.id, e.target.value)}>
@@ -200,18 +260,36 @@ export default function CostingModal({ job, onClose, onSaved }) {
                             {masters.map((m) => <option key={m.id} value={m.id}>{m.name}</option>)}
                           </select>
                         </td>
+                        <td className="costing-num">{money(l.works_sum)}</td>
+                        <td>
+                          <input
+                            type="number" min="0" max="100" className="costing-input costing-input-pct"
+                            value={l.pct} onChange={(e) => updateLabor(l.id, { pct: e.target.value })}
+                          />
+                        </td>
+                        <td className="costing-num">{money(l.piece)}</td>
                         <td>
                           <input
                             type="number" min="0" className="costing-input"
                             value={l.amount} onChange={(e) => updateLabor(l.id, { amount: e.target.value })}
                           />
                         </td>
-                        <td><button className="danger small" onClick={() => removeLabor(l.id)}>×</button></td>
+                        <td className="costing-num"><b>{money(l.total)}</b></td>
+                        <td className="costing-row-actions">
+                          <button
+                            className="small" title="Наряд мастера — предпросмотр и печать"
+                            disabled={!l.master_id}
+                            onClick={() => openWorksheet(l)}
+                          >
+                            Наряд
+                          </button>
+                          <button className="danger small" onClick={() => removeLabor(l.id)}>×</button>
+                        </td>
                       </tr>
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr><td>Итого оплата мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td><td></td></tr>
+                    <tr><td colSpan={5}>Итого оплата мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td><td></td></tr>
                   </tfoot>
                 </table>
                 <button onClick={addLabor}>+ Добавить мастера</button>
@@ -282,6 +360,8 @@ export default function CostingModal({ job, onClose, onSaved }) {
             </div>
           </>
         )}
+
+        {worksheet && <MasterWorksheetModal sheet={worksheet} onClose={() => setWorksheet(null)} />}
       </div>
     </div>
   );

@@ -10,6 +10,7 @@ import {
 import { PAYMENT_SHORT, isInsurance } from '../insurance';
 import FinancePanel from './FinancePanel';
 import MoneyFeed from './MoneyFeed';
+import PayrollView from './PayrollView';
 import CostingModal from './CostingModal';
 import DocumentsModal from './DocumentsModal';
 import Icon from './Icon';
@@ -20,6 +21,7 @@ const VIEWS = [
   { id: 'overview', label: 'Обзор', icon: 'chart' },
   { id: 'feed', label: 'Лента', icon: 'receipt' },
   { id: 'cars', label: 'Машины', icon: 'car' },
+  { id: 'payroll', label: 'Зарплата', icon: 'user' },
 ];
 
 const SORTS = [
@@ -40,6 +42,7 @@ export default function Finance() {
   const [allJobs, setAllJobs] = useState([]);
   const [docs, setDocs] = useState([]);
   const [transactions, setTransactions] = useState([]);
+  const [masters, setMasters] = useState([]);
   const [company, setCompany] = useState({});
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -49,15 +52,17 @@ export default function Finance() {
 
   const load = async () => {
     setLoading(true);
-    const [all, d, tx, comp] = await Promise.all([
+    const [all, d, tx, m, comp] = await Promise.all([
       api.jobs.listAllBrief().catch(() => []),
       api.orderDocuments.listAll().catch(() => []),
       api.transactions.list().catch(() => []),
+      api.masters.list().catch(() => []),
       api.settings.getCompany().catch(() => ({})),
     ]);
     setAllJobs(all);
     setDocs(d);
     setTransactions(tx);
+    setMasters(m);
     setCompany(comp);
     setLoading(false);
   };
@@ -190,6 +195,18 @@ export default function Finance() {
       {view === 'overview' && <FinancePanel fin={fin} periodLabel={periodLabel} />}
 
       {view === 'feed' && <MoneyFeed cash={cash} onTxChanged={loadTx} />}
+
+      {view === 'payroll' && (
+        <PayrollView
+          jobs={allJobs}
+          transactions={transactions}
+          masters={masters}
+          company={company}
+          period={period}
+          periodLabel={periodLabel}
+          onTxChanged={loadTx}
+        />
+      )}
 
       {view === 'cars' && (
         <>

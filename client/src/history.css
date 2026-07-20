@@ -207,3 +207,39 @@ button.hist-card:active { transform: scale(0.99); }
   color: var(--color-success); border-color: var(--color-success);
   background: color-mix(in srgb, var(--color-success) 12%, transparent);
 }
+
+/* ===== Вкладка «Зарплата» — расчёты с мастерами ===== */
+.payroll-list { display: flex; flex-direction: column; gap: 8px; margin-top: 4px; }
+.payroll-row { border: 1px solid var(--color-border); border-radius: 12px; background: var(--color-surface); overflow: hidden; }
+.payroll-row-head {
+  display: flex; align-items: center; gap: 10px; width: 100%;
+  padding: 10px 14px; border: none; background: transparent; color: var(--color-text);
+  font: inherit; cursor: pointer; text-align: left;
+}
+.payroll-row-head:hover { background: var(--color-surface-alt); }
+.payroll-ico { width: 22px; display: inline-flex; align-items: center; justify-content: center; color: var(--text3); flex-shrink: 0; }
+.payroll-name { font-weight: 700; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.payroll-chips { display: flex; gap: 6px; flex-wrap: wrap; margin-left: auto; }
+.payroll-chip {
+  font-size: 12px; background: var(--color-surface-alt); border: 1px solid var(--color-border);
+  border-radius: 6px; padding: 1px 7px; font-variant-numeric: tabular-nums; color: var(--color-text);
+}
+.payroll-chip em { font-style: normal; color: var(--text3); margin-right: 3px; }
+.payroll-balance { font-size: 12px; font-weight: 700; padding: 2px 9px; border-radius: 999px; white-space: nowrap; }
+.payroll-balance.is-debt { color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 12%, transparent); }
+.payroll-balance.is-clear { color: var(--color-success); background: color-mix(in srgb, var(--color-success) 12%, transparent); }
+.payroll-caret { color: var(--color-text-muted); display: inline-flex; transition: transform 0.15s; }
+.payroll-row.is-open .payroll-caret { transform: rotate(180deg); }
+.payroll-row-body { border-top: 1px solid var(--color-border); padding: 12px 14px; display: flex; flex-direction: column; gap: 12px; }
+.payroll-detail { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 720px) { .payroll-detail { grid-template-columns: 1fr; } }
+.payroll-detail-title { font-size: 12px; font-weight: 700; color: var(--color-text-muted); margin-bottom: 6px; }
+.payroll-detail-row { display: flex; align-items: center; gap: 8px; padding: 4px 0; font-size: 13px; }
+.payroll-detail-row + .payroll-detail-row { border-top: 1px dashed var(--color-border); }
+.payroll-detail-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.payroll-detail-sub { font-size: 11px; color: var(--color-text-muted); }
+.payroll-detail-amount { font-variant-numeric: tabular-nums; font-weight: 600; white-space: nowrap; }
+.payroll-actions { display: flex; justify-content: flex-end; }
+.payroll-payform { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.payroll-payform input[type='number'] { width: 130px; }
+.payroll-payform input[type='text'] { flex: 1 1 180px; }

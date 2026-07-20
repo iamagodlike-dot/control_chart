@@ -1152,3 +1152,13 @@ textarea { width: 100%; min-height: 50px; }
 .costing-summary-row.is-total { border-top: 1px solid var(--color-border); padding-top: 10px; font-size: 17px; }
 .costing-summary-row.is-total.is-gain { color: var(--color-success); }
 .costing-summary-row.is-total.is-loss { color: var(--color-danger); }
+
+/* Наряды: колонки оплаты мастерам + предпросмотр наряда */
+.costing-input-pct { max-width: 64px; }
+.costing-row-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; white-space: nowrap; }
+.worksheet-modal { display: flex; flex-direction: column; }
+.worksheet-preview {
+  flex: 1; min-height: 0; overflow: auto; text-align: center;
+  background: #e8e8e8; border-radius: var(--radius-lg, 12px); padding: 16px;
+}
+.list-edit-pct { max-width: 110px; }

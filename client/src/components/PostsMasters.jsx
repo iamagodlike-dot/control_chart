@@ -9,13 +9,13 @@ export default function PostsMasters() {
   const [insurers, setInsurers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [newPost, setNewPost] = useState('');
-  const [newMaster, setNewMaster] = useState({ name: '', specialty: '', default_post_id: '' });
+  const [newMaster, setNewMaster] = useState({ name: '', specialty: '', default_post_id: '', rate_pct: '' });
   const [newInsurer, setNewInsurer] = useState('');
   const [dragIndex, setDragIndex] = useState(null);
   const [editingPostId, setEditingPostId] = useState(null);
   const [editPostName, setEditPostName] = useState('');
   const [editingMasterId, setEditingMasterId] = useState(null);
-  const [editMasterForm, setEditMasterForm] = useState({ name: '', specialty: '', default_post_id: '' });
+  const [editMasterForm, setEditMasterForm] = useState({ name: '', specialty: '', default_post_id: '', rate_pct: '' });
   const [editingInsurerId, setEditingInsurerId] = useState(null);
   const [editInsurerName, setEditInsurerName] = useState('');
 
@@ -74,8 +74,9 @@ export default function PostsMasters() {
       name: newMaster.name.trim(),
       specialty: newMaster.specialty || null,
       default_post_id: newMaster.default_post_id || null,
+      rate_pct: Number(newMaster.rate_pct) || null,
     });
-    setNewMaster({ name: '', specialty: '', default_post_id: '' });
+    setNewMaster({ name: '', specialty: '', default_post_id: '', rate_pct: '' });
     load();
   }
 
@@ -87,7 +88,7 @@ export default function PostsMasters() {
 
   function startEditMaster(m) {
     setEditingMasterId(m.id);
-    setEditMasterForm({ name: m.name, specialty: m.specialty || '', default_post_id: m.default_post_id || '' });
+    setEditMasterForm({ name: m.name, specialty: m.specialty || '', default_post_id: m.default_post_id || '', rate_pct: m.rate_pct || '' });
   }
 
   function cancelEditMaster() {
@@ -101,6 +102,7 @@ export default function PostsMasters() {
       name,
       specialty: editMasterForm.specialty || null,
       default_post_id: editMasterForm.default_post_id || null,
+      rate_pct: Number(editMasterForm.rate_pct) || null,
     });
     setEditingMasterId(null);
     load();
@@ -228,6 +230,15 @@ export default function PostsMasters() {
                       <option value="">Основной пост — не выбран</option>
                       {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
                     </select>
+                    <input
+                      className="list-edit-input list-edit-pct"
+                      type="number" min="0" max="100"
+                      placeholder="% от работ"
+                      title="Сдельный процент от стоимости работ (подставляется в наряды)"
+                      value={editMasterForm.rate_pct}
+                      onChange={(e) => setEditMasterForm({ ...editMasterForm, rate_pct: e.target.value })}
+                      onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
+                    />
                     <span className="list-actions">
                       <button className="list-action-btn" title="Сохранить" onClick={saveEditMaster}>✓</button>
                       <button className="list-action-btn" title="Отмена" onClick={cancelEditMaster}>×</button>
@@ -236,7 +247,10 @@ export default function PostsMasters() {
                 ) : (
                   <>
                     <span className="list-icon">{iconFor(m.specialty, '👤')}</span>
-                    <span className="list-label">{m.name} {m.specialty ? <span className="list-sub">— {m.specialty}</span> : ''}</span>
+                    <span className="list-label">
+                      {m.name} {m.specialty ? <span className="list-sub">— {m.specialty}</span> : ''}
+                      {Number(m.rate_pct) > 0 ? <span className="list-sub"> · {m.rate_pct}% от работ</span> : ''}
+                    </span>
                     <span className="list-actions">
                       <button className="list-action-btn" title="Редактировать" onClick={() => startEditMaster(m)}>✎</button>
                       <button className="list-action-btn danger" title="Удалить" onClick={() => removeMaster(m.id)}>×</button>
@@ -254,6 +268,13 @@ export default function PostsMasters() {
             <option value="">Основной пост — не выбран</option>
             {posts.map((p) => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
+          <input
+            type="number" min="0" max="100"
+            placeholder="% от работ (сдельно) — подставляется в наряды"
+            title="Сдельный процент от стоимости работ (подставляется в наряды)"
+            value={newMaster.rate_pct}
+            onChange={(e) => setNewMaster({ ...newMaster, rate_pct: e.target.value })}
+          />
           <button className="primary" onClick={addMaster}>Добавить мастера</button>
         </div>
       </div>

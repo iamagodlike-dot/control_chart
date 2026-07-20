@@ -380,6 +380,10 @@ export const api = {
         amount: Number(data.amount) || 0,
         date: data.date,
         note: data.note || '',
+        // Выплата мастеру (вкладка «Зарплата»): по master_id она матчится с
+        // начислениями и исключается из P&L (труд уже в себестоимости).
+        master_id: data.master_id || null,
+        master_name: data.master_name || null,
         created_at: Date.now(),
         created_by: auth.currentUser?.email || null,
       }));
