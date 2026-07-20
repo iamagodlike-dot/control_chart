@@ -85,7 +85,7 @@ export default function FinancePanel({ fin, periodLabel }) {
       </div>
 
       <div className="fin-two-col">
-        <Breakdown title="Выплаты мастерам (сдельно)" total={fin.repairs.labor} rows={fin.payroll} getVal={(r) => r.amount} getLabel={(r) => r.label} />
+        <Breakdown title="Оплата мастерам (суммы «К выплате» из себестоимости)" total={fin.repairs.labor} rows={fin.payroll} getVal={(r) => r.amount} getLabel={(r) => r.label} />
         {fin.byInsurer.length > 0 && (
           <Breakdown title="По страховым компаниям" rows={fin.byInsurer} getVal={(r) => r.revenue} getLabel={(r) => r.label} />
         )}

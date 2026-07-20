@@ -46,7 +46,7 @@ export function WorksheetSheet({ sheet }) {
             <div className="zn-card-h">Исполнитель (мастер)</div>
             <div className="zn-card-b">
               <KV k="ФИО" v={sheet.master?.name} />
-              <KV k="Оплата" v={sheet.pct > 0 ? `${sheet.pct}% от стоимости работ` : 'по договорённости'} />
+              <KV k="Сумма к выплате" v={money(sheet.total)} />
             </div>
           </div>
           <div className="zn-card">
@@ -76,9 +76,8 @@ export function WorksheetSheet({ sheet }) {
         <div className="zn-bottom">
           <div className="zn-bottom-left" />
           <div className="zn-totals">
-            <div className="zn-tr"><span className="zn-tl">Сдельная оплата{sheet.pct > 0 ? ` (${sheet.pct}%)` : ''}</span><span className="zn-tv">{money(sheet.piece)}</span></div>
-            {sheet.extra > 0 && <div className="zn-tr"><span className="zn-tl">Доплата</span><span className="zn-tv">{money(sheet.extra)}</span></div>}
-            <div className="zn-tr zn-tr-total"><span className="zn-tl">К ВЫПЛАТЕ</span><span className="zn-tv">{money(sheet.total)}</span></div>
+            <div className="zn-tr"><span className="zn-tl">Стоимость работ по наряду</span><span className="zn-tv">{money(sheet.works_sum)}</span></div>
+            <div className="zn-tr zn-tr-total"><span className="zn-tl">К ВЫПЛАТЕ МАСТЕРУ</span><span className="zn-tv">{money(sheet.total)}</span></div>
           </div>
         </div>
 

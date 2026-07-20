@@ -1155,6 +1155,8 @@ textarea { width: 100%; min-height: 50px; }
 
 /* Наряды: колонки оплаты мастерам + предпросмотр наряда */
 .costing-input-pct { max-width: 64px; }
+.costing-piece-hint { font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--color-text-muted); }
+.costing-piece-hint:hover { color: var(--color-primary); border-color: var(--color-primary); }
 .costing-row-actions { display: flex; gap: 6px; align-items: center; justify-content: flex-end; white-space: nowrap; }
 .worksheet-modal { display: flex; flex-direction: column; }
 .worksheet-preview {

@@ -244,10 +244,13 @@ export default function CostingModal({ job, onClose, onSaved }) {
 
               {/* ОПЛАТА МАСТЕРАМ */}
               <section className="oe-section">
-                <h4>Оплата мастерам (сдельно)</h4>
-                <div className="cc-hint">Сдельно = сумма работ мастера × его %. Доплата — ручная сумма сверх сдельной (или вся оплата, если работы не распределены).</div>
+                <h4>Оплата мастерам</h4>
+                <div className="cc-hint">
+                  «К выплате» — финальная сумма мастеру, вводится вручную.
+                  «Сдельно» (сумма работ мастера × его %) — только подсказка: нажмите на неё, чтобы подставить в «К выплате».
+                </div>
                 <table className="items-table costing-table">
-                  <thead><tr><th>Мастер</th><th>Работы</th><th>%</th><th>Сдельно</th><th>Доплата</th><th>Итого</th><th></th></tr></thead>
+                  <thead><tr><th>Мастер</th><th>Работы</th><th>%</th><th>Сдельно (подсказка)</th><th>К выплате (итог)</th><th></th></tr></thead>
                   <tbody>
                     {totals.labor_rows.map((l) => (
                       <tr key={l.id}>
@@ -267,14 +270,24 @@ export default function CostingModal({ job, onClose, onSaved }) {
                             value={l.pct} onChange={(e) => updateLabor(l.id, { pct: e.target.value })}
                           />
                         </td>
-                        <td className="costing-num">{money(l.piece)}</td>
+                        <td className="costing-num">
+                          {l.piece > 0 ? (
+                            <button
+                              className="small costing-piece-hint"
+                              title="Подставить сдельный расчёт в «К выплате»"
+                              onClick={() => updateLabor(l.id, { amount: l.piece })}
+                            >
+                              {money(l.piece)} →
+                            </button>
+                          ) : '—'}
+                        </td>
                         <td>
                           <input
                             type="number" min="0" className="costing-input"
+                            title="Финальная сумма к выплате мастеру"
                             value={l.amount} onChange={(e) => updateLabor(l.id, { amount: e.target.value })}
                           />
                         </td>
-                        <td className="costing-num"><b>{money(l.total)}</b></td>
                         <td className="costing-row-actions">
                           <button
                             className="small" title="Наряд мастера — предпросмотр и печать"
@@ -289,7 +302,7 @@ export default function CostingModal({ job, onClose, onSaved }) {
                     ))}
                   </tbody>
                   <tfoot>
-                    <tr><td colSpan={5}>Итого оплата мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td><td></td></tr>
+                    <tr><td colSpan={4}>Итого к выплате мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td><td></td></tr>
                   </tfoot>
                 </table>
                 <button onClick={addLabor}>+ Добавить мастера</button>

@@ -35,9 +35,8 @@ export function buildWorksheet(job = {}, company = {}, laborRow = {}, services =
     },
     works,
     works_sum: Number(laborRow.works_sum) || 0,
-    pct: Number(laborRow.pct) || 0,
-    piece: Number(laborRow.piece) || 0,
-    extra: Number(laborRow.extra) || 0,
+    // total — финальная сумма к выплате мастеру (введённая в «Себестоимости»);
+    // сдельный % — только внутренняя подсказка, на наряде не печатается.
     total: Number(laborRow.total) || 0,
   };
 }

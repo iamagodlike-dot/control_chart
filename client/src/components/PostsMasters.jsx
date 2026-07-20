@@ -234,7 +234,7 @@ export default function PostsMasters() {
                       className="list-edit-input list-edit-pct"
                       type="number" min="0" max="100"
                       placeholder="% от работ"
-                      title="Сдельный процент от стоимости работ (подставляется в наряды)"
+                      title="Процент от стоимости работ — используется как подсказка суммы «К выплате» в себестоимости; финальную сумму вводят вручную"
                       value={editMasterForm.rate_pct}
                       onChange={(e) => setEditMasterForm({ ...editMasterForm, rate_pct: e.target.value })}
                       onKeyDown={(e) => { if (e.key === 'Enter') saveEditMaster(); if (e.key === 'Escape') cancelEditMaster(); }}
@@ -270,8 +270,8 @@ export default function PostsMasters() {
           </select>
           <input
             type="number" min="0" max="100"
-            placeholder="% от работ (сдельно) — подставляется в наряды"
-            title="Сдельный процент от стоимости работ (подставляется в наряды)"
+            placeholder="% от работ — подсказка для «К выплате» в нарядах"
+            title="Процент от стоимости работ — используется как подсказка суммы «К выплате» в себестоимости; финальную сумму вводят вручную"
             value={newMaster.rate_pct}
             onChange={(e) => setNewMaster({ ...newMaster, rate_pct: e.target.value })}
           />

@@ -49,8 +49,9 @@ export function pickCostingSource(job = {}, docs = []) {
 }
 
 // Labour rows seeded from the car's route: one row per assigned master.
-// `pct` is the master's сдельный процент от работ (from the справочник); the
-// row's payout = (сумма работ, назначенных мастеру) × pct/100 + amount (доплата).
+// `amount` — финальная сумма к выплате (вводится вручную); `pct` — сдельный
+// процент мастера из справочника, используется только для подсказки
+// «сумма работ мастера × %», которую можно подставить в amount.
 function seedLabor(job = {}, masters = []) {
   const mById = new Map((masters || []).map((m) => [m.id, m]));
   const seen = new Set();
@@ -140,17 +141,17 @@ export function computeCosting(costing = {}, settings = {}) {
 
   const parts_cost = round2((costing.parts || []).reduce((s, p) => s + num(p.qty, 0) * num(p.cost, 0), 0));
 
-  // Per-master payout (наряд): works assigned to the master × его сдельный % +
-  // ручная доплата. Old costings have no `services`/`pct`, so works_sum and
-  // piece collapse to 0 and the row's total stays the manually-entered amount.
+  // Per-master payout (наряд): `amount` — ФИНАЛЬНАЯ сумма к выплате мастеру,
+  // введённая вручную. Сдельный расчёт (работы мастера × его %) — только
+  // ПОДСКАЗКА (`piece`), в итог сам по себе не попадает: в интерфейсе его
+  // можно подставить в поле «К выплате» одной кнопкой.
   const labor_rows = (costing.labor || []).map((l) => {
     const works_sum = round2((costing.services || [])
       .filter((s) => l.master_id && s.master_id === l.master_id)
       .reduce((s2, s) => s2 + num(s.qty, 0) * num(s.price, 0), 0));
     const pct = num(l.pct, 0);
     const piece = round2(works_sum * pct / 100);
-    const extra = num(l.amount, 0);
-    return { ...l, works_sum, pct, piece, extra, total: round2(piece + extra) };
+    return { ...l, works_sum, pct, piece, total: round2(num(l.amount, 0)) };
   });
   const labor_cost = round2(labor_rows.reduce((s, l) => s + l.total, 0));
 

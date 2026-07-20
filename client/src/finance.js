@@ -117,8 +117,8 @@ export function computeFinance({ jobs = [], invoices = [], transactions = [], co
       const iRec = insurerMap.get(j.insurer_name) || { revenue: 0, count: 0 };
       iRec.revenue += t.revenue; iRec.count += 1; insurerMap.set(j.insurer_name, iRec);
     }
-    // Per-master totals from the computed rows (piecework % + доплата), not the
-    // raw stored amount — computeCosting owns that math.
+    // Per-master totals from the computed rows (финальные суммы «К выплате») —
+    // computeCosting owns that math.
     for (const l of t.labor_rows || []) {
       const name = (l.name || '').trim() || 'Без имени';
       payrollMap.set(name, (payrollMap.get(name) || 0) + num(l.total, 0));
@@ -290,7 +290,7 @@ export function buildFinanceCsv(fin, periodLabel = '', cash = null) {
   ]));
 
   if (fin.payroll.length) {
-    blocks.push(csvRows([[], ['Выплаты мастерам', 'Сумма, ₽'], ...fin.payroll.map((p) => [p.label, money(p.amount)])]));
+    blocks.push(csvRows([[], ['Оплата мастерам (к выплате)', 'Сумма, ₽'], ...fin.payroll.map((p) => [p.label, money(p.amount)])]));
   }
   if (fin.expenses.byCategory.length) {
     blocks.push(csvRows([[], ['Прочие расходы по категориям', 'Сумма, ₽'], ...fin.expenses.byCategory.map((c) => [c.label, money(c.amount)])]));

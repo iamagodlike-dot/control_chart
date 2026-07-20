@@ -8,7 +8,8 @@ import Icon from './Icon';
 const todayInput = () => dayjs().format('YYYY-MM-DD');
 
 // «Зарплата» — расчёты с мастерами. Начислено берётся из себестоимости машин
-// (наряды: сдельный % + доплата), выплачено — из транзакций-выплат с master_id.
+// (финальные суммы «К выплате», введённые вручную), выплачено — из
+// транзакций-выплат с master_id.
 // Выплата создаёт обычную транзакцию-расход: она видна в ленте движения денег,
 // но НЕ задваивает расход в P&L (труд уже входит в себестоимость ремонтов).
 export default function PayrollView({ jobs, transactions, masters, company, period, periodLabel, onTxChanged }) {
@@ -68,7 +69,7 @@ export default function PayrollView({ jobs, transactions, masters, company, peri
         <div className="hist-card">
           <div className="hist-card-label">Начислено · {periodLabel.toLowerCase()}</div>
           <div className="hist-card-value">{money(payroll.totals.accrued)}</div>
-          <div className="hist-card-sub">сдельно по нарядам из себестоимости машин</div>
+          <div className="hist-card-sub">суммы «К выплате» из себестоимости машин</div>
         </div>
         <div className="hist-card hist-card-success">
           <div className="hist-card-label">Выплачено · {periodLabel.toLowerCase()}</div>
@@ -83,7 +84,7 @@ export default function PayrollView({ jobs, transactions, masters, company, peri
 
       {payroll.rows.length === 0 ? (
         <div className="hist-chart-empty">
-          Пока нет начислений мастерам. Распределите работы по мастерам в «Себестоимости» машины — начисления появятся здесь.
+          Пока нет начислений мастерам. Укажите суммы «К выплате» мастерам в «Себестоимости» машины — начисления появятся здесь.
         </div>
       ) : (
         <div className="payroll-list">
@@ -118,8 +119,7 @@ export default function PayrollView({ jobs, transactions, masters, company, peri
                                 {c2.label}{c2.order_number ? ` · №${c2.order_number}` : ''}
                                 <span className="payroll-detail-sub">
                                   {dayjs(c2.date).format('DD.MM.YYYY')}
-                                  {c2.pct > 0 ? ` · ${money(c2.works_sum)} × ${c2.pct}%` : ''}
-                                  {c2.extra > 0 ? ` · доплата ${money(c2.extra)}` : ''}
+                                  {c2.works_sum > 0 ? ` · работы по наряду ${money(c2.works_sum)}` : ''}
                                 </span>
                               </span>
                               <span className="payroll-detail-amount">{money(c2.amount)}</span>

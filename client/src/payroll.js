@@ -6,8 +6,9 @@ import { periodRange, inRange, jobDate } from './finance';
 // as finance.js / costing.js.
 //
 // Two sides of a master's money:
-//   • НАЧИСЛЕНО — earned piecework from each car's costing (labor_rows), booked
-//     to the period by the car's date (archived_at || created_at).
+//   • НАЧИСЛЕНО — финальные суммы «К выплате» из costing каждой машины
+//     (labor_rows, введены вручную в «Себестоимости»), booked to the period
+//     by the car's date (archived_at || created_at).
 //   • ВЫПЛАЧЕНО — payout transactions (direction=expense, master_id set),
 //     booked by their own date.
 //   • ДОЛГ = начислено − выплачено за ВСЁ время (a snapshot, независимо от
@@ -17,7 +18,7 @@ import { periodRange, inRange, jobDate } from './finance';
 // EXCLUDED from «прочие расходы» in computeFinance (the labour is already part
 // of себестоимость) but stay in the cash-flow лента as real money out.
 
-export const PAYROLL_CATEGORY = 'Зарплата мастера (сдельно)';
+export const PAYROLL_CATEGORY = 'Зарплата мастера';
 
 export function isPayoutTx(t) {
   return !!(t && t.master_id);
@@ -78,10 +79,8 @@ export function computePayroll({ jobs = [], transactions = [], masters = [], com
           label: [j.car_model, j.plate_number].filter(Boolean).join(' · ') || 'Машина',
           order_number: j.order_number || '',
           date: jobDate(j),
-          works_sum: l.works_sum,
-          pct: l.pct,
-          extra: l.extra,
-          amount: l.total,
+          works_sum: l.works_sum,   // стоимость работ мастера по наряду (справочно)
+          amount: l.total,          // финальная сумма к выплате из себестоимости
           archived: !!j.archived,
         });
       }
