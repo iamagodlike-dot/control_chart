@@ -27,6 +27,30 @@ api.insurers.list = async () => [];
 api.masters.list = async () => MASTERS;
 api.jobs.update = async () => {};
 api.settings.getCompany = async () => ({});
+// Записи карточки (позиции и убытки). Firestore в песочнице недоступен, но пути
+// сохранения должны отрабатывать ЦЕЛИКОМ — иначе демо не проверяет ровно то, ради
+// чего существует. Что именно записалось, видно в window.DEMO_WRITES.
+const DEMO_WRITES = [];
+api.jobs.savePart = async (_jobId, part) => { DEMO_WRITES.push({ op: 'savePart', id: part.id, name: part.name, payer: part.payer }); };
+api.jobs.saveParts = async (_jobId, list) => { DEMO_WRITES.push({ op: 'saveParts', count: list.length, payer: list[0]?.payer }); };
+api.jobs.removePart = async (_jobId, id) => { DEMO_WRITES.push({ op: 'removePart', id }); };
+api.jobs.addClaim = async (_jobId, claim) => {
+  const claims = [...JOB.claims, { id: `cl_${JOB.claims.length + 1}`, order_number: `ЗН-2026-01${JOB.claims.length}`, claim_number: '', discount: 0, franchise: 0, ...claim }];
+  JOB.claims = claims;
+  DEMO_WRITES.push({ op: 'addClaim', total: claims.length });
+  return { ...JOB, claims };
+};
+api.jobs.saveClaim = async (_jobId, claim) => {
+  JOB.claims = JOB.claims.map((c) => (c.id === claim.id ? { ...c, ...claim } : c));
+  DEMO_WRITES.push({ op: 'saveClaim', id: claim.id, claim_number: claim.claim_number, discount: claim.discount });
+  return { ...JOB, claims: JOB.claims };
+};
+api.jobs.removeClaim = async (_jobId, claimId) => {
+  JOB.claims = JOB.claims.filter((c) => c.id !== claimId);
+  DEMO_WRITES.push({ op: 'removeClaim', id: claimId });
+  return { ...JOB, claims: JOB.claims };
+};
+window.DEMO_WRITES = DEMO_WRITES;
 
 const ph = (c) => `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='90'%3E%3Crect width='120' height='90' fill='%23${c}'/%3E%3C/svg%3E`;
 

@@ -611,6 +611,53 @@ export const api = {
       // parts, so every part edit must refresh them (else the Склад shows a stale list).
       if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
     },
+
+    // То же, что savePart, но для СПИСКА позиций: одна транзакция и одна синхронизация
+    // склада на всех. Нужно импорту калькуляции Audatex — в смете 20–40 запчастей, а
+    // по одной это 20–40 круговых поездок: сохранение карточки висело бы минуту и
+    // могло оборваться на середине (половина позиций записана, половина нет).
+    //
+    // Семантика ОДИН В ОДИН с savePart, иначе вызывающему пришлось бы держать в голове
+    // два разных поведения: транзакция перечитывает массив на сервере, каждая позиция
+    // мержится по id (upsert), а receiving_log пересчитывается из ХРАНИМОГО лога —
+    // поэтому параллельная правка чужих позиций на экране «Запчасти» не теряется, а
+    // повторное сохранение той же строки обновляет её, а не пропускает.
+    async saveParts(jobId, list = []) {
+      const incoming = (Array.isArray(list) ? list : []).filter((p) => p && typeof p === 'object');
+      if (!incoming.length) return;
+      // Как в savePart: кто/когда фиксируем ОДИН раз вне транзакции, чтобы ретрай
+      // не сдвинул время в истории приёмки.
+      const by = auth.currentUser?.email || null;
+      const at = Date.now();
+      const ref = doc(jobsCol, jobId);
+      const synced = await runTransaction(db, async (tx) => {
+        const snap = await tx.get(ref);
+        if (!snap.exists()) return null;
+        const data = snap.data();
+        const parts = (data.parts || []).slice();
+        for (const raw of withPartIds(incoming)) {
+          const clean = stripUndefined({
+            ...raw,
+            qty: Number(raw.qty) || 1,
+            cost: Number(raw.cost) || 0,
+            price: Number(raw.price) || 0,
+          });
+          const i = parts.findIndex((p) => p.id === clean.id);
+          if (i >= 0) {
+            const prev = parts[i];
+            const merged = { ...prev, ...clean };
+            merged.receiving_log = appendReceivingLog(prev.receiving_log, prev.status, merged.status, by, at);
+            parts[i] = merged;
+          } else {
+            clean.receiving_log = appendReceivingLog([], undefined, clean.status, by, at);
+            parts.push(clean);
+          }
+        }
+        tx.update(ref, { parts });
+        return { id: jobId, ...data, parts };
+      });
+      if (synced && jobCellIds(synced).length) await api.warehouse.syncParts(synced);
+    },
     // ===== Убытки (страховые дела) =====
     // По одной машине страховая может завести НЕСКОЛЬКО дел. Каждое — свой поток
     // биллинга со своими реквизитами и своим номером ЗН (см. billing.js).

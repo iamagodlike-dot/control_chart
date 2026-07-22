@@ -4,6 +4,7 @@ import { api } from '../api';
 import { auth } from '../firebase';
 import { uploadPhoto, deletePhotoFile } from '../photos';
 import { parseAudatexPdf } from '../audatexParse';
+import { audatexServiceRows, audatexPartRows, audatexSummary } from '../audatexImport';
 import { PAYMENT_TYPES, POLICY_TYPES, isInsurance, OSAGO_MAX_REPAIR_WORKDAYS, OSAGO_PENALTY_PER_DAY, workdaysBetween, addWorkdays } from '../insurance';
 import { genPartId, partStatusMeta, psMeta } from '../parts';
 import {
@@ -125,6 +126,10 @@ function formFromJob(job) {
     claim_number: job?.claim_number || '',
     policy_type: job?.policy_type || '',
     franchise: job?.franchise || '',
+    // Скидка по калькуляции — реквизит ДЕЛА, как франшиза: у каждого убытка своя
+    // (см. claim.discount / discountFor в orderDoc.js). Плоское поле машины —
+    // зеркало убытка №1, поэтому здесь читаем именно его.
+    discount: job?.discount || '',
   };
 }
 // Клиентские допродажи (payer:'client') — редактируемая копия для карточки.
@@ -267,6 +272,10 @@ export default function CarCard({
   // Audatex распознал лакокрасочные материалы → у новой машины сразу заводим блок
   // «Подготовка краски» (внутренний учёт себестоимости краски). См. импорт ниже.
   const [createPaint, setCreatePaint] = useState(false);
+  // То же для УЖЕ заведённой машины: импорт калькуляции с ЛКМ в убыток заводит блок
+  // «Подготовка краски», если его ещё нет. Пишется вместе с остальной карточкой
+  // (saveInfo), а не сразу — иначе импорт молча менял бы машину до «Сохранить».
+  const [addPaint, setAddPaint] = useState(false);
   function addCreatePart() { setCreateParts((a) => [...a, { id: genPartId(), code: '', name: '', qty: 1, unit: 'шт.', price: 0 }]); setDirtyInfo(true); }
   function updateCreatePart(id, f) { setCreateParts((a) => a.map((p) => (p.id === id ? { ...p, ...f } : p))); setDirtyInfo(true); }
   function removeCreatePart(id) { setCreateParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
@@ -399,7 +408,7 @@ export default function CarCard({
         ...f,
         insurer_id: cur.insurer_id || '', insurer_name: cur.insurer_name || '',
         claim_number: cur.claim_number || '', policy_type: cur.policy_type || '',
-        franchise: cur.franchise ?? '',
+        franchise: cur.franchise ?? '', discount: cur.discount || '',
       }));
     }
   }, [jobSyncSig]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -445,8 +454,13 @@ export default function CarCard({
         claim_number: c.claim_number || '',
         policy_type: c.policy_type || '',
         franchise: c.franchise ?? '',
+        discount: c.discount || '',
       }));
     }
+    // Отчёт импорта относится к убытку, с которого ушли, — иначе на новой вкладке
+    // висело бы «добавлено N позиций» про чужое дело.
+    setExtractInfo('');
+    setExtractError('');
     setDirtyInfo(false);
   }
 
@@ -477,8 +491,13 @@ export default function CarCard({
         setForm((f) => ({
           ...f,
           insurer_id: fresh.insurer_id || '', insurer_name: fresh.insurer_name || '',
-          claim_number: '', policy_type: '', franchise: '',
+          claim_number: '', policy_type: '', franchise: '', discount: '',
         }));
+        // Новое дело пустое, и первым делом в него грузят калькуляцию — открываем
+        // сразу раздел с позициями и кнопкой импорта, а не «Обзор» машины.
+        setActiveTab('works');
+        setExtractInfo('');
+        setExtractError('');
         setDirtyInfo(false);
       }
     } catch (e) {
@@ -509,8 +528,10 @@ export default function CarCard({
         ...f,
         insurer_id: first.insurer_id || '', insurer_name: first.insurer_name || '',
         claim_number: first.claim_number || '', policy_type: first.policy_type || '',
-        franchise: first.franchise ?? '',
+        franchise: first.franchise ?? '', discount: first.discount || '',
       }));
+      setExtractInfo('');
+      setExtractError('');
       setDirtyInfo(false);
     } catch (e) {
       alert('Не удалось удалить убыток: ' + (e?.message || e));
@@ -530,10 +551,28 @@ export default function CarCard({
   // Read a car's data straight from an Audatex calculation PDF. Fills only empty
   // identity fields (never overwrites what's typed), drops VIN/пробег into the
   // notes, and carries the услуги/запчасти/скидка onto the job for the заказ-наряд.
+  //
+  // В режиме ПРАВКИ та же кнопка грузит калькуляцию В АКТИВНЫЙ УБЫТОК: страховая
+  // заводит по машине второе дело со своей сметой, и её незачем перебивать руками.
+  // Позиции ложатся в те же редактируемые таблицы, что и ручной ввод, — метку потока
+  // (payer = id убытка) им проставит сохранение, см. saveInfo.
   async function handleAudatexUpload(e) {
     const file = e.target.files?.[0];
     e.target.value = '';
     if (!file) return;
+    // Допродажи — не страховое дело: у них нет ни № убытка, ни скидки по калькуляции,
+    // и класть смету страховой в клиентский счёт нельзя. Кнопки там нет, это страховка.
+    if (isEdit && onExtrasTab) return;
+    // Импорт ДОБАВЛЯЕТ к тому, что уже есть. Самая дорогая ошибка здесь — загрузить
+    // файл второй раз и получить задвоенную смету, поэтому спрашиваем явно.
+    if (isEdit && (ownServices.length > 0 || ownParts.length > 0)) {
+      const where = isInsCarForm && activeClaimIdx >= 0 ? `«${claimLabel(activeClaim, activeClaimIdx)}»` : 'этой машине';
+      const ok = window.confirm(
+        `В ${where} уже есть позиции: работ ${ownServices.length}, запчастей ${ownParts.length}.\n\n`
+        + 'Распознанные из калькуляции ДОБАВЯТСЯ к ним (ничего не заменится). Продолжить?',
+      );
+      if (!ok) return;
+    }
     setExtracting(true);
     setExtractError('');
     setExtractInfo('');
@@ -544,40 +583,63 @@ export default function CarCard({
         setExtractError('Не нашли данных в этом PDF — проверьте, что это калькуляция Audatex.');
         return;
       }
+      // Номер дела и скидка — реквизиты УБЫТКА, и заполняем их только пустыми:
+      // правило «импорт не перебивает введённое руками» одинаково в обоих режимах.
+      // Для ОТЧЁТА читаем состояние формы напрямую, а не изнутри setForm: функция-
+      // апдейтер вызывается позже (на рендере) и в StrictMode дважды — собранные в
+      // ней переменные к моменту вывода сообщения были бы пусты. Запись при этом
+      // остаётся в апдейтере: только он видит по-настоящему свежую форму.
+      const filledClaimNumber = !form.claim_number && data.meta?.number ? data.meta.number : '';
+      const filledDiscount = !Number(form.discount) && Number(data.meta?.discount) > 0 ? Number(data.meta.discount) : 0;
       setForm((f) => {
         const next = { ...f };
         if (!next.car_model && v.car_model) next.car_model = v.car_model;
         if (!next.plate_number && v.plate) next.plate_number = v.plate;
-        if (!next.order_number && data.meta?.number) next.order_number = data.meta.number;
+        // Номер заказ-наряда в режиме правки НЕ трогаем: у каждого убытка он свой,
+        // выдан из годовой очереди (api.jobs.addClaim) — под ним дело уже у страховой.
+        if (!isEdit && !next.order_number && data.meta?.number) next.order_number = data.meta.number;
         if (!next.claim_number && data.meta?.number) next.claim_number = data.meta.number;
         if (!next.vin && v.vin) next.vin = v.vin;
         if (!next.mileage && v.mileage) next.mileage = String(v.mileage);
+        if (!Number(next.discount) && Number(data.meta?.discount) > 0) next.discount = Number(data.meta.discount);
         return next;
       });
       setDirtyInfo(true);
+
+      if (isEdit) {
+        // Правка: обе группы — в таблицы активного убытка. Отдельного блока
+        // «распознанные работы» здесь нет: позиции сразу редактируемые.
+        const svc = audatexServiceRows(data, genPartId);
+        const prt = audatexPartRows(data, genPartId);
+        if (svc.length) setOwnServices((cur) => [...cur, ...svc]);
+        if (prt.length) setOwnParts((cur) => [...cur, ...prt]);
+        // Калькуляция с ЛКМ у машины, где блока краски ещё нет, — заводим его тем же
+        // сохранением (у второго убытка по той же машине он обычно уже есть).
+        if (data.meta?.hasPaint && !job?.paint) setAddPaint(true);
+        const where = isInsCarForm && activeClaimIdx >= 0 ? claimLabel(activeClaim, activeClaimIdx) : 'основной ремонт';
+        const extra = [];
+        if (filledClaimNumber) extra.push(`№ убытка ${filledClaimNumber}`);
+        if (filledDiscount) extra.push(`скидка ${fmtMoney(filledDiscount)}`);
+        setExtractInfo(
+          `Добавлено в «${where}» — ${audatexSummary(data)}`
+          + (extra.length ? ` · подставлено: ${extra.join(', ')}` : '')
+          + '. Проверьте позиции и нажмите «Сохранить».',
+        );
+        return;
+      }
+
       setImported({
         services: data.services.map((x) => ({ name: x.name || '', qty: Number(x.qty) || 1, price: Number(x.price) || 0 })),
         discount: Number(data.meta?.discount) || 0,
       });
       // Распознанные запчасти кладём в редактируемую таблицу (дополняя уже добавленные
       // вручную) — их можно поправить/дополнить до сохранения машины.
-      if (data.parts.length) {
-        setCreateParts((cur) => [
-          ...cur,
-          ...data.parts.map((p) => ({ id: genPartId(), code: p.code || '', name: p.name || '', qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0 })),
-        ]);
-      }
+      const created = audatexPartRows(data, genPartId);
+      if (created.length) setCreateParts((cur) => [...cur, ...created]);
       // Калькуляция содержит лакокрасочные материалы → машину красят: заводим блок
       // «Подготовка краски» у новой машины (строка ЛКМ при этом остаётся в запчастях).
       if (data.meta?.hasPaint) setCreatePaint(true);
-      const bits = [];
-      if (v.car_model) bits.push(v.car_model);
-      bits.push(`работ: ${data.services.length}`);
-      bits.push(`запчастей: ${data.parts.length}`);
-      if (data.meta?.hasPaint) bits.push('краска: да');
-      if (Number(data.meta?.discount) > 0) bits.push(`скидка: ${Number(data.meta.discount).toLocaleString('ru-RU')} ₽`);
-      if (data.meta?.repair_total > 0) bits.push(`итог: ${Number(data.meta.repair_total).toLocaleString('ru-RU')} ₽`);
-      setExtractInfo(`Распознано — ${bits.join(' · ')}`);
+      setExtractInfo(`Распознано — ${audatexSummary(data)}`);
     } catch (err) {
       console.error('Ошибка импорта Audatex:', err);
       const detail = err?.message ? ` (${err.message})` : '';
@@ -855,6 +917,9 @@ export default function CarCard({
         claim_number: form.claim_number,
         policy_type: form.policy_type,
         franchise: Number(form.franchise) || null,
+        // Скидка по калькуляции — своя у каждого дела: заказ-наряд, акт и счёт этого
+        // убытка вычитают именно её (discountFor в orderDoc.js).
+        discount: Number(form.discount) || 0,
       };
       // Открыт НЕ убыток №1 → плоские страховые поля из payload вырезаем. Это верно и
       // для вкладки «Допродажи»: страховой блок там скрыт, но `form` всё ещё держит
@@ -869,10 +934,13 @@ export default function CarCard({
       await onSaveInfo({
         ...form,
         ...(stripClaimFields
-          ? { insurer_id: undefined, insurer_name: undefined, claim_number: undefined, policy_type: undefined, franchise: undefined }
-          : { franchise: Number(form.franchise) || null }),
+          ? { insurer_id: undefined, insurer_name: undefined, claim_number: undefined, policy_type: undefined, franchise: undefined, discount: undefined }
+          : { franchise: Number(form.franchise) || null, discount: Number(form.discount) || 0 }),
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
+        // Блок краски (импорт калькуляции с ЛКМ). Только заведение — существующий
+        // объект paint не трогаем, в нём уже ведут себестоимость.
+        ...(addPaint && !job?.paint ? { paint: { status: 'need', cost: 0 } } : {}),
         // Раньше услуги сохранялись только у страховой машины — правились ведь одни
         // допродажи. Теперь основной ремонт правится и у наличной, поэтому пишем всегда.
         services: mergedServices,
@@ -894,10 +962,17 @@ export default function CarCard({
           await api.jobs.removePart(jobId, id);
           setPhotos((prev) => prev.filter((ph) => !(ph.category === 'receiving' && ph.partId === id)));
         }
+        // Пишем ОДНОЙ транзакцией (api.jobs.saveParts): после импорта калькуляции
+        // позиций бывает 20–40, а по одной это столько же круговых поездок — карточка
+        // «сохранялась» бы минуту. Мерж по id там тот же, что в savePart, поэтому
+        // параллельные правки с экрана «Запчасти» по-прежнему не теряются.
+        // Допродажи ниже сохраняются по одной: их единицы, и трогать отлаженный путь
+        // ради этого незачем.
+        const rows = [];
         for (const p of ownParts) {
           if (!String(p.name || '').trim() && !String(p.code || '').trim()) continue;
           const orig = origById.get(p.id) || {};
-          await api.jobs.savePart(jobId, {
+          rows.push({
             ...orig, id: p.id, code: (p.code || '').trim(), name: (p.name || '').trim(),
             qty: Number(p.qty) || 1, unit: p.unit || 'шт.', price: Number(p.price) || 0,
             // У существующей позиции поток уже проставлен (пришёл со спредом). Новой
@@ -905,6 +980,7 @@ export default function CarCard({
             ...(orig.id || !isInsCarForm ? {} : { payer: activeStream }),
           });
         }
+        await api.jobs.saveParts(jobId, rows);
       }
 
       if (insCar && jobId) {
@@ -928,6 +1004,7 @@ export default function CarCard({
         }
       }
       setDirtyInfo(false);
+      setAddPaint(false);
     } finally {
       setSavingInfo(false);
     }
@@ -974,7 +1051,9 @@ export default function CarCard({
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
         // Работы: распознанные Audatex + добавленные вручную (см. mergedCreateServices).
         ...(mergedCreateServices.length ? { services: mergedCreateServices } : {}),
-        ...(imported && imported.discount ? { discount: imported.discount } : {}),
+        // Скидка: из калькуляции Audatex (импорт кладёт её в форму) либо вписанная
+        // руками — источник один, поле формы, иначе правка скидки на «Оплате» терялась.
+        ...(Number(form.discount) ? { discount: Number(form.discount) } : {}),
         // Запчасти: импорт Audatex и/или добавленные вручную в таблице ниже. Уходят в
         // job.parts (с id) → заказ-наряд, ячейка склада и экран «Запчасти» автозаполняются.
         ...(cleanCreateParts.length ? { parts: cleanCreateParts } : {}),
@@ -1692,6 +1771,19 @@ export default function CarCard({
                   />
                 </label>
               )}
+              {/* Скидка по калькуляции. Подставляется импортом Audatex (в смете это
+                  строка «СКИДКА») и вычитается в документах ЭТОГО дела — без неё
+                  итог заказ-наряда разошёлся бы со «СТОИМОСТЬЮ РЕМОНТА» Audatex. */}
+              <label className="cc-field">
+                <span>Скидка, ₽</span>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={form.discount}
+                  onChange={(e) => patchForm({ discount: e.target.value })}
+                />
+              </label>
             </div>
             {form.payment_type === 'insurance' && Number(form.franchise) > 0 && (
               <div className="cc-hint">Эту сумму платит клиент, остальное — страховая. Отражается в заказ-наряде, акте и счёте.</div>
@@ -1926,6 +2018,25 @@ export default function CarCard({
                 <span className="cc-section-hint">{fmtMoney(ownServicesSum + ownPartsSum)}</span>
               </div>
 
+              {/* Импорт калькуляции в АКТИВНЫЙ убыток. Второе страховое дело по той же
+                  машине приходит со своей сметой — раньше её приходилось перебивать
+                  руками, потому что импорт был только при заведении машины. */}
+              <div className="cc-audatex" style={{ marginBottom: 12 }}>
+                <div className="cc-audatex-row">
+                  <label className={`audatex-upload-btn${extracting ? ' is-busy' : ''}`}>
+                    {extracting ? 'Распознаём…' : <><Icon name="file" size={14} /> Импорт из Audatex (PDF)</>}
+                    <input type="file" accept="application/pdf" onChange={handleAudatexUpload} disabled={extracting} hidden />
+                  </label>
+                  <span className="cc-audatex-hint">
+                    {isInsCar
+                      ? `Работы и запчасти из калькуляции добавятся в «${claimLabel(activeClaim, activeClaimIdx)}», плюс № убытка и скидка`
+                      : 'Работы и запчасти из калькуляции добавятся к этой машине, плюс скидка'}
+                  </span>
+                </div>
+                {extractInfo && <div className="cc-audatex-ok"><Icon name="check" size={13} strokeWidth={2} /> {extractInfo}</div>}
+                {extractError && <div className="cc-audatex-err">{extractError}</div>}
+              </div>
+
               {/* Деньги считаются по заказ-наряду. Если карточку поправили, а ЗН нет —
                   предупреждаем: молча разойтись этим цифрам нельзя. */}
               {ownStaleOrder && (
@@ -2111,7 +2222,7 @@ export default function CarCard({
             <div className="cc-tab-empty cc-full">Допродажи клиент оплачивает отдельным счётом — страховых реквизитов у них нет. Их работы и запчасти — на вкладке «Работы и запчасти».</div>
           )}
           {isEdit && activeTab === 'works' && !insWorks.length && !insParts.length && !invoices.length && !(isInsCar && onExtrasTab) && (
-            <div className="cc-tab-empty cc-full">Работы и запчасти пока не добавлены. Их можно внести в окне «Документы» или импортом Audatex при создании машины.</div>
+            <div className="cc-tab-empty cc-full">Работы и запчасти пока не добавлены. Внесите их в таблицах выше, загрузите калькуляцию Audatex или оформите в окне «Документы».</div>
           )}
          </div>
         </div>
