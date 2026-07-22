@@ -5,6 +5,8 @@ const config = require('./config');
 const { isReady, reason } = require('./firebase');
 const views = require('./views');
 const { startNotifier } = require('./notify');
+const { buildDigestText } = require('./mailDigest');
+const { isConfigured: mailConfigured } = require('./mail');
 
 if (!config.botToken) {
   console.error('❌ Не задан BOT_TOKEN в файле .env');
@@ -26,6 +28,7 @@ const BTN = {
   invoices: 'Счета к оплате',
   digest: 'Состояние ремонтов',
   approvals: 'Согласования',
+  mail: 'Почта',
 };
 
 function menuFor(isManager, isFounder) {
@@ -38,7 +41,7 @@ function menuFor(isManager, isFounder) {
     rows.push([BTN.debts, BTN.revenue]);
     rows.push([BTN.analytics, BTN.summary]);
     rows.push([BTN.digest, BTN.approvals]);
-    rows.push([BTN.invoices]); // управляющий тоже может оплачивать счета
+    rows.push([BTN.invoices, BTN.mail]); // счета к оплате + разбор почты за день
   }
   return Markup.keyboard(rows).resize();
 }
@@ -234,6 +237,22 @@ async function actApprovals(ctx) {
   return undefined;
 }
 
+// Разбор почты «итог дня» по требованию — только управляющим (та же сводка, что
+// приходит вечером по расписанию).
+async function actMail(ctx) {
+  if (!ctx.state.manager) return send(ctx, 'Раздел доступен только управляющим.', false);
+  if (!mailConfigured()) return send(ctx, 'Почта пока не настроена (нет MAIL_USER/MAIL_PASSWORD в .env бота).', ctx.state.manager);
+  await ctx.reply('Собираю разбор почты… это займёт несколько секунд.');
+  try {
+    const text = await buildDigestText();
+    await ctx.reply(text, { parse_mode: 'HTML', disable_web_page_preview: true });
+  } catch (e) {
+    console.error('Почта (разбор):', e);
+    await send(ctx, '⚠️ Не удалось собрать разбор почты. Попробуйте позже.', ctx.state.manager);
+  }
+  return undefined;
+}
+
 // Кнопки нижнего меню + одноимённые слэш-команды (для меню ☰ у поля ввода).
 // В hears указываем и СТАРЫЕ подписи с эмодзи — чтобы у тех, у кого нижнее меню
 // ещё не обновилось, кнопки продолжали работать (после ответа меню обновится).
@@ -248,6 +267,7 @@ bot.hears([BTN.analytics, '🧭 Аналитика'], guard(actAnalytics));   bo
 bot.hears([BTN.invoices, '💳 Счета к оплате'], guard(actInvoices)); bot.command('invoices', guard(actInvoices));
 bot.hears(BTN.digest, guard(actDigest));                           bot.command('digest', guard(actDigest));
 bot.hears(BTN.approvals, guard(actApprovals));                     bot.command('approvals', guard(actApprovals));
+bot.hears([BTN.mail, '📬 Почта'], guard(actMail));                 bot.command('mail', guard(actMail));
 bot.command('help', guard(actHelp));
 
 // ─── Развороты под сводкой учредителя ───
@@ -659,6 +679,31 @@ function scheduleFounderDigest() {
   }, { timezone: config.founderDigest.tz });
 }
 
+// Ежедневный разбор почты «итог дня» управляющим: письма, сверенные с базой машин,
+// и состояние переписки (кто кому должен ответить). Своё время и СВОЙ пояс — см.
+// config.mailDigest. Если почта не настроена (нет MAIL_*), молча ничего не шлём.
+function scheduleMailDigest() {
+  cron.schedule(config.mailDigest.cron, async () => {
+    const recipients = config.mailDigestTo.length ? config.mailDigestTo : config.managers;
+    if (!isReady() || !recipients.length || !mailConfigured()) return;
+    let text;
+    try {
+      text = await buildDigestText();
+    } catch (e) {
+      console.error('Почта (расписание):', e);
+      return;
+    }
+    for (const id of recipients) {
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML', disable_web_page_preview: true });
+      } catch (e) {
+        console.error(`Почта — отправка ${id}:`, e.message);
+      }
+    }
+  }, { timezone: config.mailDigest.tz });
+}
+
 // ─── Запуск ───
 // В этой версии Telegraf промис bot.launch() резолвится только при ОСТАНОВКЕ,
 // поэтому расписание и логи ставим до запуска, а сам launch не «ждём».
@@ -690,6 +735,7 @@ async function setupCommands() {
     { command: 'digest', description: 'Состояние ремонтов' },
     { command: 'approvals', description: 'Согласования со страховой' },
     { command: 'invoices', description: 'Счета к оплате' },
+    { command: 'mail', description: 'Разбор почты за день' },
     { command: 'help', description: 'Что умеет бот' },
   ];
   try {
@@ -741,12 +787,14 @@ async function connectAndLaunch() {
 scheduleSummary();
 scheduleReminder();
 scheduleFounderDigest();
+scheduleMailDigest();
 startNotifier(bot);
 console.log('🤖 Бот запускается…');
 console.log(isReady() ? '✅ База подключена.' : `⚠️  База не подключена: ${reason()}`);
 console.log(`⏰ Утренняя сводка: ${config.summary.hour}:${String(config.summary.minute).padStart(2, '0')} · напоминание: ${config.reminder.hour}:${String(config.reminder.minute).padStart(2, '0')} (${config.summary.tz}), получатели: ${config.managers.length || 'пока никого'}`);
 console.log(`💳 Счета поставщиков: учредителей ${config.founders.length || 'пока нет'} (мгновенный пуш + кнопка «Счета к оплате»)`);
 console.log(`📋 Сводка учредителя «Состояние ремонтов»: ${config.founderDigest.hour}:${String(config.founderDigest.minute).padStart(2, '0')} (${config.founderDigest.tz}), получателей: ${config.founders.length || 'пока нет'}`);
+console.log(`📬 Разбор почты: ${config.mailDigest.hour}:${String(config.mailDigest.minute).padStart(2, '0')} (${config.mailDigest.tz}), получателей ${(config.mailDigestTo.length ? config.mailDigestTo : config.managers).length || 'пока никого'}${mailConfigured() ? '' : ' — ПОЧТА НЕ НАСТРОЕНА (MAIL_USER/MAIL_PASSWORD)'}`);
 connectAndLaunch();
 
 function stop(sig) {

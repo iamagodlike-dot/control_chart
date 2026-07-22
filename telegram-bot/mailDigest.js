@@ -1,14 +1,21 @@
 'use strict';
 // Ежедневный отчёт по почте «итог дня»: сверяет письма страховых с базой машин
-// и раскладывает переписку на «требует ответа / ждём их / брошено». Формат —
-// фиксированный шаблон (одинаковый каждый день). Всё только на чтение.
+// и раскладывает переписку на «требует ответа / ждём их / брошено».
+//
+// Разделено на два слоя:
+//   buildDigestData()  — сбор и сверка, возвращает СТРУКТУРУ находок (для шаблона
+//                        и для «умной» задачи, которая пишет текст сама);
+//   formatDigestText() — фиксированный шаблон (одинаковый каждый день) из этой структуры.
+// Всё только на чтение.
 const dayjs = require('dayjs');
 const { fetchMessages, isConfigured } = require('./mail');
 const { loadGraph } = require('./data');
 const { money, esc } = require('./format');
 
 const DAYS = Number(process.env.MAIL_DIGEST_DAYS || 40); // окно для анализа диалогов
-const RECENT_DAYS = Number(process.env.MAIL_DIGEST_RECENT_DAYS || 2); // «за сутки» (с запасом)
+const RECENT_DAYS = Number(process.env.MAIL_DIGEST_RECENT_DAYS || 2); // «новые убытки» — только свежие
+const ACTION_DAYS = Number(process.env.MAIL_DIGEST_ACTION_DAYS || 7); // отзывы/согласования/док-ты — с запасом
+const INVOICE_DAYS = Number(process.env.MAIL_DIGEST_INVOICE_DAYS || 14); // счета поставщиков — дольше висят
 const CAP = 8; // максимум строк в разделе
 
 // ── Госномер: кириллица и её латинские двойники → единый вид ──
@@ -73,15 +80,13 @@ function matchJob(ex, idx) {
 const AUTO = /vsk_info@vsk\.ru|service_offers|smeta_sfo|repair_order@reso\.ru|noreply|no-reply|@360\.yandex|id\.yandex|emex\.ru|pay\.stoa/i;
 const INSURER = /@(?:[\w.-]+\.)?(?:vsk\.ru|reso\.ru|ingos\.ru)/i;
 const isInsurer = (m) => INSURER.test(m.fromAddr) || /\b(ВСК|РЕСО|ИНГОС|ингосстрах)\b/i.test(`${m.fromName} ${m.subject}`);
+// Независимый оценщик (АВТО-EXPERT): ему обычно НЕ отвечают — получают расчёт
+// (аудатекс) и пересылают его страховой на согласование. Поэтому его письма —
+// не «требуют ответа», а «расчёт готов → переслать страховой».
+const EXPERT = /avto-expert24@bk\.ru|@24exp\.ru/i;
 
 const SELF = (process.env.MAIL_USER || '').toLowerCase();
 const daysAgo = (ms, now) => Math.round((now - ms) / 864e5 * 10) / 10;
-
-// Красивое имя контрагента для строки.
-function who(m) {
-  const a = m.dir === 'in' ? m.fromAddr : m.toAddr;
-  return a && a !== SELF ? a : (m.fromName || '—');
-}
 
 // ── Склейка писем в диалоги (union-find по messageId/ссылкам + запасная по теме) ──
 function threadize(msgs) {
@@ -118,85 +123,112 @@ function threadize(msgs) {
 }
 
 const TRASH = /^\s*(тест|test|фейк|проверка|\d{1,3})\s*$/i; // мусорные темы
+// Шум для раздела «требуют ответа»: пустые темы, голые RE:/FW:, автоответы.
+const isNoise = (s) => {
+  s = String(s || '').trim();
+  return !s || TRASH.test(s) || /^(re|fw|fwd)\b[:\s]*$/i.test(s) || /автоматическ\S* ответ|автоответ|auto(?:matic)? reply|out of office/i.test(s);
+};
 
-// Обрезаем и СРАЗУ экранируем — результат идёт прямо в HTML сообщения Telegram.
-function trim(s, n = 64) { s = String(s || '').replace(/\s+/g, ' ').trim(); if (s.length > n) s = `${s.slice(0, n)}…`; return esc(s); }
+const dedupeBySubject = (arr) => {
+  const seen = new Set();
+  return arr.filter((x) => { const k = x.subject; if (seen.has(k)) return false; seen.add(k); return true; });
+};
 
-async function buildDigestText(now = Date.now()) {
-  if (!isConfigured()) {
-    return '<b>📬 Почта</b>\n\nНе настроен доступ к почте. Задайте MAIL_USER и MAIL_PASSWORD в .env бота.';
-  }
-
+// ── СБОР ДАННЫХ (факты, без оформления) ──
+async function buildDigestData(now = Date.now()) {
+  if (!isConfigured()) return { ok: false, reason: 'not_configured' };
   let messages; let g;
   try {
-    [messages, g] = await Promise.all([fetchMessages({ days: DAYS, bodyDays: RECENT_DAYS + 1 }), loadGraph()]);
+    [messages, g] = await Promise.all([fetchMessages({ days: DAYS, bodyDays: ACTION_DAYS }), loadGraph()]);
   } catch (e) {
-    return `<b>📬 Почта — итог дня</b>\n\n⚠️ Не удалось получить почту: ${esc(e.message)}`;
+    return { ok: false, reason: 'fetch_error', error: e.message };
   }
 
   const idx = buildIndex(g.jobs);
   const threads = threadize(messages);
-  const human = threads.filter((t) => !t.auto && !TRASH.test(t.subject));
+  const human = threads.filter((t) => !t.auto && !isNoise(t.subject));
 
-  // ── Диалоги ──
-  const needReply = human
-    .filter((t) => t.lastDir === 'in' && daysAgo(t.lastDate, now) <= 14)
-    .sort((a, b) => a.lastDate - b.lastDate); // старые сверху — им «горит» дольше
+  const lastInHuman = human.filter((t) => t.lastDir === 'in' && daysAgo(t.lastDate, now) <= 14
+    && !/счёт на оплату|счет на оплату|на оплату №/i.test(t.subject));
+  const isExpertThread = (t) => t.parties.some((p) => EXPERT.test(p));
+  // Оценщику не отвечают — его расчёты идут в отдельный раздел «переслать страховой».
+  const needReply = lastInHuman.filter((t) => !isExpertThread(t))
+    .sort((a, b) => a.lastDate - b.lastDate)
+    .map((t) => ({ subject: t.subject, from: t.parties[0] || '?', ageDays: daysAgo(t.lastDate, now), nIn: t.nIn, nOut: t.nOut }));
+  const expertCalcs = lastInHuman.filter(isExpertThread)
+    .sort((a, b) => a.lastDate - b.lastDate)
+    .map((t) => ({ subject: t.subject, ageDays: daysAgo(t.lastDate, now) }));
   const waitingThem = human.filter((t) => t.lastDir === 'out' && daysAgo(t.lastDate, now) >= 3).length;
   const abandoned = human.filter((t) => t.nIn > 0 && t.nOut > 0 && daysAgo(t.lastDate, now) >= 14).length;
 
-  // ── Свежие входящие: сверка с базой ──
-  const recentIn = messages.filter((m) => m.dir === 'in' && daysAgo(m.date, now) <= RECENT_DAYS);
-  const withdrawals = []; const notInSystem = []; const mismatches = []; const closing = []; const invoicesMail = [];
+  const withdrawals = []; const notInSystem = []; const closing = []; const invoicesMail = [];
+  const mismatch = new Map(); // jobId → {plate, model, sum}
   const seenNew = new Set();
-  for (const m of recentIn) {
+  for (const m of messages) {
+    if (m.dir !== 'in') continue;
+    const age = daysAgo(m.date, now);
+    if (age > INVOICE_DAYS) continue;
     const blob = `${m.subject} ${m.text || ''}`;
     const ex = extract(blob);
     const job = matchJob(ex, idx);
+    const snippet = String(m.text || '').slice(0, 400);
 
-    // Страховая отзывает/аннулирует направление — потеря, если проспать.
-    if (isInsurer(m) && /отзыв|аннулир|отозв|расторж/i.test(m.subject)) {
-      withdrawals.push(`🔻 ${trim(m.subject, 70)}${job ? ` — <b>${esc(job.plate_number || '')}</b>` : ''}`);
+    if (age <= ACTION_DAYS && isInsurer(m) && /отзыв|аннулир|отозв|расторж/i.test(m.subject)) {
+      withdrawals.push({ subject: m.subject, from: m.fromAddr, ageDays: age, plate: job ? job.plate_number : '', model: job ? job.car_model : '', snippet });
       continue;
     }
-    // Результат согласования: сверяем сумму и статус карточки.
-    if (/результат согласовани|согласована сумма|согласовано.*ремонт/i.test(blob)) {
-      const am = blob.match(/(?:в размере|сумм\w*)\D{0,12}?([\d][\d\s]{3,})[.,](\d{2})/i);
+    if (age <= ACTION_DAYS && /результат согласовани|согласована сумма|согласовано.{0,20}ремонт/i.test(blob)) {
+      const am = blob.match(/(?:в размере|сумм\w*)\D{0,12}?([\d][\d\s]{3,})[.,]\d{2}/i);
       const sum = am ? Number(digits(am[1])) : null;
-      if (job) {
-        const stApproved = job.approval_status === 'approved' || job.phase === 'repair';
-        if (!stApproved) {
-          mismatches.push(`• <b>${esc(job.plate_number || job.car_model || '?')}</b> — согласовано${sum ? ` ${money(sum)}` : ''}, а в карточке ещё «на согласовании»`);
-        }
+      if (job && job.approval_status !== 'approved' && job.phase !== 'repair') {
+        const cur = mismatch.get(job.id) || { plate: job.plate_number || job.car_model || '?', model: job.car_model || '', sum: 0 };
+        if (sum && sum > cur.sum) cur.sum = sum;
+        mismatch.set(job.id, cur);
       }
       continue;
     }
-    // Просят продублировать закрывающие / нет счёта.
-    if (isInsurer(m) && /нет сч[её]та|продублир|закрывающ/i.test(blob)) {
-      closing.push(`• ${trim(m.subject, 70)}${job ? ` — <b>${esc(job.plate_number || '')}</b>` : ''}`);
+    if (age <= ACTION_DAYS && isInsurer(m) && /нет сч[её]та|продублир|закрывающ/i.test(blob)) {
+      closing.push({ subject: m.subject, from: m.fromAddr, ageDays: age, plate: job ? job.plate_number : '', snippet });
       continue;
     }
-    // Письмо от страховой про машину, которой нет в базе.
-    if (isInsurer(m) && !job && (ex.plates.length || ex.claims.length)) {
+    if (age <= RECENT_DAYS && isInsurer(m) && !job && (ex.plates.length || ex.claims.length)) {
       const key = ex.plates[0] || ex.claims[0];
-      if (!seenNew.has(key)) {
-        seenNew.add(key);
-        notInSystem.push(`• ${trim(m.subject, 78)}`);
-      }
+      if (!seenNew.has(key)) { seenNew.add(key); notInSystem.push({ subject: m.subject, from: m.fromAddr, ageDays: age, snippet }); }
       continue;
     }
-    // Счёт поставщика в почте (не от страховой).
     if (!isInsurer(m) && /счёт на оплату|счет на оплату|на оплату №|инвойс/i.test(blob)) {
-      invoicesMail.push(`• ${trim(m.subject, 70)} — ${esc(who(m))}`);
+      invoicesMail.push({ subject: m.subject, from: m.fromAddr, ageDays: age });
     }
   }
 
-  // ── Сборка шаблона ──
-  const nIn = messages.filter((m) => m.dir === 'in').length;
-  const nOut = messages.filter((m) => m.dir === 'out').length;
+  return {
+    ok: true,
+    date: dayjs(now).format('DD.MM'),
+    counts: { total: messages.length, in: messages.filter((m) => m.dir === 'in').length, out: messages.filter((m) => m.dir === 'out').length, threads: threads.length, days: DAYS },
+    needReply,
+    expertCalcs,
+    withdrawals: dedupeBySubject(withdrawals),
+    mismatches: [...mismatch.values()],
+    closing: dedupeBySubject(closing),
+    notInSystem,
+    invoicesMail: dedupeBySubject(invoicesMail),
+    waitingThem,
+    abandoned,
+  };
+}
+
+// ── ОФОРМЛЕНИЕ (фиксированный шаблон Telegram HTML) ──
+function trim(s, n = 64) { s = String(s || '').replace(/\s+/g, ' ').trim(); if (s.length > n) s = `${s.slice(0, n)}…`; return esc(s); }
+
+function formatDigestText(data) {
+  if (!data || !data.ok) {
+    if (data && data.reason === 'not_configured') return '<b>📬 Почта</b>\n\nНе настроен доступ к почте. Задайте MAIL_USER и MAIL_PASSWORD в .env бота.';
+    return `<b>📬 Почта — итог дня</b>\n\n⚠️ Не удалось получить почту${data && data.error ? `: ${esc(data.error)}` : ''}`;
+  }
+  const c = data.counts;
   const L = [];
-  L.push(`<b>📬 Почта — итог дня</b> · ${dayjs(now).format('DD.MM')}`);
-  L.push(`<i>${messages.length} писем за ${DAYS} дн. (вход ${nIn} / исход ${nOut}) · диалогов ${threads.length}</i>`);
+  L.push(`<b>📬 Почта — итог дня</b> · ${data.date}`);
+  L.push(`<i>${c.total} писем за ${c.days} дн. (вход ${c.in} / исход ${c.out}) · диалогов ${c.threads}</i>`);
   L.push('┈┈┈┈┈┈┈┈┈┈┈┈');
 
   const section = (title, items, empty) => {
@@ -207,30 +239,28 @@ async function buildDigestText(now = Date.now()) {
     L.push('');
   };
 
-  // 1. Требуют вашего ответа.
-  const needLines = needReply.map((t) => `• ${trim(t.subject)}\n   <i>${esc(t.parties[0] || '?')} · ${daysAgo(t.lastDate, now)} дн.</i>`);
-  section('<b>🔴 Требуют вашего ответа</b>', needLines, 'нет');
+  section('<b>🔴 Требуют вашего ответа</b>',
+    data.needReply.map((t) => `• ${trim(t.subject)}\n   <i>${esc(t.from)} · ${t.ageDays} дн.</i>`), 'нет');
+  if (data.withdrawals.length) section('<b>🔻 Страховая отзывает направление</b>',
+    data.withdrawals.map((w) => `🔻 ${trim(w.subject, 70)}${w.plate ? ` — <b>${esc(w.plate)}</b>` : ''}`));
+  if (data.mismatches.length) section('<b>⚠️ Согласование получено — обновить карточку</b>',
+    data.mismatches.map((v) => `• <b>${esc(v.plate)}</b> — согласовано${v.sum ? ` ${money(v.sum)}` : ''}, а в карточке ещё «на согласовании»`));
+  if (data.closing.length) section('<b>📄 Просят продублировать документы</b>',
+    data.closing.map((cl) => `• ${trim(cl.subject, 70)}${cl.plate ? ` — <b>${esc(cl.plate)}</b>` : ''}`));
+  if (data.expertCalcs.length) section('<b>🧮 Расчёты от оценщика — переслать страховой</b>',
+    data.expertCalcs.map((e) => `• ${trim(e.subject, 72)} · <i>${e.ageDays} дн.</i>`));
+  section('<b>🆕 Страховая прислала, в базе нет</b>',
+    data.notInSystem.map((n) => `• ${trim(n.subject, 78)}`), 'нет');
+  if (data.invoicesMail.length) section('<b>💰 Счета в почте</b>',
+    data.invoicesMail.map((i) => `• ${trim(i.subject, 70)} — ${esc(i.from)}`));
 
-  // 2. Страховая отзывает/аннулирует.
-  if (withdrawals.length) section('<b>🔻 Страховая отзывает направление</b>', withdrawals);
-
-  // 3. Согласовано — обновить карточку.
-  if (mismatches.length) section('<b>⚠️ Согласование получено — обновить карточку</b>', mismatches);
-
-  // 4. Просят закрывающие / нет счёта.
-  if (closing.length) section('<b>📄 Просят продублировать документы</b>', closing);
-
-  // 5. Новые убытки без карточки.
-  section('<b>🆕 Страховая прислала, в базе нет</b>', notInSystem, 'нет');
-
-  // 6. Счета поставщиков в почте.
-  if (invoicesMail.length) section('<b>💰 Счета в почте</b>', invoicesMail);
-
-  // 7. Хвосты — счётчиками.
   L.push('┈┈┈┈┈┈┈┈┈┈┈┈');
-  L.push(`🟡 Ждём ответа от них: <b>${waitingThem}</b>  ·  ⚫ Давно висят (2+ нед.): <b>${abandoned}</b>`);
-
+  L.push(`🟡 Ждём ответа от них: <b>${data.waitingThem}</b>  ·  ⚫ Давно висят (2+ нед.): <b>${data.abandoned}</b>`);
   return L.join('\n').trim();
 }
 
-module.exports = { buildDigestText };
+async function buildDigestText(now = Date.now()) {
+  return formatDigestText(await buildDigestData(now));
+}
+
+module.exports = { buildDigestText, buildDigestData, formatDigestText };

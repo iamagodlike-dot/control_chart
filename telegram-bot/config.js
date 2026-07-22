@@ -16,6 +16,9 @@ const founders = ids(process.env.FOUNDERS);
 // заказать» и «счёт оплачен»; в разделе «Запчасти» видят поставщика и закупку —
 // это их работа, — но НЕ видят выручку/прибыль и финансовые кнопки меню.
 const partsmen = ids(process.env.PARTSMEN);
+// Получатели разбора почты. Если задано — шлём только им (напр., управляющему без
+// учредителя); если пусто — по умолчанию всем управляющим.
+const mailDigestTo = ids(process.env.MAIL_DIGEST_TO);
 // Все четыре группы входят в общий список доступа к боту.
 const allowed = new Set([...managers, ...staff, ...founders, ...partsmen]);
 
@@ -28,6 +31,11 @@ const tz = process.env.SUMMARY_TZ || 'Europe/Moscow';
 // 10:00 по Красноярску (= 06:00 МСК). Меняя время, не перепутайте пояс.
 const [dh = '10', dm = '00'] = String(process.env.FOUNDER_DIGEST_TIME || '10:00').split(':');
 const founderTz = process.env.FOUNDER_DIGEST_TZ || 'Asia/Krasnoyarsk';
+
+// Разбор почты «итог дня» управляющим. Свой час и СВОЙ пояс (по умолчанию
+// красноярский, 18:00 = 14:00 МСК). Отдельно от прочих рассылок.
+const [xh = '18', xm = '00'] = String(process.env.MAIL_DIGEST_TIME || '18:00').split(':');
+const mailTz = process.env.MAIL_DIGEST_TZ || 'Asia/Krasnoyarsk';
 
 // Адрес, по которому nginx раздаёт фото (location /uploads/). В базе у фото
 // хранится только относительный путь /uploads/…; бот дополняет его этим адресом,
@@ -57,10 +65,17 @@ module.exports = {
     tz: founderTz,
     cron: `${Number(dm)} ${Number(dh)} * * *`,
   },
+  mailDigest: {
+    hour: Number(xh),
+    minute: Number(xm),
+    tz: mailTz,
+    cron: `${Number(xm)} ${Number(xh)} * * *`,
+  },
   managers,
   staff,
   founders,
   partsmen,
+  mailDigestTo,
   isAllowed: (id) => allowed.has(String(id)),
   isManager: (id) => managers.includes(String(id)),
   isFounder: (id) => founders.includes(String(id)),
