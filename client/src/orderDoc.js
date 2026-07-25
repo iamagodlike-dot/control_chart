@@ -326,17 +326,35 @@ export function buildOrderSnapshot(job = {}, company = {}, recipient = 'all') {
   };
 }
 
+// База, от которой считается ПРОЦЕНТ скидки. У страховых ремонтов скидка даётся
+// НА ЗАПЧАСТИ: их стоимость страховая согласовывает, а работы считает по своему
+// справочнику. У наличных и юрлиц — на весь ремонт, работы плюс запчасти.
+// Рублёвой скидки не касается: там сумма задана прямо.
+export function discountBaseFor(paymentType, services_sum = 0, parts_sum = 0) {
+  return paymentType === 'insurance' ? parts_sum : services_sum + parts_sum;
+}
+export function discountBase(snapshot = {}, services_sum = 0, parts_sum = 0) {
+  return discountBaseFor((snapshot.insurance || {}).payment_type, services_sum, parts_sum);
+}
+// Подпись базы для печати: «Скидка 10%» у страхового ремонта без уточнения читается
+// как процент от всего ремонта, хотя считается от запчастей.
+export function discountBaseLabel(snapshot = {}) {
+  return (snapshot.insurance || {}).payment_type === 'insurance' ? 'на запчасти' : '';
+}
+
 // Скидку можно задавать в рублях (discount_mode 'rub', поле discount) ИЛИ процентом
-// от суммы работ+запчастей (discount_mode 'pct', поле discount_pct). В любом случае
-// возвращаем discount как РУБЛИ (эффективную сумму) — так печать, costing (читает
-// order.discount рублями) и старые сохранённые документы работают без изменений.
-// discount_mode/discount_pct отдаём отдельно — чтобы на листе печатать «Скидка 10%».
-export function resolveDiscount(snapshot = {}, subtotal = 0) {
+// от базы (discount_mode 'pct', поле discount_pct; база — см. discountBase). В любом
+// случае возвращаем discount как РУБЛИ (эффективную сумму) — так печать, costing
+// (читает order.discount рублями) и старые сохранённые документы работают без
+// изменений. discount_mode/discount_pct отдаём отдельно — чтобы на листе печатать
+// «Скидка 10%». Потолок — subtotal: скидка не может превысить весь ремонт.
+export function resolveDiscount(snapshot = {}, subtotal = 0, base = null) {
   const mode = snapshot.discount_mode === 'pct' ? 'pct' : 'rub';
   const pct = mode === 'pct' ? Math.min(100, Math.max(0, num(snapshot.discount_pct, 0))) : 0;
-  const raw = mode === 'pct' ? (subtotal * pct) / 100 : num(snapshot.discount, 0);
+  const pctBase = base === null ? subtotal : base;
+  const raw = mode === 'pct' ? (pctBase * pct) / 100 : num(snapshot.discount, 0);
   const amount = Math.min(subtotal, Math.max(0, Math.round(raw)));
-  return { mode, pct, amount };
+  return { mode, pct, amount, base: pctBase };
 }
 
 export function computeOrderTotals(snapshot = {}) {
@@ -344,7 +362,7 @@ export function computeOrderTotals(snapshot = {}) {
   const services_sum = sum(snapshot.services);
   const parts_sum = sum(snapshot.parts);
   const subtotal = services_sum + parts_sum;
-  const d = resolveDiscount(snapshot, subtotal);
+  const d = resolveDiscount(snapshot, subtotal, discountBase(snapshot, services_sum, parts_sum));
   const discount = d.amount;
   const total = Math.max(0, subtotal - discount);
   const prepayment = num(snapshot.prepayment, 0);
@@ -359,7 +377,7 @@ export function computeOrderTotals(snapshot = {}) {
   // total при этом остаётся ПОЛНОЙ стоимостью ремонта (ЗН/акт печатают её).
   const payable = isIns && franchise > 0 ? insurer_pays : total;
   const payable_due = Math.max(0, payable - prepayment);
-  return { services_sum, parts_sum, subtotal, discount, discount_mode: d.mode, discount_pct: d.pct, total, prepayment, due, franchise, insurer_pays, payable, payable_due, total_words: numberToWordsRu(total) };
+  return { services_sum, parts_sum, subtotal, discount, discount_mode: d.mode, discount_pct: d.pct, discount_base: d.base, discount_base_label: discountBaseLabel(snapshot), total, prepayment, due, franchise, insurer_pays, payable, payable_due, total_words: numberToWordsRu(total) };
 }
 
 // ===== Акт выполненных работ / Акт приёма-передачи / Счёт на оплату =====

@@ -147,6 +147,51 @@ test('computeOrderTotals — скидка в процентах считаетс
   assert.equal(t.total, 90000);
 });
 
+test('computeOrderTotals — у страховой процент скидки считается ТОЛЬКО от запчастей', () => {
+  const t = computeOrderTotals({
+    insurance: { payment_type: 'insurance' },
+    services: [{ qty: 1, price: 60000 }],
+    parts: [{ qty: 1, price: 40000 }],
+    discount_mode: 'pct', discount_pct: 10, discount: 0,
+  });
+  assert.equal(t.discount_base, 40000, 'база — запчасти, не весь ремонт');
+  assert.equal(t.discount, 4000, '10% от 40000, а не от 100000');
+  assert.equal(t.total, 96000);
+});
+
+test('computeOrderTotals — у наличной машины база процента прежняя: работы+запчасти', () => {
+  const t = computeOrderTotals({
+    insurance: { payment_type: 'cash' },
+    services: [{ qty: 1, price: 60000 }],
+    parts: [{ qty: 1, price: 40000 }],
+    discount_mode: 'pct', discount_pct: 10,
+  });
+  assert.equal(t.discount_base, 100000);
+  assert.equal(t.discount, 10000);
+});
+
+test('computeOrderTotals — рублёвая скидка от базы не зависит и может превышать запчасти', () => {
+  const t = computeOrderTotals({
+    insurance: { payment_type: 'insurance' },
+    services: [{ qty: 1, price: 60000 }],
+    parts: [{ qty: 1, price: 40000 }],
+    discount: 50000,
+  });
+  assert.equal(t.discount, 50000, 'сумма задана прямо — режем только по всему ремонту');
+  assert.equal(t.total, 50000);
+});
+
+test('computeOrderTotals — у страховой 100% скидки не съедают работы', () => {
+  const t = computeOrderTotals({
+    insurance: { payment_type: 'insurance' },
+    services: [{ qty: 1, price: 60000 }],
+    parts: [{ qty: 1, price: 40000 }],
+    discount_mode: 'pct', discount_pct: 250,
+  });
+  assert.equal(t.discount, 40000, 'потолок — стоимость запчастей');
+  assert.equal(t.total, 60000, 'работы остаются к оплате');
+});
+
 test('computeOrderTotals — процент скидки ограничен 100 и не даёт минус', () => {
   const t = computeOrderTotals({
     services: [{ qty: 1, price: 50000 }],

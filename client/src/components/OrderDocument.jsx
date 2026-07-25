@@ -160,7 +160,7 @@ export default function OrderDocument({ snapshot }) {
           <div className="zn-totals">
             <div className="zn-tr"><span className="zn-tl">Итого по работам</span><span className="zn-tv">{money(t.services_sum)}</span></div>
             <div className="zn-tr"><span className="zn-tl">Итого по запчастям</span><span className="zn-tv">{money(t.parts_sum)}</span></div>
-            {t.discount > 0 && <div className="zn-tr"><span className="zn-tl">Скидка{t.discount_mode === 'pct' ? ` ${t.discount_pct}%` : ''}</span><span className="zn-tv">− {money(t.discount)}</span></div>}
+            {t.discount > 0 && <div className="zn-tr"><span className="zn-tl">Скидка{t.discount_mode === 'pct' ? ` ${t.discount_pct}%${t.discount_base_label ? ' ' + t.discount_base_label : ''}` : ''}</span><span className="zn-tv">− {money(t.discount)}</span></div>}
             <div className="zn-tr zn-tr-total"><span className="zn-tl">ИТОГО К ОПЛАТЕ</span><span className="zn-tv">{money(t.total)}</span></div>
             <div className="zn-words">{t.total_words}</div>
             {t.franchise > 0 && <div className="zn-tr"><span className="zn-tl">Франшиза (оплачивает клиент)</span><span className="zn-tv">{money(t.franchise)}</span></div>}

@@ -15,6 +15,7 @@ import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadli
 import { CellPickerModal } from './Warehouse';
 import CostingModal from './CostingModal';
 import { computeCosting } from '../costing';
+import { discountBaseFor } from '../orderDoc';
 import MasterPayModal from './MasterPayModal';
 import Icon from './Icon';
 import DateTimeField from './DateTimeField';
@@ -266,11 +267,11 @@ export default function CarCard({
   function removeExtraPart(id) { setExtraParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
   const ownServicesSum = ownServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
   const ownPartsSum = ownParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
-  // База скидки. У страховых она даётся НА ЗАПЧАСТИ — страховая согласовывает
-  // скидку от их стоимости, работы считаются по её справочнику. У наличных и
-  // юрлиц скидка на весь ремонт. Рубли остаются источником правды: процент лишь
-  // пересчитывается в них, поэтому заказ-наряд, акт и счёт получают ту же сумму.
-  const discBase = form.payment_type === 'insurance' ? ownPartsSum : ownServicesSum + ownPartsSum;
+  // База скидки — общая с документами функция (discountBaseFor в orderDoc.js),
+  // чтобы правило жило в одном месте: у страховых скидка даётся НА ЗАПЧАСТИ, у
+  // наличных и юрлиц — на весь ремонт. Рубли остаются источником правды: процент
+  // лишь пересчитывается в них, поэтому ЗН, акт и счёт получают ту же сумму.
+  const discBase = discountBaseFor(form.payment_type, ownServicesSum, ownPartsSum);
   const discBaseLabel = form.payment_type === 'insurance' ? 'от запчастей' : 'от работ и запчастей';
   const discRub = Number(form.discount) || 0;
   const discShownPct = discBase > 0 ? Math.round((discRub / discBase) * 1000) / 10 : 0;

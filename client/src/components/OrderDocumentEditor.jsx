@@ -336,7 +336,8 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
               rub={snapshot.discount}
               pct={snapshot.discount_pct}
               effective={totals.discount}
-              subtotal={totals.subtotal}
+              subtotal={totals.discount_base}
+              baseLabel={(snapshot.insurance || {}).payment_type === 'insurance' ? 'от запчастей' : 'от работ и запчастей'}
               onPatch={patch}
             />
             <label className="oe-field">Предоплата, ₽

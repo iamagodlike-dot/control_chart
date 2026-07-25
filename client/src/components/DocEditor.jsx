@@ -300,7 +300,8 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
                     rub={snapshot.discount}
                     pct={snapshot.discount_pct}
                     effective={totals ? totals.discount : 0}
-                    subtotal={totals ? totals.subtotal : 0}
+                    subtotal={totals ? totals.discount_base : 0}
+                    baseLabel={(snapshot.insurance || {}).payment_type === 'insurance' ? 'от запчастей' : 'от работ и запчастей'}
                     onPatch={patch}
                   />
                   {(isAct || isInvoice) && (

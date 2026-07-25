@@ -1,10 +1,12 @@
 import { money } from '../orderDoc';
 
 // Поле скидки с переключателем ₽ / %. В рублях правим сумму (discount), в процентах —
-// процент (discount_pct) от суммы работ+запчастей. При переключении режима значение
-// пересчитывается (10% → рубли и обратно), чтобы не терялось. Наружу отдаём patch со
-// снапшот-полями; эффективную сумму в рублях (для подсказки) считает редактор.
-export default function DiscountField({ mode, rub, pct, effective, subtotal, onPatch }) {
+// процент (discount_pct) от базы. База приходит снаружи (totals.discount_base): у
+// страховых ремонтов скидка даётся на запчасти, у остальных — на весь ремонт, см.
+// discountBase в orderDoc.js. При переключении режима значение пересчитывается
+// (10% → рубли и обратно), чтобы не терялось. Наружу отдаём patch со снапшот-полями;
+// эффективную сумму в рублях (для подсказки) считает редактор.
+export default function DiscountField({ mode, rub, pct, effective, subtotal, baseLabel = 'от работ и запчастей', onPatch }) {
   const isPct = mode === 'pct';
   const sub = Number(subtotal) || 0;
 
@@ -34,7 +36,10 @@ export default function DiscountField({ mode, rub, pct, effective, subtotal, onP
       ) : (
         <input type="number" min="0" inputMode="decimal" value={rub ?? ''} onChange={(e) => onPatch({ discount: e.target.value })} placeholder="0" />
       )}
-      {isPct && <span className="oe-hint">= {money(effective)} от работ и запчастей</span>}
+      {isPct && <span className="oe-hint">= {money(effective)} {baseLabel} ({money(sub)})</span>}
+      {!isPct && sub > 0 && Number(rub) > 0 && (
+        <span className="oe-hint">= {Math.round((Number(rub) / sub) * 1000) / 10}% {baseLabel} ({money(sub)})</span>
+      )}
     </div>
   );
 }

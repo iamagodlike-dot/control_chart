@@ -120,7 +120,7 @@ function TotalsBox({ totals, showPrepayment }) {
     <div className="zn-totals">
       <div className="zn-tr"><span className="zn-tl">Итого по работам</span><span className="zn-tv">{money(totals.services_sum)}</span></div>
       <div className="zn-tr"><span className="zn-tl">Итого по запчастям</span><span className="zn-tv">{money(totals.parts_sum)}</span></div>
-      {totals.discount > 0 && <div className="zn-tr"><span className="zn-tl">Скидка{totals.discount_mode === 'pct' ? ` ${totals.discount_pct}%` : ''}</span><span className="zn-tv">− {money(totals.discount)}</span></div>}
+      {totals.discount > 0 && <div className="zn-tr"><span className="zn-tl">Скидка{totals.discount_mode === 'pct' ? ` ${totals.discount_pct}%${totals.discount_base_label ? ' ' + totals.discount_base_label : ''}` : ''}</span><span className="zn-tv">− {money(totals.discount)}</span></div>}
       <div className="zn-tr zn-tr-total"><span className="zn-tl">ИТОГО</span><span className="zn-tv">{money(totals.total)}</span></div>
       <div className="zn-words">{totals.total_words}</div>
       {totals.franchise > 0 && <div className="zn-tr"><span className="zn-tl">Франшиза (оплачивает клиент)</span><span className="zn-tv">{money(totals.franchise)}</span></div>}
@@ -307,7 +307,7 @@ function InvoiceSheet({ snapshot, qrDataUrl }) {
           {!items.length && <tr><td className="zn-c-num">—</td><td colSpan={5} style={{ color: '#777' }}>Позиции не добавлены</td></tr>}
         </tbody>
         <tfoot>
-          {t.discount > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Скидка{t.discount_mode === 'pct' ? ` ${t.discount_pct}%` : ''}:</td><td className="zn-c-sum">− {money(t.discount)}</td></tr>}
+          {t.discount > 0 && <tr><td colSpan={5} style={{ textAlign: 'right' }}>Скидка{t.discount_mode === 'pct' ? ` ${t.discount_pct}%${t.discount_base_label ? ' ' + t.discount_base_label : ''}` : ''}:</td><td className="zn-c-sum">− {money(t.discount)}</td></tr>}
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>Итого:</td><td className="zn-c-sum">{money(t.total)}</td></tr>
           <tr><td colSpan={5} style={{ textAlign: 'right' }}>{t.vat_mode === 'vat20' ? 'В том числе НДС 20%:' : 'НДС:'}</td><td className="zn-c-sum">{t.vat_mode === 'vat20' ? money2(t.vat_amount) : 'Без НДС'}</td></tr>
           {/* Счёт страховой: франшизу вычитаем из суммы счёта — её клиент платит сам.
