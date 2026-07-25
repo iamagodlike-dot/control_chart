@@ -37,11 +37,10 @@ const KIND_BADGES = { used: 'Б/У', used_orig: 'Б/У под ориг.', analog
 // ряд (сначала выбираешь дело, потом раздел). В create разделов меньше: фото и
 // журнал требуют сохранённой машины, поэтому их там нет.
 const TABS_EDIT = [
-  { id: 'overview', label: 'Обзор' },
   { id: 'machine', label: 'Машина' },
   { id: 'works', label: 'Работы и запчасти' },
   { id: 'route', label: 'Маршрут' },
-  { id: 'money', label: 'Деньги и страховая' },
+  { id: 'money', label: 'Деньги' },
   { id: 'photos', label: 'Фото' },
 ];
 const TABS_CREATE = [
@@ -161,7 +160,7 @@ export default function CarCard({
 }) {
   const isEdit = mode === 'edit';
   const tabs = isEdit ? TABS_EDIT : TABS_CREATE;
-  const [activeTab, setActiveTab] = useState(isEdit ? 'overview' : 'machine');
+  const [activeTab, setActiveTab] = useState(isEdit ? 'works' : 'machine');
 
   const [form, setForm] = useState(() => formFromJob(job));
   const [stages, setStages] = useState(() => seedStages(job));
@@ -1283,6 +1282,64 @@ export default function CarCard({
           </div>
         </div>
 
+        {/* Сводка состояния машины: закреплена под шапкой и видна на всех
+            разделах, поэтому «что с машиной прямо сейчас» не требует отдельной
+            вкладки. Держится на flex-shrink:0, как шапка и подвал: position:
+            sticky здесь не работает — тело карточки прокручивается отдельно.
+            Только в правке: у новой машины ещё нет ни статуса, ни маршрута. */}
+        {isEdit && (
+          <div className="cc-head-sum">
+            <div className="cc-ov-hero">
+              <div className="cc-ov-hero-top">
+                <div className="cc-ov-status">
+                  <span className="cc-ov-dot" style={{ background: STATUS_COLORS[overall] }} />
+                  <span className="cc-ov-status-label">{STATUS_LABELS[overall]}</span>
+                  {activePost && (
+                    <span className="cc-ov-status-sub">· {activePost.name}{activeMaster ? ` · ${activeMaster.name}` : ''}</span>
+                  )}
+                </div>
+                {form.deadline && (
+                  <div className={`cc-ov-deadline${dlState === 'missed' || dlState === 'at-risk' ? ' is-risk' : ''}`}>
+                    <b>{daysLeft <= 0 ? 'просрочен' : `${daysLeft} дн`}</b>
+                    <span>до {dayjs(form.deadline).format('DD.MM.YY')}</span>
+                  </div>
+                )}
+              </div>
+              {routeSet.length > 0 && (
+                <div className="cc-ov-route">
+                  {routeSet.slice(0, 4).map((s, i) => {
+                    const post = posts.find((p) => p.id === s.post_id);
+                    const master = masters.find((m) => m.id === s.master_id);
+                    const st = effectiveStatus(s, now);
+                    return (
+                      <div className="cc-ov-route-node" key={s.id || `st-${i}`}>
+                        <div className="cc-ov-route-head">
+                          <span className={`cc-ov-route-mark is-${st}`} style={{ '--mc': STATUS_COLORS[st] }}>
+                            {st === 'done' && <Icon name="check" size={9} strokeWidth={3} />}
+                          </span>
+                          <span className="cc-ov-route-name">{post?.name || 'Пост'}</span>
+                        </div>
+                        <span className="cc-ov-route-sub">{master ? master.name : 'не назначен'} · {STATUS_LABELS[st]}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            {/* Согласия по запчастям: Б/У, аналог, «под оригинал». */}
+            {partNotices.length > 0 && (
+              <div className="cc-head-attention">
+                <span className="cc-ov-attention-ico"><Icon name="warning" size={15} /></span>
+                <span className="cc-ov-attention-title">Требуют внимания</span>
+                {/* Строка длинная и режется многоточием — полный список в title. */}
+                <span className="cc-ov-attention-parts" title={noticeParts.map((n) => n.text).join(' · ')}>
+                  {noticeParts.map((n) => n.text).join(' · ')}
+                </span>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Разделы карточки — второй ряд вкладок. Закреплён (flex-shrink:0), тело
             скроллится под ним. Секции ниже помечены `activeTab === …` и показываются
             только на своём разделе — содержимое секций не меняется, просто спрятано. */}
@@ -1304,186 +1361,6 @@ export default function CarCard({
         <div className="cc-body">
          <div className="cc-cols" data-tab={activeTab}>
           {(activeTab === 'works' || activeTab === 'money') && claimSwitch}
-          {/* «Обзор» одним взглядом: статус · ответственный · дедлайн · маршрут,
-              затем деньги и запчасти. Правка карточки — в разделе «Машина». */}
-          {isEdit && activeTab === 'overview' && (
-            <div className="cc-ov cc-full">
-
-              <div className="cc-ov-hero">
-                <div className="cc-ov-hero-top">
-                  <div className="cc-ov-status">
-                    <span className="cc-ov-dot" style={{ background: STATUS_COLORS[overall] }} />
-                    <span className="cc-ov-status-label">{STATUS_LABELS[overall]}</span>
-                    {activePost && (
-                      <span className="cc-ov-status-sub">· {activePost.name}{activeMaster ? ` · ${activeMaster.name}` : ''}</span>
-                    )}
-                  </div>
-                  {form.deadline && (
-                    <div className={`cc-ov-deadline${dlState === 'missed' || dlState === 'at-risk' ? ' is-risk' : ''}`}>
-                      <b>{daysLeft <= 0 ? 'просрочен' : `${daysLeft} дн`}</b>
-                      <span>до {dayjs(form.deadline).format('DD.MM.YY')}</span>
-                    </div>
-                  )}
-                </div>
-                {routeSet.length > 0 && (
-                  <div className="cc-ov-route">
-                    {routeSet.slice(0, 4).map((s, i) => {
-                      const post = posts.find((p) => p.id === s.post_id);
-                      const master = masters.find((m) => m.id === s.master_id);
-                      const st = effectiveStatus(s, now);
-                      return (
-                        <div className="cc-ov-route-node" key={s.id || `st-${i}`}>
-                          <div className="cc-ov-route-head">
-                            <span className={`cc-ov-route-mark is-${st}`} style={{ '--mc': STATUS_COLORS[st] }}>
-                              {st === 'done' && <Icon name="check" size={9} strokeWidth={3} />}
-                            </span>
-                            <span className="cc-ov-route-name">{post?.name || 'Пост'}</span>
-                          </div>
-                          <span className="cc-ov-route-sub">{master ? master.name : 'не назначен'} · {STATUS_LABELS[st]}</span>
-                        </div>
-                      );
-                    })}
-                  </div>
-                )}
-              </div>
-
-              {/* Согласия по запчастям: Б/У, аналог, «под оригинал». */}
-              {partNotices.length > 0 && (
-                <div className="cc-ov-attention">
-                  <span className="cc-ov-attention-ico"><Icon name="warning" size={15} /></span>
-                  <span className="cc-ov-attention-title">Требуют внимания</span>
-                  {/* Строка длинная и режется многоточием — полный список в title. */}
-                  <span className="cc-ov-attention-parts" title={noticeParts.map((n) => n.text).join(' · ')}>
-                    {noticeParts.map((n) => n.text).join(' · ')}
-                  </span>
-                </div>
-              )}
-
-              <div className="cc-ov-split">
-
-                <div className="cc-ov-card">
-                  <div className="cc-ov-cardhead"><span className="cc-ov-cardbar" />Деньги</div>
-                  {hasInvoice ? (
-                    <>
-                      <div className="cc-ov-money-val">{fmtMoney(invAmount)}</div>
-                      <div className="cc-ov-money-state">
-                        <span className="cc-ov-dot" style={{ background: allPaid ? STATUS_COLORS.done : 'var(--color-danger)' }} />
-                        {allPaid ? 'Оплачено' : 'Не оплачено'}
-                        {!onExtrasTab && Number(form.franchise) > 0 ? ` · франшиза ${fmtMoney(form.franchise)}` : ''}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="cc-ov-empty">Счёт не выставлен</div>
-                  )}
-                  {/* На «Допродажах» страховую не показываем — клиент платит их сам,
-                      ни полиса, ни № убытка, ни франшизы у них нет (см. блок
-                      «Оплата и страховая» ниже — там то же правило). */}
-                  {isInsCarForm && !onExtrasTab && form.insurer_name && (
-                    <div className="cc-ov-insurer">
-                      <Icon name="shield" size={14} />
-                      <span className="cc-ov-insurer-name">{form.insurer_name}</span>
-                      {(activeClaim?.claim_number || form.claim_number) && (
-                        <span className="cc-ov-claimno">{activeClaim?.claim_number || form.claim_number}</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                <div className="cc-ov-card">
-                  <div className="cc-ov-cardhead">
-                    <span className="cc-ov-cardbar" />Запчасти
-                    <span className="cc-ov-cardmeta">
-                      {insParts.length}{form.cell_ids.length ? ` · ${form.cell_ids.join(', ')}` : ''}
-                    </span>
-                  </div>
-                  {insParts.length > 0 ? (
-                    <>
-                      <div className="cc-ov-bar">
-                        {partCounts.map((s) => <span key={s.id} style={{ flex: s.n, background: s.color }} />)}
-                      </div>
-                      <div className="cc-ov-waiting">
-                        {partsWaiting.length > 0 ? partsWaiting.map((p) => (
-                          <div className="cc-ov-waiting-row" key={p.id}>
-                            <span className="cc-ov-waiting-name">{p.name || '—'}</span>
-                            <span className="cc-ov-waiting-status">
-                              <span className="cc-ov-dot" style={{ background: psMeta(p.status).color }} />
-                              {psMeta(p.status).label}
-                            </span>
-                          </div>
-                        )) : (
-                          <div className="cc-ov-empty">Все позиции на складе</div>
-                        )}
-                      </div>
-                    </>
-                  ) : (
-                    <div className="cc-ov-empty">Запчасти не заведены</div>
-                  )}
-                </div>
-              </div>
-
-              {/* ЭКОНОМИКА — только управленцу (как кнопки «Себестоимость» и
-                  «Оплата мастерам»): мастер и экспедитор маржу видеть не должны. */}
-              {isOwner && (
-                <div className="cc-ov-card cc-ov-fin">
-                  <div className="cc-ov-cardhead">
-                    <span className="cc-ov-cardbar" />Экономика
-                    {ovTotals && (
-                      <span className="cc-ov-cardmeta">
-                        {localCosting?.source === 'order' && localCosting?.source_number
-                          ? `по заказ-наряду № ${localCosting.source_number}`
-                          : 'по данным машины'}
-                      </span>
-                    )}
-                  </div>
-                  {ovTotals ? (
-                    <div className="cc-ov-fin-row">
-                      <div className="cc-ov-fin-cell">
-                        <span className="cc-ov-fin-label">Выручка</span>
-                        <b className="cc-ov-fin-val">{fmtMoney(ovTotals.revenue)}</b>
-                      </div>
-                      <div className="cc-ov-fin-cell">
-                        <span className="cc-ov-fin-label">Себестоимость</span>
-                        <b className="cc-ov-fin-val">{fmtMoney(ovTotals.cost_total)}</b>
-                      </div>
-                      <div className="cc-ov-fin-cell">
-                        <span className="cc-ov-fin-label">Прибыль</span>
-                        <b className={`cc-ov-fin-val${ovTotals.profit < 0 ? ' is-loss' : ' is-gain'}`}>
-                          {fmtMoney(ovTotals.profit)}
-                        </b>
-                      </div>
-                      <div className="cc-ov-fin-cell">
-                        <span className="cc-ov-fin-label">Маржа</span>
-                        {/* Красим по знаку, как в окне «Себестоимость». Порог
-                            RENTAB_TARGET сюда НЕ тащим: он про рентабельность
-                            запчастей, база другая, метрики не сходятся. */}
-                        <b
-                          className={`cc-ov-fin-val${ovTotals.profit < 0 ? ' is-loss' : ' is-gain'}`}
-                          title="Рентабельность по выручке: прибыль ÷ выручка"
-                        >
-                          {Math.round(ovTotals.margin_pct)}%
-                        </b>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="cc-ov-fin-empty">
-                      <span className="cc-ov-empty">
-                        Себестоимость не заполнена — закупку запчастей и оплату мастерам вносят вручную.
-                      </span>
-                      <button type="button" className="cc-ov-edit-btn" onClick={openCosting}>
-                        <Icon name="wallet" size={12} />Заполнить
-                      </button>
-                    </div>
-                  )}
-                </div>
-              )}
-
-              <div className="cc-ov-meta">
-                {form.mileage && <span>{form.mileage} км</span>}
-                {form.color && <span>{form.color}</span>}
-                {form.vin && <span className="cc-ov-vin">VIN {form.vin}</span>}
-              </div>
-            </div>
-          )}
           {!isEdit && activeTab === 'machine' && (
             <div className="cc-audatex cc-full">
               <div className="cc-audatex-row">
@@ -1715,6 +1592,108 @@ export default function CarCard({
           </section>
           )}
 
+          {/* Ниже — блоки по МАШИНЕ: от выбранного дела они не зависят.
+              Реквизиты и франшиза выше — по конкретному делу. */}
+          {isEdit && activeTab === 'money' && (
+              <div className="cc-ov-card">
+                <div className="cc-ov-cardhead"><span className="cc-ov-cardbar" />Деньги</div>
+                {hasInvoice ? (
+                  <>
+                    <div className="cc-ov-money-val">{fmtMoney(invAmount)}</div>
+                    <div className="cc-ov-money-state">
+                      <span className="cc-ov-dot" style={{ background: allPaid ? STATUS_COLORS.done : 'var(--color-danger)' }} />
+                      {allPaid ? 'Оплачено' : 'Не оплачено'}
+                      {!onExtrasTab && Number(form.franchise) > 0 ? ` · франшиза ${fmtMoney(form.franchise)}` : ''}
+                    </div>
+                  </>
+                ) : (
+                  <div className="cc-ov-empty">Счёт не выставлен</div>
+                )}
+                {/* На «Допродажах» страховую не показываем — клиент платит их сам,
+                    ни полиса, ни № убытка, ни франшизы у них нет (см. блок
+                    «Оплата и страховая» ниже — там то же правило). */}
+                {isInsCarForm && !onExtrasTab && form.insurer_name && (
+                  <div className="cc-ov-insurer">
+                    <Icon name="shield" size={14} />
+                    <span className="cc-ov-insurer-name">{form.insurer_name}</span>
+                    {(activeClaim?.claim_number || form.claim_number) && (
+                      <span className="cc-ov-claimno">{activeClaim?.claim_number || form.claim_number}</span>
+                    )}
+                  </div>
+                )}
+              </div>
+          )}
+
+          {isEdit && activeTab === 'money' && (
+            <section className="cc-section cc-full">
+              <div className="cc-section-head">
+                <span className="cc-section-icon">📄</span>Документы и расчёты
+                <span className="cc-section-hint">по машине</span>
+              </div>
+              <div className="cc-money-tiles">
+                <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
+                {isOwner && <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>}
+                {isOwner && <button className="cc-btn-ico" onClick={openPay}><Icon name="receipt" size={15} />Оплата мастерам</button>}
+              </div>
+            </section>
+          )}
+
+          {/* ЭКОНОМИКА — только управленцу (как кнопки «Себестоимость» и
+              «Оплата мастерам»): мастер и экспедитор маржу видеть не должны. */}
+          {isEdit && activeTab === 'money' && isOwner && (
+            <div className="cc-ov-card cc-ov-fin cc-full">
+              <div className="cc-ov-cardhead">
+                <span className="cc-ov-cardbar" />Экономика
+                {ovTotals && (
+                  <span className="cc-ov-cardmeta">
+                    {localCosting?.source === 'order' && localCosting?.source_number
+                      ? `по заказ-наряду № ${localCosting.source_number}`
+                      : 'по данным машины'}
+                  </span>
+                )}
+              </div>
+              {ovTotals ? (
+                <div className="cc-ov-fin-row">
+                  <div className="cc-ov-fin-cell">
+                    <span className="cc-ov-fin-label">Выручка</span>
+                    <b className="cc-ov-fin-val">{fmtMoney(ovTotals.revenue)}</b>
+                  </div>
+                  <div className="cc-ov-fin-cell">
+                    <span className="cc-ov-fin-label">Себестоимость</span>
+                    <b className="cc-ov-fin-val">{fmtMoney(ovTotals.cost_total)}</b>
+                  </div>
+                  <div className="cc-ov-fin-cell">
+                    <span className="cc-ov-fin-label">Прибыль</span>
+                    <b className={`cc-ov-fin-val${ovTotals.profit < 0 ? ' is-loss' : ' is-gain'}`}>
+                      {fmtMoney(ovTotals.profit)}
+                    </b>
+                  </div>
+                  <div className="cc-ov-fin-cell">
+                    <span className="cc-ov-fin-label">Маржа</span>
+                    {/* Красим по знаку, как в окне «Себестоимость». Порог
+                        RENTAB_TARGET сюда НЕ тащим: он про рентабельность
+                        запчастей, база другая, метрики не сходятся. */}
+                    <b
+                      className={`cc-ov-fin-val${ovTotals.profit < 0 ? ' is-loss' : ' is-gain'}`}
+                      title="Рентабельность по выручке: прибыль ÷ выручка"
+                    >
+                      {Math.round(ovTotals.margin_pct)}%
+                    </b>
+                  </div>
+                </div>
+              ) : (
+                <div className="cc-ov-fin-empty">
+                  <span className="cc-ov-empty">
+                    Себестоимость не заполнена — закупку запчастей и оплату мастерам вносят вручную.
+                  </span>
+                  <button type="button" className="cc-ov-edit-btn" onClick={openCosting}>
+                    <Icon name="wallet" size={12} />Заполнить
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === 'machine' && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">📝</span>Примечания</div>
@@ -1928,6 +1907,41 @@ export default function CarCard({
           {/* Основной ремонт. Раньше показывался только для чтения, а правился лишь
               через заказ-наряд — приёмщику приходилось открывать документ, чтобы
               поправить одну строку. Теперь таблицы такие же, как у допродаж. */}
+          {/* Состояние запчастей этого дела — то же, что было на «Обзоре».
+              Живёт рядом с самими позициями, а не в отдельной сводке. */}
+          {isEdit && activeTab === 'works' && (
+              <div className="cc-ov-card">
+                <div className="cc-ov-cardhead">
+                  <span className="cc-ov-cardbar" />Запчасти
+                  <span className="cc-ov-cardmeta">
+                    {insParts.length}{form.cell_ids.length ? ` · ${form.cell_ids.join(', ')}` : ''}
+                  </span>
+                </div>
+                {insParts.length > 0 ? (
+                  <>
+                    <div className="cc-ov-bar">
+                      {partCounts.map((s) => <span key={s.id} style={{ flex: s.n, background: s.color }} />)}
+                    </div>
+                    <div className="cc-ov-waiting">
+                      {partsWaiting.length > 0 ? partsWaiting.map((p) => (
+                        <div className="cc-ov-waiting-row" key={p.id}>
+                          <span className="cc-ov-waiting-name">{p.name || '—'}</span>
+                          <span className="cc-ov-waiting-status">
+                            <span className="cc-ov-dot" style={{ background: psMeta(p.status).color }} />
+                            {psMeta(p.status).label}
+                          </span>
+                        </div>
+                      )) : (
+                        <div className="cc-ov-empty">Все позиции на складе</div>
+                      )}
+                    </div>
+                  </>
+                ) : (
+                  <div className="cc-ov-empty">Запчасти не заведены</div>
+                )}
+              </div>
+          )}
+
           {isEdit && activeTab === 'works' && !onExtrasTab && (
             <section className="cc-section">
               <div className="cc-section-head">
@@ -1946,7 +1960,7 @@ export default function CarCard({
                     В карточке {fmtMoney(ownServicesSum + ownPartsSum)}, в ЗН № {ownStaleOrder.number} — {fmtMoney(ownStaleOrder.total)}.
                     Себестоимость и «Финансы» считаются по заказ-наряду.
                   </span>
-                  <button type="button" className="cc-ov-done-btn" onClick={onOpenDocs}>
+                  <button type="button" className="cc-ov-done-btn" onClick={openDocs}>
                     <Icon name="file" size={13} />Открыть
                   </button>
                 </div>
@@ -2148,9 +2162,6 @@ export default function CarCard({
                 {isRepair(job) && !job.stages?.length && (
                   <button className="cc-btn-ico" onClick={returnToApproval}><Icon name="shield" size={15} />Вернуть в согласование</button>
                 )}
-                <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
-                {isOwner && <button className="cc-btn-ico" onClick={openPay}><Icon name="receipt" size={15} />Оплата мастерам</button>}
-                {isOwner && <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>}
                 <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>
                 <button className="primary" disabled={savingInfo || !dirtyInfo} onClick={saveInfo}>
                   {savingInfo ? 'Сохраняем…' : dirtyInfo ? 'Сохранить' : 'Сохранено'}

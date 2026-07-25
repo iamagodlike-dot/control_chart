@@ -1191,7 +1191,7 @@ textarea { width: 100%; min-height: 50px; }
   box-shadow: 0 30px 80px -30px #000;
   animation: fpop .2s cubic-bezier(.2, .8, .2, 1);
 }
-.cc-header, .cc-footer, .cc-tabs { flex-shrink: 0; }
+.cc-header, .cc-head-sum, .cc-footer, .cc-tabs { flex-shrink: 0; }
 .cc-body { flex: 1 1 auto; min-height: 0; }
 
 /* Полоса убытков (страховых дел) — между шапкой и телом карточки. Закреплена
@@ -1280,6 +1280,32 @@ textarea { width: 100%; min-height: 50px; }
 .cc-tab:focus-visible { outline: 2px solid var(--brand); outline-offset: -2px; }
 
 /* Пустой раздел — короткая подсказка вместо белого экрана. */
+/* Сводка под шапкой: те же блоки, что раньше открывались на «Обзоре», но
+   закреплены и видны на всех разделах. Компактнее оригинала — она отнимает
+   высоту у тела карточки на каждом разделе, а не только на своём. */
+.cc-head-sum {
+  display: flex; flex-direction: column; gap: 8px;
+  padding: 10px 26px 12px; border-bottom: 1px solid var(--color-border);
+  background: var(--color-surface-alt);
+}
+.cc-head-sum .cc-ov-hero { padding: 0; border: none; background: transparent; gap: 8px; }
+.cc-head-attention {
+  display: flex; align-items: center; gap: 8px; min-width: 0;
+  padding: 7px 11px; border-radius: var(--radius-md);
+  background: var(--color-warning-bg); border: 1px solid color-mix(in srgb, var(--color-warning) 40%, transparent);
+  font-size: 12px; color: var(--color-warning);
+}
+.cc-head-attention .cc-ov-attention-ico { display: flex; flex-shrink: 0; }
+.cc-head-attention .cc-ov-attention-title { font-weight: 700; flex-shrink: 0; }
+.cc-head-attention .cc-ov-attention-parts {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--color-text-muted);
+}
+
+/* Плитки «Документы» / «Себестоимость» / «Оплата мастерам» — переехали из
+   подвала в раздел «Деньги», к остальным денежным блокам. */
+.cc-money-tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.cc-money-tiles .cc-btn-ico { justify-content: center; min-height: 40px; }
+
 .cc-tab-empty {
   padding: 18px 20px; border-radius: 10px;
   background: var(--color-surface-alt); border: 1px dashed var(--color-border);
