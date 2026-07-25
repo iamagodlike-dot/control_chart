@@ -4,7 +4,7 @@
 // (used_orig / analog_orig) and «Новое» (new) must produce NO lines.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPartsConsentText, buildOrderSnapshot, buildActSnapshot, computeOrderTotals, formatDocNumber, pad4, DOC_PREFIX, itemsForRecipient, orderMatchesRecipient, pickSeedItems, buildInvoiceSnapshot, planDocItemsToCar, buildPaymentQrString } from './orderDoc.js';
+import { buildPartsConsentText, buildOrderSnapshot, buildActSnapshot, computeOrderTotals, formatDocNumber, pad4, DOC_PREFIX, itemsForRecipient, orderMatchesRecipient, pickSeedItems, buildInvoiceSnapshot, planDocItemsToCar, describeDocToCarPlan, buildPaymentQrString } from './orderDoc.js';
 import { streamOf } from './billing.js';
 
 test('Б/У → строка о согласии на установку Б/У с артикулом', () => {
@@ -360,6 +360,113 @@ test('planDocItemsToCar (insurance): запчасть, которой нет в 
   assert.equal(partOps.length, 1);
   assert.equal(partOps[0].name, 'Дверь');
   assert.ok(!partOps.find((p) => p.id === 'keep'));
+});
+
+// --- Переименование позиции в документе (обратная ссылка src_id) ---
+// Главный баг, который это лечит: правишь название в заказ-наряде, жмёшь «Обновить
+// карточку машины» — и в карточке появляется ВТОРАЯ деталь вместо переименованной
+// (сопоставление шло по «артикул+название», а именно они и поменялись).
+
+test('src_id: переименование запчасти в документе → позиция карточки ПЕРЕИМЕНОВАНА, дубля нет', () => {
+  _seq = 0;
+  const job = { services: [], parts: [
+    { id: 'p1', code: '52119', name: 'Бампер', qty: 1, unit: 'шт.', price: 100, status: 'ordered', supplier: 'Экзист', cost: 80 },
+  ] };
+  // Так строку отдаёт buildOrderSnapshot: свой id документа + src_id на позицию карточки.
+  const snapshot = { parts: [{ id: 'doc1', src_id: 'p1', code: '52119-42973', name: 'Бампер передний в сборе', qty: 1, unit: 'шт.', price: 100 }] };
+  const { partOps, summary, links } = planDocItemsToCar(job, snapshot, 'all', seqId);
+  assert.equal(partOps.length, 1, 'ровно одна операция — обновление, а не добавление');
+  assert.equal(partOps[0].id, 'p1');
+  assert.equal(partOps[0].name, 'Бампер передний в сборе');
+  assert.equal(partOps[0].code, '52119-42973');
+  assert.equal(partOps[0].supplier, 'Экзист', 'закупка сохранена');
+  assert.equal(summary.parts.added, 0);
+  assert.deepEqual(summary.parts.renamed, [['Бампер', 'Бампер передний в сборе']]);
+  assert.equal(links.parts.doc1, 'p1');
+});
+
+test('src_id: переименование работы → услуга переименована, а не задвоена', () => {
+  _seq = 0;
+  const job = { services: [{ id: 's1', name: 'Покраска', qty: 1, price: 1000 }], parts: [] };
+  const snapshot = { services: [{ id: 'd1', src_id: 's1', name: 'Окраска двери', qty: 1, price: 1200 }], parts: [] };
+  const { services, summary } = planDocItemsToCar(job, snapshot, 'all', seqId);
+  assert.equal(services.length, 1);
+  assert.deepEqual([services[0].id, services[0].name, services[0].price], ['s1', 'Окраска двери', 1200]);
+  assert.deepEqual(summary.services.renamed, [['Покраска', 'Окраска двери']]);
+});
+
+test('src_id: строка документа, добавленная руками, связывается через links — повторное переименование не плодит дубли', () => {
+  _seq = 0;
+  const job = { services: [], parts: [] };
+  const snapshot = { parts: [{ id: 'doc9', code: 'K1', name: 'Коврики', qty: 1, price: 400 }] };
+  const first = planDocItemsToCar(job, snapshot, 'all', seqId);
+  assert.equal(first.partOps[0].id, 'new_1');
+  assert.equal(first.links.parts.doc9, 'new_1', 'редактор запишет этот id в строку как src_id');
+  // Редактор проставил src_id, деталь уже в карточке — теперь её переименовали.
+  const job2 = { services: [], parts: [first.partOps[0]] };
+  const snapshot2 = { parts: [{ id: 'doc9', src_id: 'new_1', code: 'K1', name: 'Коврики резиновые', qty: 1, price: 400 }] };
+  const second = planDocItemsToCar(job2, snapshot2, 'all', seqId);
+  assert.equal(second.partOps.length, 1);
+  assert.equal(second.partOps[0].id, 'new_1');
+  assert.equal(second.summary.parts.added, 0);
+});
+
+test('src_id: позицию удалили из карточки — новая создаётся с ТЕМ ЖЕ id, повторное нажатие не плодит дубль', () => {
+  _seq = 0;
+  const job = { services: [], parts: [] }; // 'p1' удалили на экране «Запчасти»
+  const snapshot = { parts: [{ id: 'doc1', src_id: 'p1', code: 'X', name: 'Крыло', qty: 1, price: 500 }] };
+  const a = planDocItemsToCar(job, snapshot, 'all', seqId);
+  assert.equal(a.partOps[0].id, 'p1', 'переиспользуем свободный id из ссылки — операция идемпотентна');
+  const b = planDocItemsToCar({ services: [], parts: a.partOps }, snapshot, 'all', seqId);
+  assert.equal(b.partOps.length, 1);
+  assert.equal(b.summary.parts.added, 0);
+});
+
+test('src_id ЧУЖОГО потока не даёт затереть позицию другого убытка', () => {
+  _seq = 0;
+  // 'p1' принадлежит убытку №2, а обновляем мы документ убытка №1.
+  const job = { services: [], parts: [{ id: 'p1', code: 'B2', name: 'Бампер', qty: 1, price: 15000, payer: 'cl_x7' }] };
+  const snapshot = { parts: [{ id: 'doc1', src_id: 'p1', code: 'B2', name: 'Бампер', qty: 1, price: 15000 }] };
+  const { partOps } = planDocItemsToCar(job, snapshot, 'insurance', seqId);
+  assert.equal(partOps.length, 1);
+  assert.notEqual(partOps[0].id, 'p1', 'занятый id не переиспользуется — иначе savePart затрёт позицию убытка №2');
+  assert.equal(partOps[0].payer, 'insurance');
+});
+
+test('summary: позиции карточки, которых нет в документе, попадают в leftover (и в текст подтверждения)', () => {
+  _seq = 0;
+  const job = { services: [{ id: 's1', name: 'Полировка', qty: 1, price: 500 }], parts: [
+    { id: 'p1', code: 'X', name: 'Крыло', qty: 1, price: 200 },
+  ] };
+  const snapshot = { services: [{ id: 'd1', name: 'Мойка', qty: 1, price: 300 }], parts: [] };
+  const plan = planDocItemsToCar(job, snapshot, 'all', seqId);
+  assert.deepEqual(plan.summary.services.leftover, ['Полировка']);
+  assert.deepEqual(plan.summary.parts.leftover, ['Крыло']);
+  const txt = describeDocToCarPlan(plan, { head: true });
+  assert.ok(txt.includes('добавим 1'));
+  assert.ok(txt.includes('ОСТАНУТСЯ 2'));
+  assert.ok(txt.includes('Крыло'));
+  // Одна позиция — единственное число, иначе «ОСТАНУТСЯ 1 поз.».
+  const one = planDocItemsToCar({ services: [], parts: [{ id: 'p1', name: 'Крыло' }] }, { parts: [] }, 'all', seqId);
+  assert.ok(describeDocToCarPlan(one).includes('ОСТАНЕТСЯ 1 позиция'));
+});
+
+test('buildOrderSnapshot / акт — строки несут src_id на позиции карточки', () => {
+  const job = {
+    services: [{ id: 's1', name: 'Окраска', qty: 1, price: 1000 }],
+    parts: [{ id: 'p1', code: 'D1', name: 'Дверь', qty: 1, price: 20000 }],
+  };
+  const zn = buildOrderSnapshot(job, {}, 'all');
+  assert.equal(zn.services[0].src_id, 's1');
+  assert.equal(zn.parts[0].src_id, 'p1');
+  assert.notEqual(zn.parts[0].id, 'p1', 'id строки документа остаётся своим (изоляция документа)');
+  // Акт сидируется из ЗН — ссылка не должна потеряться на пересадке.
+  const act = buildActSnapshot(job, {}, pickSeedItems(job, [{ type: 'order', recipient: 'all', ...zn }], 'all'), 'all');
+  assert.equal(act.parts[0].src_id, 'p1');
+  // И при сидировании прямо из карточки (заказ-наряда ещё нет).
+  const act2 = buildActSnapshot(job, {}, null, 'all');
+  assert.equal(act2.parts[0].src_id, 'p1');
+  assert.equal(act2.services[0].src_id, 's1');
 });
 
 // ===== Несколько убытков на одной машине =====

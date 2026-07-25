@@ -48,6 +48,39 @@ export function orderMatchesRecipient(doc, recipient) {
   return orderMatchesStream(doc, recipient);
 }
 
+// Ключи «на глаз» — ими сопоставляются позиции СТАРЫХ документов, у которых нет
+// обратной ссылки src_id (см. matchDocRows).
+const svcKeyOf = (s) => String((s && s.name) || '').trim().toLowerCase();
+const partKeyOf = (p) => `${String((p && p.code) || '').trim().toLowerCase()}|${String((p && p.name) || '').trim().toLowerCase()}`;
+
+// Сопоставление строк документа с позициями карточки. ДВА ПРОХОДА, и порядок важен:
+//   1) по обратной ссылке src_id — она указывает на id позиции карточки, из которой
+//      строка документа выросла. Именно это делает ПЕРЕИМЕНОВАНИЕ безопасным: поправили
+//      название в документе — позиция в карточке переименуется, а не задвоится;
+//   2) по названию (услуги) / «артикул+название» (запчасти) — для документов, выданных
+//      до появления src_id, и для строк, добавленных в документе руками: если такая
+//      строка совпала с существующей позицией, обновляем её, а не плодим дубль.
+// Одна позиция карточки может быть занята только ОДНОЙ строкой документа (taken) —
+// иначе две одинаковые строки документа затёрли бы друг друга в одной позиции.
+// Возвращает pairs: индекс строки документа → индекс позиции карточки.
+function matchDocRows(docRows, cardRows, keyOf, emptyKey) {
+  const taken = new Set();
+  const pairs = new Map();
+  docRows.forEach((d, di) => {
+    if (!d.src_id) return;
+    const i = cardRows.findIndex((c, ci) => !taken.has(ci) && c && c.id === d.src_id);
+    if (i >= 0) { taken.add(i); pairs.set(di, i); }
+  });
+  docRows.forEach((d, di) => {
+    if (pairs.has(di)) return;
+    const k = keyOf(d);
+    if (!k || k === emptyKey) return;
+    const i = cardRows.findIndex((c, ci) => !taken.has(ci) && keyOf(c) === k);
+    if (i >= 0) { taken.add(i); pairs.set(di, i); }
+  });
+  return { pairs, taken };
+}
+
 // «Обновить карточку машины» из документа: спланировать, как перенести УСЛУГИ и
 // ЗАПЧАСТИ из снапшота документа обратно в карточку (job), по семантике
 // «Добавить и обновить, ничего не удалять» (выбор пользователя).
@@ -57,14 +90,19 @@ export function orderMatchesRecipient(doc, recipient) {
 // receiving_log/фото приёмки, kind/аналог). Слепая перезапись сломала бы стабильный
 // id (экран «Запчасти» молча перестаёт удалять/править), сбросила бы закупку и
 // стёрла бы историю приёмки. Поэтому:
-//   • услуги — целый массив, слитый по получателю (совпадение по названию → правим
-//     цену/кол-во; новые дописываем; чужой поток и удалённые в документе не трогаем);
-//   • запчасти — пооперационно: совпадение по «артикул+название» → savePart поверх
-//     оригинала (metadata сохраняется), новые → savePart с новым id; ничего не
-//     удаляем.
-// Функция ЧИСТАЯ: возвращает план { services, partOps }, который вызывающий
-// исполняет через api.jobs.update({services}) и api.jobs.savePart(...). `newId` —
-// генератор id для новых запчастей (передайте genPartId).
+//   • услуги — целый массив, слитый по получателю (совпадение → правим название/цену/
+//     кол-во; новые дописываем; чужой поток и удалённые в документе не трогаем);
+//   • запчасти — пооперационно: совпадение → savePart поверх оригинала (metadata
+//     сохраняется), новые → savePart с новым id; ничего не удаляем.
+// Функция ЧИСТАЯ: возвращает план { services, partOps, links, summary }, который
+// вызывающий исполняет через api.jobs.update({services}) и api.jobs.savePart(...).
+// `newId` — генератор id для новых позиций (передайте genPartId).
+//
+//   links   — id строки документа → id позиции карточки. Редактор записывает их обратно
+//             в снапшот как src_id: без этого строка, ДОБАВЛЕННАЯ в документе, остаётся
+//             без ссылки, и её последующее переименование опять создало бы дубль.
+//   summary — что именно произойдёт (обновим / добавим / переименуем / останется в
+//             карточке). Показывается в подтверждении, см. describeDocToCarPlan.
 //
 // recipient — id потока (см. billing.js): 'insurance' | 'cl_*' | 'client' | 'all'.
 //
@@ -81,57 +119,135 @@ export function planDocItemsToCar(job = {}, snapshot = {}, recipient = 'all', ne
   const tag = recipient === 'all' ? null : recipient;
   const tagged = tag ? { payer: tag } : {};
   const inScope = (x) => recipient === 'all' ? true : streamOf(x) === recipient;
+  const links = { services: {}, parts: {} };
+
+  // id новой позиции. Если строка документа помнит src_id, а позиции с таким id в
+  // карточке больше нет (её удалили на экране «Запчасти»), переиспользуем ЭТОТ id:
+  // тогда повторное нажатие «Обновить карточку» найдёт её по ссылке и обновит, а не
+  // создаст второй дубль. Занятый id переиспользовать нельзя — savePart затёр бы
+  // позицию ЧУЖОГО потока (её сюда не пустил inScope, но в job.parts она есть).
+  const takenSvcIds = new Set((job.services || []).map((s) => s && s.id).filter(Boolean));
+  const takenPartIds = new Set((job.parts || []).map((p) => p && p.id).filter(Boolean));
+  const claimId = (srcId, taken) => {
+    const id = (srcId && !taken.has(srcId)) ? srcId : newId();
+    taken.add(id);
+    return id;
+  };
 
   // --- УСЛУГИ: целый массив, «добавить + обновить», без удаления ---
-  const svcKey = (s) => String((s && s.name) || '').trim().toLowerCase();
   const docServices = (snapshot.services || [])
-    .map((s) => ({ name: String((s && s.name) || '').trim(), qty: num(s && s.qty, 1), price: num(s && s.price, 0) }))
+    .map((s) => ({
+      doc_id: (s && s.id) || null,
+      src_id: (s && s.src_id) || null,
+      name: String((s && s.name) || '').trim(),
+      qty: num(s && s.qty, 1),
+      price: num(s && s.price, 0),
+    }))
     .filter((s) => s.name);
   const outOfScopeServices = (job.services || []).filter((s) => !inScope(s));
   const scopeServices = (job.services || []).filter(inScope).map((s) => ({ ...s }));
-  const usedSvc = new Set();
+  const svcMatch = matchDocRows(docServices, scopeServices, svcKeyOf, '');
+  const svcSummary = { updated: 0, added: 0, renamed: [], leftover: [] };
   const newServices = [];
-  for (const ds of docServices) {
-    const k = svcKey(ds);
-    const idx = scopeServices.findIndex((s, i) => !usedSvc.has(i) && svcKey(s) === k);
-    if (idx >= 0) {
-      usedSvc.add(idx);
-      scopeServices[idx] = { ...scopeServices[idx], name: ds.name, qty: ds.qty, price: ds.price };
+  docServices.forEach((ds, di) => {
+    const ci = svcMatch.pairs.has(di) ? svcMatch.pairs.get(di) : -1;
+    if (ci >= 0) {
+      const prev = scopeServices[ci];
+      const id = prev.id || claimId(ds.src_id, takenSvcIds);
+      if (svcKeyOf(prev) !== svcKeyOf(ds)) svcSummary.renamed.push([prev.name || '—', ds.name]);
+      svcSummary.updated += 1;
+      scopeServices[ci] = { ...prev, id, name: ds.name, qty: ds.qty, price: ds.price };
+      if (ds.doc_id) links.services[ds.doc_id] = id;
     } else {
-      newServices.push({ name: ds.name, qty: ds.qty, price: ds.price, ...tagged });
+      const id = claimId(ds.src_id, takenSvcIds);
+      newServices.push({ id, name: ds.name, qty: ds.qty, price: ds.price, ...tagged });
+      svcSummary.added += 1;
+      if (ds.doc_id) links.services[ds.doc_id] = id;
     }
-  }
+  });
+  scopeServices.forEach((s, ci) => {
+    if (!svcMatch.taken.has(ci) && String((s && s.name) || '').trim()) svcSummary.leftover.push(s.name);
+  });
   const services = [...outOfScopeServices, ...scopeServices, ...newServices];
 
   // --- ЗАПЧАСТИ: пооперационно, «добавить + обновить», без удаления ---
-  const partKey = (p) => `${String((p && p.code) || '').trim().toLowerCase()}|${String((p && p.name) || '').trim().toLowerCase()}`;
-  const origByKey = new Map();
-  for (const p of (job.parts || []).filter(inScope)) {
-    const k = partKey(p);
-    if (!origByKey.has(k)) origByKey.set(k, p); // первый выигрывает
-  }
-  const usedKeys = new Set();
+  const docParts = (snapshot.parts || [])
+    .map((p) => ({
+      doc_id: (p && p.id) || null,
+      src_id: (p && p.src_id) || null,
+      code: String((p && p.code) || '').trim(),
+      name: String((p && p.name) || '').trim(),
+      qty: num(p && p.qty, 1),
+      unit: (p && p.unit) || 'шт.',
+      price: num(p && p.price, 0),
+      kind: (p && p.kind) || 'new',
+      replArticle: (p && p.replArticle) || '',
+    }))
+    .filter((p) => p.code || p.name); // пустую строку не пишем
+  const scopeParts = (job.parts || []).filter(inScope);
+  const partMatch = matchDocRows(docParts, scopeParts, partKeyOf, '|');
+  const partSummary = { updated: 0, added: 0, renamed: [], leftover: [] };
   const partOps = [];
-  for (const dp of (snapshot.parts || [])) {
-    const code = String((dp && dp.code) || '').trim();
-    const name = String((dp && dp.name) || '').trim();
-    if (!code && !name) continue; // пустую строку не пишем
-    const k = `${code.toLowerCase()}|${name.toLowerCase()}`;
-    const orig = usedKeys.has(k) ? undefined : origByKey.get(k);
-    if (orig) {
-      usedKeys.add(k);
+  docParts.forEach((dp, di) => {
+    const ci = partMatch.pairs.has(di) ? partMatch.pairs.get(di) : -1;
+    if (ci >= 0) {
+      const orig = scopeParts[ci];
+      const id = orig.id || claimId(dp.src_id, takenPartIds);
+      if (partKeyOf(orig) !== partKeyOf(dp)) partSummary.renamed.push([orig.name || orig.code || '—', dp.name || dp.code]);
+      partSummary.updated += 1;
       // ...orig ПЕРВЫМ — сохраняем payer/kind/поставщика/cost/статус/receiving_log;
       // savePart всё равно пересчитает receiving_log на сервере и синхронизирует склад.
-      partOps.push({ ...orig, id: orig.id, code, name, qty: num(dp.qty, 1), unit: dp.unit || 'шт.', price: num(dp.price, 0) });
+      partOps.push({ ...orig, id, code: dp.code, name: dp.name, qty: dp.qty, unit: dp.unit, price: dp.price });
+      if (dp.doc_id) links.parts[dp.doc_id] = id;
     } else {
+      const id = claimId(dp.src_id, takenPartIds);
       partOps.push({
-        id: newId(), code, name, qty: num(dp.qty, 1), unit: dp.unit || 'шт.', price: num(dp.price, 0),
-        kind: dp.kind || 'new', replArticle: dp.replArticle || '', status: 'need',
+        id, code: dp.code, name: dp.name, qty: dp.qty, unit: dp.unit, price: dp.price,
+        kind: dp.kind, replArticle: dp.replArticle, status: 'need',
         ...tagged,
       });
+      partSummary.added += 1;
+      if (dp.doc_id) links.parts[dp.doc_id] = id;
     }
+  });
+  scopeParts.forEach((p, ci) => {
+    if (!partMatch.taken.has(ci)) partSummary.leftover.push(p.name || p.code || '—');
+  });
+
+  return { services, partOps, links, summary: { services: svcSummary, parts: partSummary } };
+}
+
+// Текст подтверждения «Обновить карточку машины»: ЧТО именно произойдёт. Раньше здесь
+// стояло общее «добавятся и обновят совпадающие» — по нему нельзя было понять, почему
+// в карточке стало на позицию больше, и это и была главная путаница. Теперь считаем
+// заранее и показываем: обновим / переименуем / добавим / останется в карточке.
+export function describeDocToCarPlan(plan = {}, opts = {}) {
+  const s = (plan.summary && plan.summary.services) || { updated: 0, added: 0, renamed: [], leftover: [] };
+  const p = (plan.summary && plan.summary.parts) || { updated: 0, added: 0, renamed: [], leftover: [] };
+  const lines = ['Обновить карточку машины данными из документа?', ''];
+  if (opts.head) lines.push('• Марка, гос. номер, VIN, пробег и клиент — перезапишут карточку.');
+  const group = (label, x) => {
+    const bits = [];
+    if (x.updated) bits.push(`обновим ${x.updated}`);
+    if (x.added) bits.push(`добавим ${x.added}`);
+    if (!bits.length) return;
+    lines.push(`• ${label}: ${bits.join(', ')}.`);
+    for (const [from, to] of x.renamed.slice(0, 5)) lines.push(`    переименуем «${from}» → «${to}»`);
+    if (x.renamed.length > 5) lines.push(`    …и ещё переименований: ${x.renamed.length - 5}`);
+  };
+  group('Работы', s);
+  group('Запчасти', p);
+  const leftover = [...s.leftover, ...p.leftover];
+  if (leftover.length) {
+    lines.push('');
+    lines.push(leftover.length === 1
+      ? 'В карточке ОСТАНЕТСЯ 1 позиция, которой нет в документе (ничего не удаляем):'
+      : `В карточке ОСТАНУТСЯ ${leftover.length} поз., которых нет в документе (ничего не удаляем):`);
+    for (const name of leftover.slice(0, 6)) lines.push(`    ${name}`);
+    if (leftover.length > 6) lines.push(`    …и ещё: ${leftover.length - 6}`);
+    lines.push('Удалить их можно в карточке машины или на экране «Запчасти».');
   }
-  return { services, partOps };
+  return lines.join('\n');
 }
 
 // ===== Автонумерация документов =====
@@ -295,12 +411,18 @@ export function buildOrderSnapshot(job = {}, company = {}, recipient = 'all') {
     reason: job.reason || '',
     services: srcServices.map((s) => ({
       id: uid(),
+      // Обратная ссылка на позицию карточки, из которой выросла строка. НЕ печатается
+      // и не участвует в суммах — нужна только «Обновить карточку машины», чтобы
+      // переименование в документе переименовывало позицию, а не плодило дубль
+      // (см. planDocItemsToCar). null, а не undefined: Firestore не пишет undefined.
+      src_id: s.id || null,
       name: s.name || '',
       qty: num(s.qty, 1),
       price: num(s.price, 0),
     })),
     parts: srcParts.map((p) => ({
       id: uid(),
+      src_id: p.id || null, // см. src_id у услуг выше
       code: p.code || '',
       name: p.name || '',
       qty: num(p.qty, 1),
@@ -413,11 +535,14 @@ function baseHead(job, company, type, recipient = 'all') {
   };
 }
 
+// id строки — всегда свежий (документ изолирован), а src_id ПРОНОСИМ насквозь: акт и
+// счёт сидируются из заказ-наряда, и связь с позицией карточки не должна теряться на
+// каждой пересадке (см. planDocItemsToCar).
 function mapServices(arr) {
-  return (arr || []).map((s) => ({ id: uid(), name: s.name || '', qty: num(s.qty, 1), price: num(s.price, 0) }));
+  return (arr || []).map((s) => ({ id: uid(), src_id: s.src_id || null, name: s.name || '', qty: num(s.qty, 1), price: num(s.price, 0) }));
 }
 function mapParts(arr) {
-  return (arr || []).map((p) => ({ id: uid(), code: p.code || '', name: p.name || '', qty: num(p.qty, 1), unit: p.unit || 'шт.', price: num(p.price, 0), kind: p.kind || 'new', replArticle: p.replArticle || '' }));
+  return (arr || []).map((p) => ({ id: uid(), src_id: p.src_id || null, code: p.code || '', name: p.name || '', qty: num(p.qty, 1), unit: p.unit || 'шт.', price: num(p.price, 0), kind: p.kind || 'new', replArticle: p.replArticle || '' }));
 }
 
 // Seed works/parts for act & invoice from the LAST issued заказ-наряд of the SAME
@@ -437,7 +562,10 @@ export function pickSeedItems(job = {}, docs = [], recipient = 'all') {
     };
   }
   return {
-    services: itemsForStream(job.services, recipient), parts: itemsForStream(job.parts, recipient),
+    // Позиции берём прямо из карточки — значит их id и есть обратная ссылка src_id
+    // (mapServices/mapParts проносят её в снапшот акта/счёта).
+    services: itemsForStream(job.services, recipient).map((s) => ({ ...s, src_id: s.id || null })),
+    parts: itemsForStream(job.parts, recipient).map((p) => ({ ...p, src_id: p.id || null })),
     // Скидка из Audatex относится к страховому ремонту — на допродажи её не переносим.
     // У каждого убытка своя скидка (см. discountFor).
     discount: discountFor(job, recipient), discount_mode: 'rub', discount_pct: 0,

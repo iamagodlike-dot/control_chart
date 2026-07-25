@@ -13,9 +13,9 @@ import { printFitted } from '../printDoc';
 import {
   buildActSnapshot, buildInvoiceSnapshot, buildHandoverSnapshot, pickSeedItems,
   computeDocTotals, buildPaymentQrString, qrIsComplete, uid,
-  formatDocDate, buildPartsConsentText, orderMatchesRecipient, planDocItemsToCar, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT, DEFAULT_INTAKE_TEXT,
+  formatDocDate, buildPartsConsentText, orderMatchesRecipient, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT, DEFAULT_INTAKE_TEXT,
 } from '../orderDoc';
-import { genPartId } from '../parts';
+import { applyDocToCar } from '../docToCar';
 import '../orderDoc.css';
 
 function buildInitial(type, job, company, recipient, direction = 'intake') {
@@ -92,30 +92,13 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
   function patchGroup(group, fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, [group]: { ...s[group], ...fields } })); setSaved(false); setSavedToCar(false); }
 
   // Opt-in: push the document's vehicle + client data AND услуги/запчасти back onto
-  // the car card. Услуги/запчасти — «добавить и обновить, не удалять» по получателю
-  // (см. planDocItemsToCar); совпадающие запчасти сохраняют закупку/приёмку.
+  // the car card. Услуги/запчасти — «добавить и обновить, не удалять» по получателю;
+  // совпадающие запчасти сохраняют закупку/приёмку. Общий путь с заказ-нарядом —
+  // см. docToCar.
   async function saveToCar() {
-    if (!job?.id) return;
-    const veh = snapshot.vehicle || {};
-    const cust = snapshot.customer || {};
-    const upd = {};
-    if (veh.car_model) upd.car_model = veh.car_model;
-    if (veh.plate_number) upd.plate_number = veh.plate_number;
-    if (veh.vin) upd.vin = veh.vin;
-    if (veh.year) upd.year = veh.year;
-    if (veh.mileage) upd.mileage = veh.mileage;
-    if (cust.name) upd.client_name = cust.name;
-    if (cust.phone) upd.client_phone = cust.phone;
-    const { services, partOps } = planDocItemsToCar(job, snapshot, recipient, genPartId);
-    const hasDocItems = (snapshot.services || []).some((s) => String((s && s.name) || '').trim())
-      || (snapshot.parts || []).some((p) => String((p && p.code) || '').trim() || String((p && p.name) || '').trim());
-    if (!Object.keys(upd).length && !hasDocItems) return;
-    if (!window.confirm('Обновить карточку машины данными из документа?\n\n• Марка, гос. номер, VIN, пробег и клиент — перезапишут карточку.\n• Услуги и запчасти из документа — добавятся в карточку и обновят совпадающие. Ничего не удаляется (удалить позицию можно на экране «Запчасти»).')) return;
     try {
-      const payload = { ...upd };
-      if ((snapshot.services || []).some((s) => String((s && s.name) || '').trim())) payload.services = services;
-      if (Object.keys(payload).length) await api.jobs.update(job.id, payload);
-      for (const p of partOps) await api.jobs.savePart(job.id, p); // последовательно: транзакции на один job-док не должны конфликтовать
+      const res = await applyDocToCar({ job, snapshot, recipient, docId, setSnapshot });
+      if (res !== 'ok') return;
       setSavedToCar(true);
       if (onJobUpdated) onJobUpdated();
     } catch {
@@ -282,6 +265,10 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
 
               <div className="oe-section">
                 <h4>Запчасти / материалы</h4>
+                <div className="oe-hint" style={{ marginTop: 0, marginBottom: 8 }}>
+                  Правки здесь остаются в документе. Кнопка «↩ Обновить карточку машины» внизу переносит их в карточку:
+                  позиция, пришедшая из карточки, обновится (в том числе переименуется), новая — добавится.
+                </div>
                 <DocLineItems
                   kind="parts"
                   items={snapshot.parts}
