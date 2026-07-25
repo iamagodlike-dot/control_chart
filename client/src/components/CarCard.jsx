@@ -131,6 +131,7 @@ function formFromJob(job) {
     claim_number: job?.claim_number || '',
     policy_type: job?.policy_type || '',
     franchise: job?.franchise || '',
+    discount: job?.discount || '',
   };
 }
 // Клиентские допродажи (payer:'client') — редактируемая копия для карточки.
@@ -404,7 +405,7 @@ export default function CarCard({
         ...f,
         insurer_id: cur.insurer_id || '', insurer_name: cur.insurer_name || '',
         claim_number: cur.claim_number || '', policy_type: cur.policy_type || '',
-        franchise: cur.franchise ?? '',
+        franchise: cur.franchise ?? '', discount: cur.discount ?? '',
       }));
     }
   }, [jobSyncSig]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -451,6 +452,7 @@ export default function CarCard({
         claim_number: c.claim_number || '',
         policy_type: c.policy_type || '',
         franchise: c.franchise ?? '',
+        discount: c.discount ?? '',
       }));
     }
     setDirtyInfo(false);
@@ -483,7 +485,7 @@ export default function CarCard({
         setForm((f) => ({
           ...f,
           insurer_id: fresh.insurer_id || '', insurer_name: fresh.insurer_name || '',
-          claim_number: '', policy_type: '', franchise: '',
+          claim_number: '', policy_type: '', franchise: '', discount: '',
         }));
         setDirtyInfo(false);
       }
@@ -515,7 +517,7 @@ export default function CarCard({
         ...f,
         insurer_id: first.insurer_id || '', insurer_name: first.insurer_name || '',
         claim_number: first.claim_number || '', policy_type: first.policy_type || '',
-        franchise: first.franchise ?? '',
+        franchise: first.franchise ?? '', discount: first.discount ?? '',
       }));
       setDirtyInfo(false);
     } catch (e) {
@@ -565,6 +567,9 @@ export default function CarCard({
         services: data.services.map((x) => ({ name: x.name || '', qty: Number(x.qty) || 1, price: Number(x.price) || 0 })),
         discount: Number(data.meta?.discount) || 0,
       });
+      // Скидку кладём прямо в форму: раньше она уходила в машину «вслепую» из
+      // imported, и поправить её до сохранения было негде.
+      if (Number(data.meta?.discount) > 0) patchForm({ discount: Number(data.meta.discount) });
       // Распознанные запчасти кладём в редактируемую таблицу (дополняя уже добавленные
       // вручную) — их можно поправить/дополнить до сохранения машины.
       if (data.parts.length) {
@@ -861,6 +866,7 @@ export default function CarCard({
         claim_number: form.claim_number,
         policy_type: form.policy_type,
         franchise: Number(form.franchise) || null,
+        discount: Number(form.discount) || 0,
       };
       // Открыт НЕ убыток №1 → плоские страховые поля из payload вырезаем. Это верно и
       // для вкладки «Допродажи»: страховой блок там скрыт, но `form` всё ещё держит
@@ -875,8 +881,8 @@ export default function CarCard({
       await onSaveInfo({
         ...form,
         ...(stripClaimFields
-          ? { insurer_id: undefined, insurer_name: undefined, claim_number: undefined, policy_type: undefined, franchise: undefined }
-          : { franchise: Number(form.franchise) || null }),
+          ? { insurer_id: undefined, insurer_name: undefined, claim_number: undefined, policy_type: undefined, franchise: undefined, discount: undefined }
+          : { franchise: Number(form.franchise) || null, discount: Number(form.discount) || 0 }),
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
         // Раньше услуги сохранялись только у страховой машины — правились ведь одни
@@ -977,11 +983,11 @@ export default function CarCard({
         claim_number: form.claim_number,
         policy_type: form.policy_type,
         franchise: Number(form.franchise) || null,
+        discount: Number(form.discount) || 0,
         expected_at: form.expected_at ? dayjs(form.expected_at).toISOString() : null,
         deadline: form.deadline ? dayjs(form.deadline).toISOString() : null,
         // Работы: распознанные Audatex + добавленные вручную (см. mergedCreateServices).
         ...(mergedCreateServices.length ? { services: mergedCreateServices } : {}),
-        ...(imported && imported.discount ? { discount: imported.discount } : {}),
         // Запчасти: импорт Audatex и/или добавленные вручную в таблице ниже. Уходят в
         // job.parts (с id) → заказ-наряд, ячейка склада и экран «Запчасти» автозаполняются.
         ...(cleanCreateParts.length ? { parts: cleanCreateParts } : {}),
@@ -1275,6 +1281,15 @@ export default function CarCard({
               </button>
             )}
             {isEdit && <span className="cc-status-pill" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>}
+            {/* «Документы» — самое частое, ради чего выходят из карточки, поэтому
+                кнопка живёт в шапке и доступна с любого раздела. Плитка в «Деньгах»
+                остаётся: там она в ряду с себестоимостью и оплатой мастерам. */}
+            {isEdit && (
+              <button className="cc-head-docs" onClick={openDocs} title="Заказ-наряд, акт, счёт, приём-передача">
+                <Icon name="file" size={14} />
+                <span>Документы</span>
+              </button>
+            )}
             {isEdit && (
               <button
                 className="cc-close"
@@ -1562,7 +1577,28 @@ export default function CarCard({
                   />
                 </label>
               )}
+              {/* Скидка — реквизит дела (CLAIM_MIRROR_KEYS в api.js), но не страховой:
+                  её дают и наличному клиенту. Раньше правилась только внутри окна
+                  «Документы», из-за чего в карточке её было не найти. */}
+              <label className="cc-field">
+                <span>Скидка, ₽</span>
+                <input
+                  type="number"
+                  min="0"
+                  placeholder="0"
+                  value={form.discount}
+                  onChange={(e) => patchForm({ discount: e.target.value })}
+                />
+              </label>
             </div>
+            {Number(form.discount) > 0 && (
+              <div className="cc-hint">
+                Скидка по этому делу: {fmtMoney(form.discount)}
+                {ownServicesSum + ownPartsSum > 0
+                  ? ` — работы и запчасти ${fmtMoney(ownServicesSum + ownPartsSum)}, к оплате ${fmtMoney(Math.max(0, ownServicesSum + ownPartsSum - Number(form.discount)))}`
+                  : ''}. Подставляется в заказ-наряд, акт и счёт.
+              </div>
+            )}
             {form.payment_type === 'insurance' && Number(form.franchise) > 0 && (
               <div className="cc-hint">Эту сумму платит клиент, остальное — страховая. Отражается в заказ-наряде, акте и счёте.</div>
             )}

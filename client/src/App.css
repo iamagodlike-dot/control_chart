@@ -1342,6 +1342,16 @@ textarea { width: 100%; min-height: 50px; }
 .cc-insurer-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-body); font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--brand-soft); color: var(--color-primary); white-space: nowrap; }
 .job-item-insurer { font-size: 11px; color: var(--color-primary); margin-top: 2px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+/* «Документы» в шапке: доступны с любого раздела, не только из «Денег». */
+.cc-head-docs {
+  display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;
+  height: 34px; padding: 0 12px; border-radius: 9px; cursor: pointer;
+  background: var(--color-surface-alt); border: 1px solid var(--line2, var(--color-border));
+  color: var(--color-text); font: inherit; font-size: 12.5px; font-weight: 700;
+}
+.cc-head-docs:hover { border-color: var(--color-primary); color: var(--color-primary); }
+.cc-head-docs svg { flex-shrink: 0; }
+
 .cc-status-pill {
   font-family: var(--font-mono); font-weight: 700; font-size: 12px; letter-spacing: .08em; text-transform: uppercase; white-space: nowrap;
   padding: 7px 13px; border-radius: 8px; color: var(--badge-color);
@@ -2466,6 +2476,9 @@ textarea { width: 100%; min-height: 50px; }
   .cc-head-sum .cc-ov-route::-webkit-scrollbar { display: none; }
   .cc-head-sum .cc-ov-route-node { flex: 0 0 auto; min-width: 130px; }
   .cc-head-attention { padding: 6px 9px; }
+  /* В шапке телефона места нет — от «Документов» остаётся иконка. */
+  .cc-head-docs { padding: 0 10px; }
+  .cc-head-docs span { display: none; }
   /* Мини-гантт: узкая колонка постов, иначе дорожка не влезает в 390px. */
   .route-preview { --pv-label: 84px; }
   .route-preview-label { padding: 8px 6px; font-size: 11px; }
