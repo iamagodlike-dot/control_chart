@@ -104,8 +104,8 @@ body {
   0%, 100% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--jc) 55%, transparent), 0 3px 16px -6px color-mix(in srgb, var(--jc) 55%, transparent); }
   50% { box-shadow: 0 0 0 1px color-mix(in srgb, var(--jc) 90%, transparent), 0 6px 26px -4px color-mix(in srgb, var(--jc) 80%, transparent); }
 }
-@keyframes fslide { from { opacity: 0; transform: translateX(24px); } to { opacity: 1; transform: none; } }
 @keyframes ffade { from { opacity: 0; } to { opacity: 1; } }
+@keyframes fpop { from { opacity: 0; transform: scale(.985) translateY(8px); } to { opacity: 1; transform: none; } }
 
 h1, h2, h3, h4 { font-family: var(--font-display); letter-spacing: -.2px; }
 
@@ -1173,13 +1173,23 @@ textarea { width: 100%; min-height: 50px; }
 /* ===== Car card — unified add + detail screen ===== */
 /* .modal.cc-modal (not plain .cc-modal) so these beat the base .modal rule,
    which is later in the file — otherwise the modal falls back to 360px wide. */
+/* A centred work window, not a right-hand drawer: the card is where the shop
+   actually works a job, so it gets width for two columns of dense tables.
+   The status accent (--sc, set inline in CarCard) moves from the left edge to
+   the top — a left border makes no sense once the card is centred.
+   `max-height` and `overflow: hidden` are load-bearing: without them the ≤640px
+   `.modal { max-height: 86vh; overflow-y: auto }` rule leaks in and gives the
+   card its own scrollbar on top of .cc-body's. */
 .modal.cc-modal {
-  width: min(1000px, 96vw);
-  height: 100%; max-height: 100%;
+  position: relative;
+  width: min(1280px, 100vw - 48px);
+  height: min(880px, 100vh - 48px); max-height: min(880px, 100vh - 48px);
   padding: 0; gap: 0; overflow: hidden;
-  border: none; border-left: 4px solid var(--sc, var(--color-primary)); border-radius: 0;
-  box-shadow: -30px 0 80px -30px #000;
-  animation: fslide .26s cubic-bezier(.2, .8, .2, 1);
+  border: 1px solid var(--color-border);
+  border-top: 4px solid var(--sc, var(--color-primary));
+  border-radius: var(--radius-lg);
+  box-shadow: 0 30px 80px -30px #000;
+  animation: fpop .2s cubic-bezier(.2, .8, .2, 1);
 }
 .cc-header, .cc-footer, .cc-claims, .cc-tabs { flex-shrink: 0; }
 .cc-body { flex: 1 1 auto; min-height: 0; }
@@ -1315,20 +1325,20 @@ textarea { width: 100%; min-height: 50px; }
 
 .cc-body { overflow-y: auto; padding: 16px 20px; display: flex; flex-direction: column; gap: 14px; }
 
-/* Two-column layout for the card body on wide screens — the sections pack into
-   two masonry columns so the card isn't one long scroll. Collapses to a single
-   column at ≤900px (tablets/phones, where the drawer is near full-width). Wide
-   blocks — the spec strip, the оплата/предупреждения banners, and the route with
+/* Two-column layout for the card body on wide screens, as a deterministic 2×N
+   grid — NOT CSS multicol. Multicol fragments its contents: position:sticky dies
+   inside it, a flex row (the claim switcher) only gets one column's width, and
+   the browser picks which column a block lands in, so sections jump around as
+   data changes. Grid keeps every section where it was put. Collapses to a single
+   column at ≤900px. Wide blocks — the spec strip, the banners, and the route with
    its gantt preview — span both columns via .cc-full. */
-.cc-cols { columns: 2; column-gap: 14px; }
+.cc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 /* Разделы с одной секцией (Деньги, Журнал) — в одну колонку на всю ширину, иначе
    секция висит в левой половине, а правая пустует. */
-.cc-cols[data-tab="money"], .cc-cols[data-tab="journal"] { columns: 1; }
-.cc-cols > * { break-inside: avoid; margin-bottom: 14px; }
-.cc-cols > *:last-child { margin-bottom: 0; }
-.cc-full { column-span: all; }
+.cc-cols[data-tab="money"], .cc-cols[data-tab="journal"] { grid-template-columns: 1fr; }
+.cc-full { grid-column: 1 / -1; }
 .cc-cols .cc-2col { grid-template-columns: 1fr; }
-@media (max-width: 900px) { .cc-cols { columns: 1; } }
+@media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
 
 /* Part-consent notices — compact cards with a capped width so they sit side by
    side instead of stretching into one long bar. Each type carries its own accent
@@ -1489,7 +1499,9 @@ textarea { width: 100%; min-height: 50px; }
 .cc-btn-ico svg { flex-shrink: 0; }
 
 /* Stage editor (reuses the cc-* modal shell) */
-.cc-modal.is-narrow { width: min(560px, calc(100vw - 32px)); }
+/* Редактор этапа в графике (Gantt.jsx) переиспользует эту оболочку — ему нужна
+   высота по содержимому, иначе он растянется на 880px пустоты. */
+.cc-modal.is-narrow { width: min(560px, calc(100vw - 32px)); height: auto; max-height: calc(100vh - 48px); }
 .cc-linkbtn { background: transparent; border: none; padding: 0; cursor: pointer; color: var(--color-primary); font-weight: 700; font-size: 12px; }
 .cc-linkbtn:hover { text-decoration: underline; }
 .seg { display: flex; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
@@ -1634,7 +1646,8 @@ textarea { width: 100%; min-height: 50px; }
 
 .modal-backdrop { position: fixed; inset: 0; background: rgba(0, 0, 0, .6); display: flex; align-items: center; justify-content: center; z-index: 50; backdrop-filter: blur(1px); }
 /* Заказ-наряд (CarCard) slides in from the right as a full-height panel */
-.modal-backdrop.cc-backdrop { justify-content: flex-end; align-items: stretch; background: rgba(4, 6, 9, .68); backdrop-filter: blur(4px); animation: ffade .18s ease; }
+/* Карточка авто — центрированное окно; выравнивание берётся из базового .modal-backdrop. */
+.modal-backdrop.cc-backdrop { background: rgba(4, 6, 9, .68); backdrop-filter: blur(4px); animation: ffade .18s ease; }
 .modal { background: var(--color-surface); padding: 22px; border-radius: var(--radius-lg); width: 360px; display: flex; flex-direction: column; gap: 10px; box-shadow: var(--shadow-md); border: 1px solid var(--color-border); }
 .modal h3 { margin: 0 0 4px; }
 .modal label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--color-text-muted); }
@@ -2195,9 +2208,16 @@ textarea { width: 100%; min-height: 50px; }
   /* — Кнопки-иконки тулбара «Графика»: удобный размер под палец — */
   .date-nav button, .zoom-control button, .toolbar-tools > button { min-height: 36px; }
 
-  /* — Карточка машины (CarCard): на всю ширину, шапка в столбик — иначе
-       номер/имя/телефон сжимаются в узкую колонку и переносятся по буквам — */
-  .modal.cc-modal { width: 100vw; max-width: 100vw; border-left: none; }
+  /* — Карточка машины (CarCard): на весь экран, шапка в столбик — иначе
+       номер/имя/телефон сжимаются в узкую колонку и переносятся по буквам.
+       100dvh, а не 100vh: адресная строка мобильного браузера иначе срезает
+       подвал (тот же приём в orderDoc.css). — */
+  .modal.cc-modal {
+    width: 100vw; max-width: 100vw;
+    height: 100dvh; max-height: 100dvh;
+    border: none; border-top: 3px solid var(--sc, var(--color-primary));
+    border-radius: 0;
+  }
   .cc-header { flex-direction: column; align-items: stretch; gap: 12px; padding: 16px; }
   .cc-header-main { width: 100%; }
   .cc-header-right { justify-content: flex-start; }
