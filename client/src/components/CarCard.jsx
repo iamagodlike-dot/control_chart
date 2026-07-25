@@ -21,7 +21,12 @@ import DateTimeField from './DateTimeField';
 import PhotoViewer from './PhotoViewer';
 
 const FMT = 'YYYY-MM-DDTHH:mm';
-const PREVIEW_HOUR_WIDTH = 16;
+// Ширина колонки с названиями постов в мини-гантте задана переменной --pv-label
+// (App.css), потому что на телефоне она уже: считать позицию дедлайна и рисовать
+// колонку надо ОДНИМ значением, иначе линия уезжает. Шкала времени за колонкой
+// считается в процентах, поэтому маршрут любой длины влезает целиком — раньше
+// день был фиксированной ширины и многодневный ремонт уходил за правый край.
+const PREVIEW_LABEL = 'var(--pv-label)';
 const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
 
 // Детали «под оригинал» (Б/У или аналог, ставящиеся вместо оригинала) требуют
@@ -31,11 +36,13 @@ const ORIG_PREP_KINDS = { used_orig: 'Б/У под ориг.', analog_orig: 'А�
 // Ярлык вида запчасти для списка в карточке (кроме «Новое» — его не помечаем).
 const KIND_BADGES = { used: 'Б/У', used_orig: 'Б/У под ориг.', analog: 'Замена', analog_orig: 'Аналог под ориг.' };
 
-// Разделы карточки — второй ряд вкладок (под вкладками убытков). Группируют секции
-// тела, чтобы всё не сыпалось одним длинным скроллом. Шапка и футер закреплены и
-// видны на всех разделах; полоса вкладок убытков (cc-claims) — отдельный ВЕРХНИЙ
-// ряд (сначала выбираешь дело, потом раздел). В create разделов меньше: фото и
-// журнал требуют сохранённой машины, поэтому их там нет.
+// Разделы карточки — по стадиям заказа: приняли → согласовали объём →
+// распланировали → закрыли. Шапка (с закреплённой сводкой) и подвал видны на всех
+// разделах, поэтому «что с машиной прямо сейчас» отдельной вкладки не требует.
+// Выбор страхового дела — не над разделами, а ВНУТРИ «Работ и запчастей» и
+// «Денег»: маршрут, склад, фото и прибыль от дела не зависят (см. claimSwitch).
+// Журнал вынесен в выдвижку из шапки — читают его редко. В create разделов
+// меньше: фото требуют сохранённой машины.
 const TABS_EDIT = [
   { id: 'machine', label: 'Машина' },
   { id: 'works', label: 'Работы и запчасти' },
@@ -1486,30 +1493,6 @@ export default function CarCard({
                 {dlState === 'ok' && <><Icon name="check" size={13} strokeWidth={2} /> Укладывается в дедлайн</>}
               </div>
             )}
-            {!isEdit && deadlineWarn && (
-              <div className="deadline-warning"><Icon name="warning" size={13} /> Последний этап заканчивается {deadlineWarn.format('DD.MM HH:mm')} — позже дедлайна {dayjs(form.deadline).format('DD.MM HH:mm')}</div>
-            )}
-            {osagoTermWorkdays > 0 && (
-              <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--color-danger-bg)', border: '1px solid var(--color-danger)' }}>
-                <span style={{ color: 'var(--color-danger-text)', flexShrink: 0, display: 'inline-flex', marginTop: 1 }}><Icon name="warning" size={16} /></span>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-danger-text)' }}>Превышен срок ремонта по ОСАГО</div>
-                  <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 3, lineHeight: 1.4 }}>
-                    От заезда до дедлайна {osagoTermWorkdays} раб. дн., по закону — не более {OSAGO_MAX_REPAIR_WORKDAYS}{osagoPenalty ? `, просрочка ~${osagoPenalty.overrunDays} дн` : ''}.
-                  </div>
-                  {osagoPenalty && osagoPenalty.amount > 0 ? (
-                    <div style={{ fontSize: 12.5, marginTop: 4, color: 'var(--color-danger-text)' }}>
-                      Ориентировочная неустойка: <b>≈ {fmtMoney(osagoPenalty.amount)}</b>
-                      <span style={{ color: 'var(--color-text-muted)' }}> — 0,5%/день от суммы {osagoPenalty.baseLabel} ({fmtMoney(osagoPenalty.base)})</span>
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12, marginTop: 4, color: 'var(--color-text-muted)' }}>
-                      Неустойка — 0,5%/день от стоимости ремонта; сумма появится, когда будет счёт или смета.
-                    </div>
-                  )}
-                </div>
-              </div>
-            )}
           </section>
           )}
 
@@ -1590,6 +1573,31 @@ export default function CarCard({
               <div className="cc-hint">Тип оплаты не меняется, пока по машине заведено несколько убытков — сначала удалите лишние дела.</div>
             )}
           </section>
+          )}
+
+          {/* Срок ремонта по ОСАГО — на уровне раздела, а не внутри «Оплаты и
+              страховой»: на вкладке допродаж та секция не показывается, а
+              предупреждение о неустойке пропадать не должно. */}
+          {osagoTermWorkdays > 0 && (
+            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--color-danger-bg)', border: '1px solid var(--color-danger)' }}>
+              <span style={{ color: 'var(--color-danger-text)', flexShrink: 0, display: 'inline-flex', marginTop: 1 }}><Icon name="warning" size={16} /></span>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-danger-text)' }}>Превышен срок ремонта по ОСАГО</div>
+                <div style={{ fontSize: 12, color: 'var(--color-text-muted)', marginTop: 3, lineHeight: 1.4 }}>
+                  От заезда до дедлайна {osagoTermWorkdays} раб. дн., по закону — не более {OSAGO_MAX_REPAIR_WORKDAYS}{osagoPenalty ? `, просрочка ~${osagoPenalty.overrunDays} дн` : ''}.
+                </div>
+                {osagoPenalty && osagoPenalty.amount > 0 ? (
+                  <div style={{ fontSize: 12.5, marginTop: 4, color: 'var(--color-danger-text)' }}>
+                    Ориентировочная неустойка: <b>≈ {fmtMoney(osagoPenalty.amount)}</b>
+                    <span style={{ color: 'var(--color-text-muted)' }}> — 0,5%/день от суммы {osagoPenalty.baseLabel} ({fmtMoney(osagoPenalty.base)})</span>
+                  </div>
+                ) : (
+                  <div style={{ fontSize: 12, marginTop: 4, color: 'var(--color-text-muted)' }}>
+                    Неустойка — 0,5%/день от стоимости ремонта; сумма появится, когда будет счёт или смета.
+                  </div>
+                )}
+              </div>
+            </div>
           )}
 
           {/* Ниже — блоки по МАШИНЕ: от выбранного дела они не зависят.
@@ -1893,6 +1901,9 @@ export default function CarCard({
               })}
             </div>
 
+            {!isEdit && deadlineWarn && (
+              <div className="deadline-warning"><Icon name="warning" size={13} /> Последний этап заканчивается {deadlineWarn.format('DD.MM HH:mm')} — позже дедлайна {dayjs(form.deadline).format('DD.MM HH:mm')}</div>
+            )}
             <button className="cc-add-stage" onClick={addStageRow}>+ Добавить этап маршрута</button>
 
             {routeSet.length > 0 && (
@@ -2116,10 +2127,10 @@ export default function CarCard({
               вкладке допродаж (у них нет страховых реквизитов) и работы у машины,
               по которой ещё ничего не заведено. */}
           {activeTab === 'money' && onExtrasTab && (
-            <div className="cc-tab-empty cc-full">Допродажи клиент оплачивает отдельным счётом — страховых реквизитов у них нет. Их работы и запчасти — на вкладке «Работы и запчасти».</div>
+            <div className="cc-tab-empty cc-full">Допродажи клиент оплачивает отдельным счётом — страховых реквизитов у них нет. Их работы и запчасти — в разделе «Работы и запчасти».</div>
           )}
           {isEdit && activeTab === 'works' && !insWorks.length && !insParts.length && !invoices.length && !(isInsCar && onExtrasTab) && (
-            <div className="cc-tab-empty cc-full">Работы и запчасти пока не добавлены. Их можно внести в окне «Документы» или импортом Audatex при создании машины.</div>
+            <div className="cc-tab-empty cc-full">Работы и запчасти пока не добавлены. Их можно внести в окне «Документы» или импортом Audatex в разделе «Машина» при создании.</div>
           )}
          </div>
         </div>
@@ -2234,11 +2245,15 @@ function RoutePreview({ posts, draftStages, existingStages, deadline, highlightS
   if (deadline) ends.push(dayjs(deadline));
   const rangeStart = starts.reduce((min, d) => (d.isBefore(min) ? d : min), starts[0]).subtract(1, 'hour').startOf('hour');
   const rangeEnd = ends.reduce((max, d) => (d.isAfter(max) ? d : max), ends[0]).add(1, 'hour').endOf('hour');
-  const totalHours = Math.max(rangeEnd.diff(rangeStart, 'hour'), 1);
-  const totalWidth = totalHours * PREVIEW_HOUR_WIDTH;
+  const totalMinutes = Math.max(rangeEnd.diff(rangeStart, 'minute'), 60);
   const now = dayjs();
 
-  const toX = (date) => dayjs(date).diff(rangeStart, 'minute') / 60 * PREVIEW_HOUR_WIDTH;
+  // Позиция внутри дорожки — доля диапазона, а не пиксели.
+  const toPct = (date) => dayjs(date).diff(rangeStart, 'minute') / totalMinutes * 100;
+  const spanPct = (a, b) => Math.max(toPct(b) - toPct(a), 0);
+  // Дней много — подписи не влезут: печатаем только число, а при совсем плотной
+  // шкале — через одну.
+  const dayPct = 24 * 60 / totalMinutes * 100;
 
   const dayTicks = [];
   let cursor = rangeStart.startOf('day');
@@ -2257,21 +2272,30 @@ function RoutePreview({ posts, draftStages, existingStages, deadline, highlightS
   return (
     <div className="route-preview">
       <div className="route-preview-scroll">
-        <div style={{ width: 150 + totalWidth, position: 'relative' }}>
-          <div className="route-preview-ticks" style={{ width: 150 + totalWidth }}>
-            <div style={{ width: 150, flexShrink: 0 }} />
-            <div style={{ position: 'relative', width: totalWidth }}>
-              {dayTicks.map((d) => (
-                <div key={d.format()} className="route-preview-tick" style={{ left: toX(d) }}>{d.format('DD.MM')}</div>
+        <div style={{ position: 'relative' }}>
+          <div className="route-preview-ticks">
+            <div style={{ width: PREVIEW_LABEL, flexShrink: 0 }} />
+            <div style={{ position: 'relative', flex: 1, minWidth: 0 }}>
+              {dayTicks.map((d, i) => (
+                (dayPct >= 8 || i % 2 === 0) && (
+                  <div key={d.format()} className="route-preview-tick" style={{ left: `${toPct(d)}%` }}>
+                    {dayPct >= 12 ? d.format('DD.MM') : d.format('DD')}
+                  </div>
+                )
               ))}
               {now.isAfter(rangeStart) && now.isBefore(rangeEnd) && (
-                <div className="route-preview-now" style={{ left: toX(now) }} />
+                <div className="route-preview-now" style={{ left: `${toPct(now)}%` }} />
               )}
             </div>
           </div>
 
+          {/* У правого края подпись разворачиваем внутрь, иначе она вылезает за
+              пределы превью и обрезается. */}
           {deadline && dayjs(deadline).isAfter(rangeStart) && dayjs(deadline).isBefore(rangeEnd) && (
-            <div className="route-preview-deadline" style={{ left: 150 + toX(deadline), height: 22 + rowsByPost.length * 41 }}>
+            <div
+              className={`route-preview-deadline${toPct(deadline) > 82 ? ' is-right' : ''}`}
+              style={{ left: `calc(${PREVIEW_LABEL} + (100% - ${PREVIEW_LABEL}) * ${toPct(deadline) / 100})` }}
+            >
               <span className="route-preview-deadline-label">дедлайн</span>
             </div>
           )}
@@ -2279,12 +2303,12 @@ function RoutePreview({ posts, draftStages, existingStages, deadline, highlightS
           {rowsByPost.map((row) => (
             <div className="route-preview-row" key={row.postId}>
               <div className="route-preview-label">{row.name}</div>
-              <div className="route-preview-track" style={{ width: totalWidth }}>
+              <div className="route-preview-track">
                 {row.existing.map((s) => (
                   <div
                     key={s.id}
                     className="route-preview-block"
-                    style={{ left: toX(s.start_at), width: Math.max(toX(s.end_at) - toX(s.start_at), 8) }}
+                    style={{ left: `${toPct(s.start_at)}%`, width: `${spanPct(s.start_at, s.end_at)}%` }}
                     title={`${s.car_model} (занято)`}
                   >
                     {s.car_model}
@@ -2296,7 +2320,7 @@ function RoutePreview({ posts, draftStages, existingStages, deadline, highlightS
                     <div
                       key={`draft-${i}`}
                       className={`route-preview-block is-draft${conflict ? ' has-conflict' : ''}`}
-                      style={{ left: toX(s.start_at), width: Math.max(toX(s.end_at) - toX(s.start_at), 8) }}
+                      style={{ left: `${toPct(s.start_at)}%`, width: `${spanPct(s.start_at, s.end_at)}%` }}
                       title={conflict ? 'Пересекается с существующей записью на этом посту' : (highlightSaved ? 'Этап этой машины' : 'Новый этап')}
                     >
                       {highlightSaved ? 'эта' : 'новый'}

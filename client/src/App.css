@@ -1288,7 +1288,10 @@ textarea { width: 100%; min-height: 50px; }
   padding: 10px 26px 12px; border-bottom: 1px solid var(--color-border);
   background: var(--color-surface-alt);
 }
-.cc-head-sum .cc-ov-hero { padding: 0; border: none; background: transparent; gap: 8px; }
+.cc-head-sum .cc-ov-hero { border: none; border-radius: 0; background: transparent; }
+.cc-head-sum .cc-ov-hero-top { padding: 2px 0 8px; }
+.cc-head-sum .cc-ov-status-label { font-size: 17px; }
+.cc-head-sum .cc-ov-route { padding: 0; }
 .cc-head-attention {
   display: flex; align-items: center; gap: 8px; min-width: 0;
   padding: 7px 11px; border-radius: var(--radius-md);
@@ -1359,13 +1362,16 @@ textarea { width: 100%; min-height: 50px; }
    data changes. Grid keeps every section where it was put. Collapses to a single
    column at ≤900px. Wide blocks — the spec strip, the banners, and the route with
    its gantt preview — span both columns via .cc-full. */
-.cc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
-/* Разделы с одной секцией (Деньги, Журнал) — в одну колонку на всю ширину, иначе
-   секция висит в левой половине, а правая пустует. */
-.cc-cols[data-tab="money"] { grid-template-columns: 1fr; }
+/* minmax(0, 1fr), а НЕ 1fr: трек грида по умолчанию имеет min-width:auto и
+   растягивается под самое широкое содержимое, поэтому длинная строка этапа или
+   таблица раздували раздел шире карточки и давали горизонтальную прокрутку. */
+.cc-cols { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 14px; align-items: start; }
+/* «Деньги» после реорганизации — не одна секция, а четыре: реквизиты дела,
+   счета, документы и расчёты, экономика. Оставляем общую сетку 2×N, широкие
+   блоки помечены .cc-full. */
 .cc-full { grid-column: 1 / -1; }
 .cc-cols .cc-2col { grid-template-columns: 1fr; }
-@media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
+@media (max-width: 900px) { .cc-cols { grid-template-columns: minmax(0, 1fr); } }
 
 /* Part-consent notices — compact cards with a capped width so they sit side by
    side instead of stretching into one long bar. Each type carries its own accent
@@ -1938,19 +1944,22 @@ textarea { width: 100%; min-height: 50px; }
 
 /* Route preview mini-gantt */
 .route-preview { margin-top: 12px; border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+.route-preview { --pv-label: 150px; }
 .route-preview-empty { padding: 16px; text-align: center; color: var(--color-text-muted); font-size: 13px; }
-.route-preview-scroll { overflow-x: auto; }
+/* Шкала времени считается в процентах, поэтому маршрут любой длины влезает
+   целиком — горизонтальная прокрутка больше не нужна. */
+.route-preview-scroll { overflow-x: hidden; }
 .route-preview-ticks { display: flex; position: relative; height: 22px; border-bottom: 1px solid var(--color-border); background: var(--color-surface-alt); }
 .route-preview-tick { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--color-dashed-border-soft); font-size: 10px; color: var(--color-text-muted); padding-left: 3px; padding-top: 3px; white-space: nowrap; font-family: var(--font-mono); }
 .route-preview-row { display: flex; border-bottom: 1px solid var(--color-surface-alt); }
 .route-preview-row:last-child { border-bottom: none; }
 .route-preview-label {
-  width: 150px; min-width: 150px; padding: 8px 10px; font-size: 12px; font-weight: 700;
+  width: var(--pv-label); min-width: var(--pv-label); flex-shrink: 0; padding: 8px 10px; font-size: 12px; font-weight: 700;
   background: var(--color-surface); position: sticky; left: 0; border-right: 1px solid var(--color-border); display: flex; align-items: center;
 }
-.route-preview-track { position: relative; height: 40px; }
+.route-preview-track { position: relative; flex: 1; min-width: 0; height: 40px; }
 .route-preview-block {
-  position: absolute; top: 6px; height: 28px; border-radius: 5px; font-size: 10px; color: white;
+  position: absolute; top: 6px; height: 28px; min-width: 6px; border-radius: 5px; font-size: 10px; color: white;
   display: flex; align-items: center; padding: 0 6px; overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
   background: var(--color-route-block);
 }
@@ -1964,13 +1973,14 @@ textarea { width: 100%; min-height: 50px; }
   position: absolute; top: 0; bottom: 0; width: 2px; background: var(--color-danger); z-index: 2;
 }
 .route-preview-deadline {
-  position: absolute; top: 0; width: 2px; background: repeating-linear-gradient(180deg, var(--color-warning) 0 6px, transparent 6px 10px); z-index: 2;
+  position: absolute; top: 0; bottom: 0; width: 2px; background: repeating-linear-gradient(180deg, var(--color-warning) 0 6px, transparent 6px 10px); z-index: 2;
 }
 .route-preview-deadline-label {
   position: absolute; top: -1px; left: 4px; background: var(--color-warning-strong); color: white;
   font-family: var(--font-mono);
   font-size: 10px; padding: 1px 4px; border-radius: 3px; white-space: nowrap;
 }
+.route-preview-deadline.is-right .route-preview-deadline-label { left: auto; right: 4px; }
 .route-preview-hint { padding: 6px 10px; font-size: 11px; color: var(--color-text-muted); background: var(--color-surface-alt); border-top: 1px solid var(--color-border); }
 
 /* Loading / empty states */
@@ -2322,7 +2332,6 @@ textarea { width: 100%; min-height: 50px; }
    рядом с прочими .cc-* правилами карточки). Все цвета — токены из App.css.
    ============================================================================ */
 
-.cc-ov { display: flex; flex-direction: column; gap: 14px; }
 .cc-ov-dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
 
 /* ─── HERO ─────────────────────────────────────────────────────────────── */
@@ -2386,7 +2395,6 @@ textarea { width: 100%; min-height: 50px; }
 }
 
 /* ─── ДЕНЬГИ + ЗАПЧАСТИ ────────────────────────────────────────────────── */
-.cc-ov-split { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; align-items: stretch; }
 .cc-ov-card {
   background: var(--color-surface-alt); border: 1px solid var(--color-border);
   border-radius: var(--radius-lg, 12px); padding: 14px 16px;
@@ -2415,30 +2423,16 @@ textarea { width: 100%; min-height: 50px; }
 .cc-ov-waiting-name { flex: 1; min-width: 0; font-size: 12.5px; color: var(--color-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-ov-waiting-status { flex-shrink: 0; display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 11px; font-weight: 600; color: var(--color-text-muted); }
 
-/* ─── МЕТА-строка + правка ─────────────────────────────────────────────── */
-.cc-ov-meta {
-  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  font-family: var(--font-mono); font-size: 11.5px; color: var(--color-text-muted); padding-top: 2px;
-}
-.cc-ov-meta > span { position: relative; }
-.cc-ov-meta > span + span::before {
-  content: ""; position: absolute; left: -6px; top: 50%; transform: translateY(-50%);
-  width: 3px; height: 3px; border-radius: 50%; background: var(--line2, var(--color-border));
-}
-.cc-ov-vin { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+/* Кнопки «Заполнить» (карточка «Экономика») и «Открыть» (баннер устаревшего
+   заказ-наряда). margin-left:auto у .cc-ov-edit-btn снят вместе с мета-строкой,
+   в которой он что-то прижимал. */
 .cc-ov-edit-btn, .cc-ov-done-btn {
   display: inline-flex; align-items: center; gap: 6px; font: inherit; font-size: 11.5px; font-weight: 600;
   color: var(--color-text-muted); background: transparent; border: 1px solid var(--line2, var(--color-border));
   border-radius: 8px; padding: 5px 11px; cursor: pointer;
 }
-.cc-ov-edit-btn { margin-left: auto; }
 .cc-ov-edit-btn:hover, .cc-ov-done-btn:hover { color: var(--color-text); border-color: var(--color-primary); }
 
-.cc-ov-editbar {
-  display: flex; align-items: center; justify-content: space-between; gap: 12px;
-  font-family: var(--font-mono); font-size: 11px; letter-spacing: .12em; text-transform: uppercase;
-  color: var(--color-text-muted); margin-bottom: 2px;
-}
 .cc-ov-done-btn { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
 
 /* ─── ЭКОНОМИКА (только управленец) ────────────────────────────────────── */
@@ -2463,10 +2457,16 @@ textarea { width: 100%; min-height: 50px; }
 @media (max-width: 640px) {
   /* Экономика: 4 колонки на телефоне не читаются — в две. */
   .cc-ov-fin-row { grid-template-columns: 1fr 1fr; gap: 12px 10px; }
-  .cc-ov-route { flex-direction: column; gap: 12px; }
-  .cc-ov-route-node { padding-right: 0; }
-  .cc-ov-route-node:not(:last-child)::after { content: none; }
-  .cc-ov-split { grid-template-columns: 1fr; }
+  /* Степпер в шапке — горизонтальной прокруткой, а НЕ в столбик: столбик из
+     четырёх постов съедает весь экран, а сводка закреплена на всех разделах. */
+  .cc-head-sum { padding: 8px 14px 10px; }
+  .cc-head-sum .cc-ov-route { flex-wrap: nowrap; overflow-x: auto; gap: 14px; scrollbar-width: none; }
+  .cc-head-sum .cc-ov-route::-webkit-scrollbar { display: none; }
+  .cc-head-sum .cc-ov-route-node { flex: 0 0 auto; min-width: 130px; }
+  .cc-head-attention { padding: 6px 9px; }
+  /* Мини-гантт: узкая колонка постов, иначе дорожка не влезает в 390px. */
+  .route-preview { --pv-label: 84px; }
+  .route-preview-label { padding: 8px 6px; font-size: 11px; }
   .cc-ov-hero-top { flex-wrap: wrap; }
   .cc-ov-status-label { font-size: 17px; }
   .cc-ov-attention { flex-wrap: wrap; gap: 6px 10px; }
