@@ -1191,7 +1191,9 @@ textarea { width: 100%; min-height: 50px; }
   box-shadow: 0 30px 80px -30px #000;
   animation: fpop .2s cubic-bezier(.2, .8, .2, 1);
 }
-.cc-header, .cc-head-sum, .cc-footer, .cc-tabs { flex-shrink: 0; }
+/* z-index выше выдвижки журнала (z-index: 3): она absolute на всю высоту
+   .cc-modal, и без этого накрывала бы шапку со сводкой и подвал с кнопками. */
+.cc-header, .cc-head-sum, .cc-footer, .cc-tabs { flex-shrink: 0; position: relative; z-index: 4; }
 .cc-body { flex: 1 1 auto; min-height: 0; }
 
 /* Полоса убытков (страховых дел) — между шапкой и телом карточки. Закреплена

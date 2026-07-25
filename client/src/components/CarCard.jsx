@@ -1499,7 +1499,7 @@ export default function CarCard({
           {/* На вкладке «Допродажи» страховой блок не показываем: допродажи — это то,
               что клиент платит сам, у них нет ни полиса, ни № убытка, ни франшизы. */}
           {activeTab === 'money' && !onExtrasTab && (
-          <section className="cc-section">
+          <section className={`cc-section${isEdit ? '' : ' cc-full'}`}>
             <div className="cc-section-head">
               <span className="cc-section-icon">💳</span>
               {claims.length > 1 && activeClaimIdx >= 0 ? `Оплата и страховая · ${claimLabel(activeClaim, activeClaimIdx)}` : 'Оплата и страховая'}
@@ -1575,11 +1575,17 @@ export default function CarCard({
           </section>
           )}
 
+          {/* Пояснение к СКРЫТОЙ секции «Оплата и страховая», а не пустой раздел:
+              ниже в «Деньгах» есть и счета, и документы, и экономика. */}
+          {activeTab === 'money' && onExtrasTab && (
+            <div className="cc-hint cc-full">Допродажи клиент оплачивает отдельным счётом — страховых реквизитов у них нет. Их работы и запчасти — в разделе «Работы и запчасти».</div>
+          )}
+
           {/* Срок ремонта по ОСАГО — на уровне раздела, а не внутри «Оплаты и
               страховой»: на вкладке допродаж та секция не показывается, а
               предупреждение о неустойке пропадать не должно. */}
-          {osagoTermWorkdays > 0 && (
-            <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginTop: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--color-danger-bg)', border: '1px solid var(--color-danger)' }}>
+          {activeTab === 'money' && osagoTermWorkdays > 0 && (
+            <div className="cc-full" style={{ display: 'flex', alignItems: 'flex-start', gap: 10, padding: '10px 12px', borderRadius: 10, background: 'var(--color-danger-bg)', border: '1px solid var(--color-danger)' }}>
               <span style={{ color: 'var(--color-danger-text)', flexShrink: 0, display: 'inline-flex', marginTop: 1 }}><Icon name="warning" size={16} /></span>
               <div style={{ minWidth: 0 }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: 'var(--color-danger-text)' }}>Превышен срок ремонта по ОСАГО</div>
@@ -2126,9 +2132,6 @@ export default function CarCard({
           {/* Пустые разделы: короткая подсказка вместо белого экрана. Деньги на
               вкладке допродаж (у них нет страховых реквизитов) и работы у машины,
               по которой ещё ничего не заведено. */}
-          {activeTab === 'money' && onExtrasTab && (
-            <div className="cc-tab-empty cc-full">Допродажи клиент оплачивает отдельным счётом — страховых реквизитов у них нет. Их работы и запчасти — в разделе «Работы и запчасти».</div>
-          )}
           {isEdit && activeTab === 'works' && !insWorks.length && !insParts.length && !invoices.length && !(isInsCar && onExtrasTab) && (
             <div className="cc-tab-empty cc-full">Работы и запчасти пока не добавлены. Их можно внести в окне «Документы» или импортом Audatex в разделе «Машина» при создании.</div>
           )}
