@@ -1342,6 +1342,21 @@ textarea { width: 100%; min-height: 50px; }
 .cc-insurer-chip { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-body); font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; background: var(--brand-soft); color: var(--color-primary); white-space: nowrap; }
 .job-item-insurer { font-size: 11px; color: var(--color-primary); margin-top: 2px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cc-header-right { display: flex; align-items: center; gap: 10px; flex-shrink: 0; flex-wrap: wrap; justify-content: flex-end; }
+/* Переключатель единицы скидки ₽ / % внутри подписи поля. Идиома та же, что в
+   редакторе документов (.oe-unit-toggle), но живёт в сетке карточки. */
+.cc-unit-toggle {
+  display: inline-flex; margin-left: auto; border: 1px solid var(--color-border);
+  border-radius: 6px; overflow: hidden;
+}
+.cc-unit-toggle button {
+  border: none; border-radius: 0; padding: 2px 0; width: 28px; min-width: 28px;
+  font-size: 12px; font-weight: 700; line-height: 1.4; cursor: pointer;
+  background: var(--color-surface); color: var(--color-text-muted);
+}
+.cc-unit-toggle button + button { border-left: 1px solid var(--color-border); }
+.cc-unit-toggle button.active { background: var(--color-primary); color: var(--color-on-primary); }
+.cc-unit-toggle button:hover:not(.active) { color: var(--color-text); }
+
 /* «Документы» в шапке: доступны с любого раздела, не только из «Денег». */
 .cc-head-docs {
   display: inline-flex; align-items: center; gap: 7px; flex-shrink: 0; white-space: nowrap;

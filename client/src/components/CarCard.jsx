@@ -181,6 +181,11 @@ export default function CarCard({
   const [company, setCompany] = useState({});
   const [payOpen, setPayOpen] = useState(false);
   const [journalOpen, setJournalOpen] = useState(false);
+  // Режим ввода скидки: ₽ или %. В машине хранятся ВСЕГДА рубли (claim.discount,
+  // зеркало CLAIM_MIRROR_KEYS) — документы сеются оттуда рублями, поэтому процент
+  // это только способ ввода, а не второе хранимое значение. Режим не персистится.
+  const [discMode, setDiscMode] = useState('rub');
+  const [discPct, setDiscPct] = useState('');
   const [localCosting, setLocalCosting] = useState(job?.costing || null);
   const [existingStages, setExistingStages] = useState([]);
   const [insurers, setInsurers] = useState([]);
@@ -261,6 +266,29 @@ export default function CarCard({
   function removeExtraPart(id) { setExtraParts((a) => a.filter((p) => p.id !== id)); setDirtyInfo(true); }
   const ownServicesSum = ownServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
   const ownPartsSum = ownParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
+  // База скидки. У страховых она даётся НА ЗАПЧАСТИ — страховая согласовывает
+  // скидку от их стоимости, работы считаются по её справочнику. У наличных и
+  // юрлиц скидка на весь ремонт. Рубли остаются источником правды: процент лишь
+  // пересчитывается в них, поэтому заказ-наряд, акт и счёт получают ту же сумму.
+  const discBase = form.payment_type === 'insurance' ? ownPartsSum : ownServicesSum + ownPartsSum;
+  const discBaseLabel = form.payment_type === 'insurance' ? 'от запчастей' : 'от работ и запчастей';
+  const discRub = Number(form.discount) || 0;
+  const discShownPct = discBase > 0 ? Math.round((discRub / discBase) * 1000) / 10 : 0;
+  const pctToRub = (p) => Math.min(discBase, Math.max(0, Math.round((discBase * (Number(p) || 0)) / 100)));
+
+  function setDiscountRub(v) { patchForm({ discount: v }); }
+  function setDiscountPct(v) {
+    setDiscPct(v);
+    patchForm({ discount: pctToRub(v) });
+  }
+  // Переключение режима значение не теряет: ₽ → % берёт текущий процент, % → ₽
+  // фиксирует уже посчитанную сумму.
+  function switchDiscMode(next) {
+    if (next === discMode) return;
+    if (next === 'pct') setDiscPct(discShownPct ? String(discShownPct) : '');
+    setDiscMode(next);
+  }
+
   const extraServicesSum = extraServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
   const extraPartsSum = extraParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
 
@@ -1581,26 +1609,52 @@ export default function CarCard({
                   её дают и наличному клиенту. Раньше правилась только внутри окна
                   «Документы», из-за чего в карточке её было не найти. */}
               <label className="cc-field">
-                <span>Скидка, ₽</span>
-                <input
-                  type="number"
-                  min="0"
-                  placeholder="0"
-                  value={form.discount}
-                  onChange={(e) => patchForm({ discount: e.target.value })}
-                />
+                <span>
+                  Скидка
+                  <span className="cc-unit-toggle" role="group" aria-label="Единица скидки">
+                    <button type="button" className={discMode === 'rub' ? 'active' : ''} aria-pressed={discMode === 'rub'} onClick={() => switchDiscMode('rub')}>₽</button>
+                    <button type="button" className={discMode === 'pct' ? 'active' : ''} aria-pressed={discMode === 'pct'} onClick={() => switchDiscMode('pct')}>%</button>
+                  </span>
+                </span>
+                {discMode === 'pct' ? (
+                  <input
+                    type="number"
+                    min="0"
+                    max="100"
+                    step="0.1"
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={discPct}
+                    onChange={(e) => setDiscountPct(e.target.value)}
+                  />
+                ) : (
+                  <input
+                    type="number"
+                    min="0"
+                    inputMode="decimal"
+                    placeholder="0"
+                    value={form.discount}
+                    onChange={(e) => setDiscountRub(e.target.value)}
+                  />
+                )}
               </label>
             </div>
-            {Number(form.discount) > 0 && (
+            {/* Показываем ОБЕ величины: ввели рубли — видно процент, ввели процент —
+                видно рубли. Хранятся рубли, поэтому в документы уйдёт ровно эта сумма. */}
+            {discRub > 0 && discBase > 0 && (
               <div className="cc-hint">
-                Скидка по этому делу: {fmtMoney(form.discount)}
-                {ownServicesSum + ownPartsSum > 0
-                  ? ` — работы и запчасти ${fmtMoney(ownServicesSum + ownPartsSum)}, к оплате ${fmtMoney(Math.max(0, ownServicesSum + ownPartsSum - Number(form.discount)))}`
-                  : ''}. Подставляется в заказ-наряд, акт и счёт.
+                {discMode === 'pct'
+                  ? <>Скидка <b>{discPct || 0}%</b> {discBaseLabel} ({fmtMoney(discBase)}) — это <b>{fmtMoney(discRub)}</b>.</>
+                  : <>Скидка <b>{fmtMoney(discRub)}</b> — это <b>{discShownPct}%</b> {discBaseLabel} ({fmtMoney(discBase)}).</>}
+                {' '}К оплате {fmtMoney(Math.max(0, ownServicesSum + ownPartsSum - discRub))}. Подставляется в заказ-наряд, акт и счёт.
               </div>
             )}
-            {form.payment_type === 'insurance' && Number(form.franchise) > 0 && (
-              <div className="cc-hint">Эту сумму платит клиент, остальное — страховая. Отражается в заказ-наряде, акте и счёте.</div>
+            {discBase === 0 && (discRub > 0 || discMode === 'pct') && (
+              <div className="cc-hint">
+                {form.payment_type === 'insurance'
+                  ? 'Запчасти по этому делу ещё не заведены — процент считать не от чего. Скидка в рублях работает.'
+                  : 'Работы и запчасти ещё не заведены — процент считать не от чего. Скидка в рублях работает.'}
+              </div>
             )}
             {form.payment_type === 'insurance' && !insurers.length && (
               <div className="cc-hint">Справочник страховых пуст — добавьте их в разделе «Посты и мастера».</div>
