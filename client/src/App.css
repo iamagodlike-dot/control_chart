@@ -1768,6 +1768,105 @@ textarea { width: 100%; min-height: 50px; }
 .settings-add-actions { margin-top: 14px; }
 .settings-add .inline-form input { flex: 1; }
 
+/* ───────────────────────────────────────────────────────────────────────────
+   Телеграм-бот («Настройки → Телеграм-бот»). Все правила под .bot-admin —
+   общие .panel/.list/.list-action-btn шарятся десятком экранов, трогать их
+   глобально нельзя.
+   ─────────────────────────────────────────────────────────────────────────── */
+.bot-admin { display: flex; flex-direction: column; gap: 16px; }
+
+/* Полоса состояния: жив ли бот */
+.bot-head { display: flex; align-items: center; gap: 14px; padding: 14px 18px !important; }
+.bot-status { display: flex; align-items: center; gap: 12px; min-width: 0; }
+.bot-status-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; background: var(--text3); }
+.bot-status--online .bot-status-dot { background: var(--color-success); box-shadow: 0 0 0 4px color-mix(in srgb, var(--color-success) 18%, transparent); }
+.bot-status--offline .bot-status-dot { background: var(--color-danger); box-shadow: 0 0 0 4px var(--color-danger-bg); }
+.bot-status--unknown .bot-status-dot { background: var(--color-warning); box-shadow: 0 0 0 4px var(--color-warning-bg); }
+.bot-status-body { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.bot-status-text { font-size: 14px; font-weight: 700; }
+.bot-status--online .bot-status-text { color: var(--color-success); }
+.bot-status--offline .bot-status-text { color: var(--color-danger-text); }
+.bot-status-detail { font-size: 12.5px; color: var(--color-text-muted); }
+.bot-saved { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-size: 12.5px; font-weight: 600; color: var(--color-success); white-space: nowrap; }
+.bot-notice { display: flex; align-items: flex-start; gap: 10px; padding: 13px 16px !important; font-size: 13px; line-height: 1.5;
+  color: var(--color-warning); border-color: color-mix(in srgb, var(--color-warning) 40%, transparent) !important; background: var(--color-warning-bg) !important; }
+.bot-notice svg { flex-shrink: 0; margin-top: 2px; }
+
+/* Люди */
+.bot-people { display: flex; flex-direction: column; gap: 8px; }
+.bot-person { border: 1px solid var(--color-border); border-radius: 12px; padding: 11px 14px; }
+.bot-person.off { opacity: .55; }
+.bot-person-top { display: flex; align-items: center; gap: 12px; }
+.bot-person-id { flex: 1; min-width: 0; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.bot-name-input { width: 190px; max-width: 100%; height: 32px; padding: 0 9px; font-size: 14px; font-weight: 600;
+  color: var(--color-text); background: transparent; border: 1px solid transparent; border-radius: 8px; outline: none; font-family: inherit; }
+.bot-name-input:hover { border-color: var(--color-border); }
+.bot-name-input:focus { border-color: var(--color-primary); background: var(--color-surface-alt); }
+.bot-tg-id { font-family: var(--font-mono); font-size: 12px; color: var(--text3); white-space: nowrap; }
+.bot-person-roles { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; padding-left: 46px; }
+.bot-add .bot-person-roles { padding-left: 0; margin-top: 0; }
+
+/* Роль-«таблетка»: нажал — включил */
+.bot-role { padding: 5px 12px; border-radius: 999px; border: 1px solid var(--color-border); background: transparent;
+  color: var(--color-text-muted); font-family: inherit; font-size: 12.5px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.bot-role:hover { color: var(--color-text); border-color: var(--line2); }
+.bot-role.on { background: var(--brand-soft); border-color: var(--color-primary); color: var(--color-primary); }
+.bot-warn { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--color-warning); }
+.bot-cmd-result { font-size: 12px; color: var(--color-text-muted); margin-left: auto; }
+.bot-cmd-result.ok { color: var(--color-success); }
+.bot-cmd-result.warn { color: var(--color-warning); }
+.bot-cmd-result.bad { color: var(--color-danger-text); }
+
+.bot-add { margin-top: 14px; border: 1px dashed var(--color-dashed-border); border-radius: 12px; padding: 15px 16px; gap: 12px; }
+.bot-add-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.bot-add-row > * { min-width: 0; }
+.bot-add-id { font-family: var(--font-mono); }
+.bot-howto { margin: 0; font-size: 12.5px; }
+.bot-howto code { font-family: var(--font-mono); background: var(--color-surface-alt); border: 1px solid var(--color-border); border-radius: 5px; padding: 1px 6px; }
+
+/* Строки рассылок и уведомлений */
+.bot-rows { display: flex; flex-direction: column; gap: 8px; }
+.bot-row { display: flex; align-items: flex-start; gap: 14px; border: 1px solid var(--color-border); border-radius: 12px; padding: 13px 15px; }
+.bot-row.off .bot-row-body, .bot-row.off .bot-row-when { opacity: .5; }
+.bot-row-body { flex: 1; min-width: 0; }
+.bot-row-title { display: flex; align-items: center; gap: 9px; flex-wrap: wrap; font-size: 14px; font-weight: 600; }
+.bot-row-to { font-family: var(--font-mono); font-size: 11px; color: var(--text3); border: 1px solid var(--color-border); border-radius: 999px; padding: 1px 8px; }
+.bot-row-hint { font-size: 12.5px; color: var(--color-text-muted); margin-top: 3px; }
+.bot-row-when { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 8px; max-width: 330px; }
+.bot-time { width: 124px; font-family: var(--font-mono); color-scheme: dark; }
+.bot-msk { font-family: var(--font-mono); font-size: 11.5px; color: var(--text3); white-space: nowrap; }
+.bot-send-now { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; padding: 7px 12px; }
+.bot-row-when .bot-cmd-result { margin-left: 0; flex-basis: 100%; text-align: right; }
+.bot-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+.bot-pick-label { font-size: 12.5px; color: var(--text3); }
+.bot-foot { margin: 14px 0 0; }
+
+/* Переключатель «включено / выключено» */
+.bot-switch { position: relative; flex-shrink: 0; width: 42px; height: 24px; margin-top: 2px; padding: 0; border-radius: 999px;
+  border: 1px solid var(--line2); background: var(--color-surface-alt); cursor: pointer; transition: background .15s, border-color .15s; }
+.bot-switch.on { background: var(--color-primary); border-color: var(--color-primary); }
+.bot-switch-knob { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--color-text-muted); transition: transform .15s, background .15s; }
+.bot-switch.on .bot-switch-knob { transform: translateX(18px); background: var(--color-on-primary); }
+.bot-switch:focus-visible { outline: 2px solid var(--color-primary); outline-offset: 2px; }
+
+@media (max-width: 720px) {
+  .bot-row { flex-wrap: wrap; }
+  .bot-row-when { max-width: none; width: 100%; justify-content: flex-start; padding-left: 56px; }
+  .bot-row-when .bot-cmd-result { text-align: left; }
+}
+@media (max-width: 640px) {
+  .bot-add-row { grid-template-columns: 1fr; }
+  .bot-person-roles { padding-left: 0; }
+  .bot-row-when { padding-left: 0; }
+  .bot-head { flex-wrap: wrap; }
+  /* На телефоне общий .list-actions становится «во всю строку» (flex:1 1 100%),
+     поэтому шапку карточки человека тоже переносим — иначе имя с ID схлопнулось
+     бы в ноль и поле ввода стало бы шириной в пару пикселей. */
+  .bot-person-top { flex-wrap: wrap; }
+  .bot-name-input { flex: 1 1 130px; width: auto; min-width: 0; }
+}
+
 /* Parts (Запчасти) — procurement tracker grouped by car */
 .parts-screen { display: flex; flex-direction: column; height: 100%; background: var(--color-bg); color: var(--color-text); }
 .parts-loading { padding: 40px; text-align: center; color: var(--color-text-muted); font-family: var(--font-mono); letter-spacing: .1em; }

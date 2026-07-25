@@ -1,12 +1,16 @@
 'use strict';
 const { Telegraf, Markup } = require('telegraf');
 const cron = require('node-cron');
-const config = require('./config');
+// Настройки бота (кто получает сообщения, во сколько приходят рассылки, какие
+// уведомления включены) живут в базе и правятся на сайте — см. botConfig.js.
+// Значения из .env остаются страховкой на случай, если база недоступна.
+const config = require('./botConfig');
 const { isReady, reason } = require('./firebase');
 const views = require('./views');
 const { startNotifier } = require('./notify');
 const { buildDigestText } = require('./mailDigest');
 const { isConfigured: mailConfigured } = require('./mail');
+const { startControl, explainSendError } = require('./control');
 
 if (!config.botToken) {
   console.error('❌ Не задан BOT_TOKEN в файле .env');
@@ -609,99 +613,109 @@ bot.on('text', guard(async (ctx) => {
   }
 }));
 
-// ─── Утренняя сводка по расписанию — только управляющим ───
-function scheduleSummary() {
-  cron.schedule(config.summary.cron, async () => {
-    if (!isReady()) return;
-    let text;
+// ─── Рассылки ────────────────────────────────────────────────────────────────
+// Каждая рассылка — это функция run*(to), которую вызывает и расписание, и кнопка
+// «Отправить сейчас» на сайте. Возвращает короткий человеческий отчёт («Доставлено:
+// 2»), который сайт показывает рядом с кнопкой. Аргумент `to` — необязательный
+// список получателей вместо обычных (нужен для проверки «пришлите только мне»).
+
+// Разослать один и тот же текст списку людей, не падая на первом же отказе.
+async function deliver(ids, text, extra) {
+  const ok = [];
+  const failed = [];
+  for (const id of ids) {
     try {
-      text = await views.dailySummary();
+      // eslint-disable-next-line no-await-in-loop
+      await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML', ...(extra || {}) });
+      ok.push(id);
     } catch (e) {
-      console.error('Не удалось собрать сводку:', e);
-      return;
+      console.error(`Отправка ${id}:`, e.message);
+      failed.push(`${id} — ${explainSendError(e)}`);
     }
-    for (const id of config.managers) {
-      try {
-        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' });
-      } catch (e) {
-        console.error(`Не удалось отправить сводку ${id}:`, e.message);
-      }
-    }
-  }, { timezone: config.summary.tz });
+  }
+  if (!failed.length) return `Доставлено: ${ok.length}`;
+  if (!ok.length) return `Не доставлено: ${failed.join('; ')}`;
+  return `Доставлено: ${ok.length}. Не дошло: ${failed.join('; ')}`;
+}
+
+// Утренняя сводка — управляющим.
+async function runSummary(to) {
+  if (!isReady()) return 'база не подключена';
+  const ids = to && to.length ? to : config.managers;
+  if (!ids.length) return 'некому отправлять — нет управляющих';
+  return deliver(ids, await views.dailySummary());
 }
 
 // Вечернее напоминание управляющим: что выдать завтра и что «горит» сегодня.
-function scheduleReminder() {
-  cron.schedule(config.reminder.cron, async () => {
-    if (!isReady()) return;
-    let text;
-    try {
-      text = await views.eveningReminder();
-    } catch (e) {
-      console.error('Не удалось собрать напоминание:', e);
-      return;
-    }
-    if (!text) return; // напоминать не о чем
-    for (const id of config.managers) {
-      try {
-        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' });
-      } catch (e) {
-        console.error(`Не удалось отправить напоминание ${id}:`, e.message);
-      }
-    }
-  }, { timezone: config.reminder.tz });
+async function runReminder(to) {
+  if (!isReady()) return 'база не подключена';
+  const ids = to && to.length ? to : config.managers;
+  if (!ids.length) return 'некому отправлять — нет управляющих';
+  const text = await views.eveningReminder();
+  if (!text) return 'напоминать сегодня не о чем — сообщение не отправлено';
+  return deliver(ids, text);
 }
 
 // Ежедневная сводка учредителям «Состояние ремонтов»: новые авто, согласования,
 // укомплектованность по запчастям, счета к оплате — одним сообщением с кнопками.
-// Пришла на смену прежнему дайджесту «каждый счёт файлом»: счета теперь считаются
-// в сводке, а сами файлы приходят по кнопке «Счета к оплате».
 // Шлём всегда (даже в спокойный день) — это сводка состояния, а не оповещение.
-// Своё время и СВОЙ часовой пояс — см. config.founderDigest.
-function scheduleFounderDigest() {
-  cron.schedule(config.founderDigest.cron, async () => {
-    if (!isReady() || !config.founders.length) return;
-    let data;
-    try {
-      data = await views.founderDigest();
-    } catch (e) {
-      console.error('Сводка учредителя:', e);
-      return;
-    }
-    for (const id of config.founders) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await bot.telegram.sendMessage(id, data.text, { parse_mode: 'HTML', ...digestKeyboard(data) });
-      } catch (e) {
-        console.error(`Сводка учредителя ${id}:`, e.message);
-      }
-    }
-  }, { timezone: config.founderDigest.tz });
+async function runFounderDigest(to) {
+  if (!isReady()) return 'база не подключена';
+  const ids = to && to.length ? to : config.founders;
+  if (!ids.length) return 'некому отправлять — нет учредителей';
+  const data = await views.founderDigest();
+  return deliver(ids, data.text, digestKeyboard(data));
 }
 
-// Ежедневный разбор почты «итог дня» управляющим: письма, сверенные с базой машин,
-// и состояние переписки (кто кому должен ответить). Своё время и СВОЙ пояс — см.
-// config.mailDigest. Если почта не настроена (нет MAIL_*), молча ничего не шлём.
-function scheduleMailDigest() {
-  cron.schedule(config.mailDigest.cron, async () => {
-    const recipients = config.mailDigestTo.length ? config.mailDigestTo : config.managers;
-    if (!isReady() || !recipients.length || !mailConfigured()) return;
-    let text;
+// Ежедневный разбор почты «итог дня»: письма, сверенные с базой машин, и состояние
+// переписки. По умолчанию — тем, кто выбран в настройках рассылки; если там пусто —
+// всем управляющим. Если почта не настроена (нет MAIL_*), ничего не шлём.
+async function runMailDigest(to) {
+  if (!isReady()) return 'база не подключена';
+  if (!mailConfigured()) return 'почта не настроена (нет MAIL_USER/MAIL_PASSWORD в .env бота)';
+  const ids = to && to.length ? to : (config.mailDigestTo.length ? config.mailDigestTo : config.managers);
+  if (!ids.length) return 'некому отправлять';
+  return deliver(ids, await buildDigestText(), { disable_web_page_preview: true });
+}
+
+const RUNNERS = {
+  summary: runSummary,
+  reminder: runReminder,
+  founderDigest: runFounderDigest,
+  mailDigest: runMailDigest,
+};
+
+// ─── Расписание, которое можно менять на лету ────────────────────────────────
+// Время и часовой пояс приходят из настроек на сайте. Когда владелец их меняет,
+// старую задачу останавливаем и ставим новую — перезапускать бота не нужно.
+// Выключенная рассылка задачу не теряет: проверка стоит внутри, поэтому обратное
+// включение срабатывает сразу.
+const tasks = new Map();
+
+function applySchedule(key) {
+  const s = config[key];
+  const prev = tasks.get(key);
+  if (prev && prev.cron === s.cron && prev.tz === s.tz) return false;
+  if (prev) {
+    try { prev.task.stop(); } catch { /* уже остановлена */ }
+    try { prev.task.destroy?.(); } catch { /* нечего убирать */ }
+  }
+  const task = cron.schedule(s.cron, async () => {
+    if (!config[key].enabled) return; // рассылка выключена на сайте
     try {
-      text = await buildDigestText();
+      const res = await RUNNERS[key]();
+      console.log(`⏰ Рассылка «${key}»: ${res}`);
     } catch (e) {
-      console.error('Почта (расписание):', e);
-      return;
+      console.error(`Рассылка «${key}»:`, e.message);
     }
-    for (const id of recipients) {
-      try {
-        // eslint-disable-next-line no-await-in-loop
-        await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML', disable_web_page_preview: true });
-      } catch (e) {
-        console.error(`Почта — отправка ${id}:`, e.message);
-      }
-    }
-  }, { timezone: config.mailDigest.tz });
+  }, { timezone: s.tz });
+  tasks.set(key, { task, cron: s.cron, tz: s.tz });
+  return !!prev; // true = расписание переставили (а не поставили впервые)
+}
+
+function applyAllSchedules() {
+  const changed = config.SCHEDULE_IDS.filter((k) => applySchedule(k));
+  if (changed.length) console.log(`⏰ Расписание обновлено с сайта: ${changed.join(', ')}`);
 }
 
 // ─── Запуск ───
@@ -715,6 +729,9 @@ bot.catch((err, ctx) => {
 // Меню команд (кнопка ☰ у поля ввода). Всем — базовый набор; управляющим в их
 // личных чатах — расширенный (с финансами). Ошибки не критичны — просто у кого-то
 // не появится меню (например, если управляющий ещё не открывал бот).
+// Кому персональное меню уже ставили — помним, чтобы снять его при смене роли.
+let personalScopes = new Set();
+
 async function setupCommands() {
   const base = [
     { command: 'find', description: 'Найти авто — список и поиск' },
@@ -741,7 +758,9 @@ async function setupCommands() {
   try {
     await bot.telegram.setMyCommands(base);
   } catch (e) { console.error('Меню команд (общее):', e.message); }
+  const personal = new Set();
   for (const id of config.managers) {
+    personal.add(String(id));
     try {
       await bot.telegram.setMyCommands(managerCmds, { scope: { type: 'chat', chat_id: Number(id) } });
     } catch (e) { console.error(`Меню команд (управляющий ${id}):`, e.message); }
@@ -756,10 +775,20 @@ async function setupCommands() {
   ];
   for (const id of config.founders) {
     if (config.isManager(id)) continue;
+    personal.add(String(id));
     try {
       await bot.telegram.setMyCommands(founderCmds, { scope: { type: 'chat', chat_id: Number(id) } });
     } catch (e) { console.error(`Меню команд (учредитель ${id}):`, e.message); }
   }
+  // Кого-то понизили в правах на сайте — убираем его персональное меню, иначе в
+  // Telegram у него так и остались бы команды с финансами.
+  for (const id of personalScopes) {
+    if (personal.has(id)) continue;
+    try {
+      await bot.telegram.deleteMyCommands({ scope: { type: 'chat', chat_id: Number(id) } });
+    } catch (e) { console.error(`Снятие меню команд (${id}):`, e.message); }
+  }
+  personalScopes = personal;
 }
 
 // Подключение к Telegram с повторами: сразу после загрузки сервера сеть может
@@ -769,6 +798,7 @@ async function connectAndLaunch() {
     try {
       const me = await bot.telegram.getMe();
       console.log(`✅ Telegram на связи: @${me.username}`);
+      if (control) control.setUsername(me.username);
       await setupCommands();
       break;
     } catch (e) {
@@ -784,18 +814,43 @@ async function connectAndLaunch() {
   });
 }
 
-scheduleSummary();
-scheduleReminder();
-scheduleFounderDigest();
-scheduleMailDigest();
-startNotifier(bot);
-console.log('🤖 Бот запускается…');
-console.log(isReady() ? '✅ База подключена.' : `⚠️  База не подключена: ${reason()}`);
-console.log(`⏰ Утренняя сводка: ${config.summary.hour}:${String(config.summary.minute).padStart(2, '0')} · напоминание: ${config.reminder.hour}:${String(config.reminder.minute).padStart(2, '0')} (${config.summary.tz}), получатели: ${config.managers.length || 'пока никого'}`);
-console.log(`💳 Счета поставщиков: учредителей ${config.founders.length || 'пока нет'} (мгновенный пуш + кнопка «Счета к оплате»)`);
-console.log(`📋 Сводка учредителя «Состояние ремонтов»: ${config.founderDigest.hour}:${String(config.founderDigest.minute).padStart(2, '0')} (${config.founderDigest.tz}), получателей: ${config.founders.length || 'пока нет'}`);
-console.log(`📬 Разбор почты: ${config.mailDigest.hour}:${String(config.mailDigest.minute).padStart(2, '0')} (${config.mailDigest.tz}), получателей ${(config.mailDigestTo.length ? config.mailDigestTo : config.managers).length || 'пока никого'}${mailConfigured() ? '' : ' — ПОЧТА НЕ НАСТРОЕНА (MAIL_USER/MAIL_PASSWORD)'}`);
-connectAndLaunch();
+const hm = (s) => `${s.hour}:${String(s.minute).padStart(2, '0')}`;
+const off = (s) => (s.enabled ? '' : ' — ВЫКЛЮЧЕНА на сайте');
+
+function logSetup() {
+  console.log(isReady() ? '✅ База подключена.' : `⚠️  База не подключена: ${reason()}`);
+  console.log(`⏰ Утренняя сводка: ${hm(config.summary)}${off(config.summary)} · напоминание: ${hm(config.reminder)}${off(config.reminder)} (${config.summary.tz}), получатели: ${config.managers.length || 'пока никого'}`);
+  console.log(`💳 Счета поставщиков: учредителей ${config.founders.length || 'пока нет'} (мгновенный пуш + кнопка «Счета к оплате»)`);
+  console.log(`📋 Сводка учредителя «Состояние ремонтов»: ${hm(config.founderDigest)}${off(config.founderDigest)} (${config.founderDigest.tz}), получателей: ${config.founders.length || 'пока нет'}`);
+  console.log(`📬 Разбор почты: ${hm(config.mailDigest)}${off(config.mailDigest)} (${config.mailDigest.tz}), получателей ${(config.mailDigestTo.length ? config.mailDigestTo : config.managers).length || 'пока никого'}${mailConfigured() ? '' : ' — ПОЧТА НЕ НАСТРОЕНА (MAIL_USER/MAIL_PASSWORD)'}`);
+}
+
+let control = null;
+
+// Сначала поднимаем настройки из базы (кто, во сколько, какие уведомления), потом
+// уже ставим расписание — иначе первые задачи встали бы по старым значениям .env.
+// Если база недоступна, botConfig просто остаётся на значениях .env и бот работает
+// как раньше.
+async function main() {
+  console.log('🤖 Бот запускается…');
+  await config.start();
+  applyAllSchedules();
+  startNotifier(bot);
+  control = startControl(bot, RUNNERS) || null;
+  logSetup();
+
+  // Настройки поменяли на сайте — переставляем расписание и обновляем меню команд
+  // (у кого-то могла смениться роль).
+  config.onChange(() => {
+    applyAllSchedules();
+    setupCommands().catch((e) => console.error('Меню команд после правки настроек:', e.message));
+    logSetup();
+  });
+
+  connectAndLaunch();
+}
+
+main();
 
 function stop(sig) {
   try { bot.stop(sig); } catch { /* ещё не запущен — не страшно */ }

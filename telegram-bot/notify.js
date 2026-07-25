@@ -1,6 +1,9 @@
 'use strict';
 const { db, isReady } = require('./firebase');
-const config = require('./config');
+// Списки получателей и тумблеры уведомлений живут в базе и правятся на сайте
+// («Настройки → Телеграм-бот») — поэтому спрашиваем их в момент отправки, а не
+// запоминаем при запуске.
+const config = require('./botConfig');
 const { money, carLabel, esc, isRepair, partKindLabel } = require('./format');
 const { invoiceAmount } = require('./money');
 const { sendInvoice } = require('./invoices');
@@ -76,11 +79,15 @@ function startNotifier(bot) {
     return;
   }
 
-  const managers = config.managers;
-  const everyone = [...new Set([...config.managers, ...config.staff])];
-  const partsmen = config.partsmen;
+  // Кто и что получает — считаем каждый раз заново: владелец мог только что
+  // добавить человека или сменить ему роль на сайте.
+  const managers = () => config.managers;
+  const everyone = () => [...new Set([...config.managers, ...config.staff])];
+  const partsmen = () => config.partsmen;
 
-  const notify = async (ids, text) => {
+  // Отправка с оглядкой на тумблер: выключенное на сайте уведомление не уходит.
+  const notify = async (kind, ids, text) => {
+    if (!config.push(kind)) return;
     for (const id of ids) {
       try {
         await bot.telegram.sendMessage(id, text, { parse_mode: 'HTML' });
@@ -115,7 +122,7 @@ function startNotifier(bot) {
       const id = ch.doc.id;
       jobsData.set(id, { car_model: d.car_model, plate_number: d.plate_number, archived: !!d.archived });
       if (ch.type === 'added' && jobsPrimed && !d.archived) {
-        notify(everyone, `<b>Новая машина в работе</b>\n${label(id)}`);
+        notify('newCar', everyone(), `<b>Новая машина в работе</b>\n${label(id)}`);
       }
 
       if (ch.type === 'removed') {
@@ -132,7 +139,7 @@ function startNotifier(bot) {
       const parts = partsById(d);
       const toOrder = !d.archived && isRepair(d);
       partsState.set(id, { toOrder, parts });
-      if (!jobsPrimed || !partsmen.length || !toOrder) continue;
+      if (!jobsPrimed || !partsmen().length || !toOrder) continue;
 
       const justStartedRepair = !!prev && !prev.toOrder;
       const fresh = [];
@@ -141,7 +148,7 @@ function startNotifier(bot) {
         // Новая позиция — либо старая, впервые ставшая поводом заказывать.
         if (!prev || !prev.parts.has(pid) || justStartedRepair) fresh.push(p);
       }
-      if (fresh.length) notify(partsmen, partsMessage('Нужно заказать', label(id), fresh));
+      if (fresh.length) notify('partsNeeded', partsmen(), partsMessage('Нужно заказать', label(id), fresh));
     }
     jobsPrimed = true;
   }, (e) => console.error('Слежение за машинами:', e.message));
@@ -166,7 +173,7 @@ function startNotifier(bot) {
       jobDone.set(jid, nowDone);
       if (stagesPrimed && nowDone && !was) {
         const j = jobsData.get(jid);
-        if (!j || !j.archived) notify(everyone, `<b>Готова к выдаче</b>\n${label(jid)}`);
+        if (!j || !j.archived) notify('ready', everyone(), `<b>Готова к выдаче</b>\n${label(jid)}`);
       }
     }
     stagesPrimed = true;
@@ -183,7 +190,7 @@ function startNotifier(bot) {
       const isPaid = !!d.paid;
       invoicePaid.set(id, isPaid);
       if (docsPrimed && isPaid && !wasPaid) {
-        notify(managers, `<b>Поступила оплата</b>\n${label(d.job_id)} — ${money(invoiceAmount(d))}`);
+        notify('payment', managers(), `<b>Поступила оплата</b>\n${label(d.job_id)} — ${money(invoiceAmount(d))}`);
       }
     }
     docsPrimed = true;
@@ -208,14 +215,14 @@ function startNotifier(bot) {
       supInvPaid.set(inv.id, paid);
       // Помним, что счёт уже был оплачен: если слушатель переподключится и пришлёт
       // документы заново, повторного «оплачено» не будет.
-      if (supInvPrimed && paid && !wasPaid && partsmen.length) {
-        notify(partsmen, invoicePaidMessage(inv));
+      if (supInvPrimed && paid && !wasPaid && partsmen().length) {
+        notify('invoicePaid', partsmen(), invoicePaidMessage(inv));
       }
 
       if (ch.type !== 'added') continue;
       const fresh = !supInvSeen.has(inv.id);
       supInvSeen.add(inv.id);
-      if (supInvPrimed && fresh && !paid) {
+      if (supInvPrimed && fresh && !paid && config.push('supplierInvoice')) {
         for (const id of config.founders) {
           try {
             // eslint-disable-next-line no-await-in-loop
@@ -230,7 +237,7 @@ function startNotifier(bot) {
   }, (e) => console.error('Слежение за счетами поставщиков:', e.message));
 
   console.log('🔔 Уведомления включены (готово к выдаче / новая машина — всем, оплата — управляющим, счета поставщиков — учредителям).');
-  console.log(`🔩 Запчасти (нужно заказать / счёт оплачен): запчастистов ${partsmen.length || 'пока нет'}`);
+  console.log(`🔩 Запчасти (нужно заказать / счёт оплачен): запчастистов ${partsmen().length || 'пока нет'}`);
 }
 
 module.exports = { startNotifier };

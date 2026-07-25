@@ -6,20 +6,22 @@
 require('dotenv').config();
 const fs = require('fs');
 const { Telegraf } = require('telegraf');
-const config = require('./config');
+// Список получателей берём из тех же настроек, что и сам бот (база + .env как
+// страховка), иначе после правки списка на сайте скрипт слал бы по-старому.
+const config = require('./botConfig');
 
 const text = fs.readFileSync(0, 'utf8').trim(); // весь stdin
 if (!text) { console.error('Пустой текст — нечего отправлять.'); process.exit(1); }
 if (!config.botToken) { console.error('Нет BOT_TOKEN.'); process.exit(1); }
 
 const arg = process.argv[2];
-const configured = config.mailDigestTo && config.mailDigestTo.length ? config.mailDigestTo : config.managers;
-const targets = arg ? [arg] : configured;
-if (!targets.length) { console.error('Некому отправлять (пустой список управляющих).'); process.exit(1); }
-
 const bot = new Telegraf(config.botToken);
 
 (async () => {
+  await config.start();
+  const configured = config.mailDigestTo.length ? config.mailDigestTo : config.managers;
+  const targets = arg ? [arg] : configured;
+  if (!targets.length) { console.error('Некому отправлять (пустой список управляющих).'); process.exit(1); }
   let ok = 0;
   for (const id of targets) {
     try {

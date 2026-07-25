@@ -38,6 +38,8 @@ const expensesCol = collection(db, 'expenses');
 const purchaseRequestsCol = collection(db, 'purchaseRequests');
 const salaryPaymentsCol = collection(db, 'salaryPayments');
 const supplierInvoicesCol = collection(db, 'supplierInvoices');
+// Задания телеграм-боту с сайта («проверить связь», «отправить сейчас»).
+const botCommandsCol = collection(db, 'botCommands');
 
 function withId(snap) {
   return { id: snap.id, ...snap.data() };
@@ -984,6 +986,45 @@ export const api = {
     async updateCompany(data) {
       await setDoc(doc(settingsCol, 'company'), stripUndefined(data), { merge: true });
       return api.settings.getCompany();
+    },
+  },
+
+  // ─── Телеграм-бот ──────────────────────────────────────────────────────────
+  // Настройки бота (кто получает сообщения, во сколько рассылки, какие
+  // уведомления включены) лежат в settings/bot. Бот слушает этот документ и
+  // подхватывает правки на лету — перезапускать его не нужно.
+  // Сам токен Telegram остаётся только на сервере: сайт в Telegram не ходит, а
+  // просит бота через коллекцию заданий botCommands.
+  bot: {
+    subscribe(onData, onError) {
+      return onSnapshot(doc(settingsCol, 'bot'), (s) => onData(s.exists() ? s.data() : null), onError);
+    },
+    async save(data) {
+      await setDoc(doc(settingsCol, 'bot'), stripUndefined({
+        ...data,
+        updated_at: Date.now(),
+        updated_by: normEmail(auth.currentUser?.email || '') || null,
+      }), { merge: true });
+    },
+    // Отметка «бот жив»: он пишет её раз в несколько минут.
+    subscribeStatus(onData, onError) {
+      return onSnapshot(doc(settingsCol, 'botStatus'), (s) => onData(s.exists() ? s.data() : null), onError);
+    },
+    // Задание боту: 'ping' (проверить связь), 'summary' / 'reminder' /
+    // 'founderDigest' / 'mailDigest' (отправить рассылку сейчас). Возвращает id
+    // документа — по нему следим за ответом через watchCommand.
+    async command(type, to) {
+      const ref = await addDoc(botCommandsCol, stripUndefined({
+        type,
+        to: to && to.length ? to.map(String) : null,
+        status: 'pending',
+        created_at: Date.now(),
+        created_by: normEmail(auth.currentUser?.email || '') || null,
+      }));
+      return ref.id;
+    },
+    watchCommand(id, onData, onError) {
+      return onSnapshot(doc(botCommandsCol, id), (s) => onData(s.exists() ? { id: s.id, ...s.data() } : null), onError);
     },
   },
 

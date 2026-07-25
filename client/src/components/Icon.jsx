@@ -44,6 +44,9 @@ const PATHS = {
   building: <><path d="M4 21V6a2 2 0 0 1 2-2h7a2 2 0 0 1 2 2v15" /><path d="M15 9h3a2 2 0 0 1 2 2v10" /><path d="M3 21h18M8 8h3M8 12h3M8 16h3" /></>,
   columns: <><rect x="3" y="4" width="18" height="16" rx="1.5" /><path d="M9 4v16M15 4v16" /></>,
   edit: <path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5Z" />,
+  // Бумажный самолётик — раздел «Телеграм-бот» и кнопки отправки.
+  send: <path d="M21.5 2.5 2 10.2l7.6 2.9 3 7.7 8.9-18.3ZM9.6 13.1l4.6-4.6" />,
+  bell: <path d="M18 8a6 6 0 1 0-12 0c0 6-2 7-2 7h16s-2-1-2-7M13.7 21a2 2 0 0 1-3.4 0" />,
 };
 
 export default function Icon({ name, size = 16, strokeWidth = 1.7, className, style }) {

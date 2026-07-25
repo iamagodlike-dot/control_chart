@@ -35,7 +35,14 @@ service cloud.firestore {
     match /suppliers/{id}        { allow read: if isActive(); allow write: if isOwner(); }
     match /jobs/{id}             { allow read, write: if isActive(); }
     match /stages/{id}           { allow read, write: if isActive(); }
-    match /settings/{id}         { allow read, write: if isActive(); }
+    // Настройки читают все активные (реквизиты компании нужны для документов и
+    // расчётов), а вот настройки телеграм-бота меняет только управленец: там
+    // список получателей и расписание рассылок. Отдельного match для settings/bot
+    // мало — в Firestore правила складываются, поэтому исключаем его прямо здесь.
+    // botStatus пишет сам бот служебным ключом (правила его не касаются).
+    match /settings/{id}         { allow read: if isActive();
+                                   allow write: if isActive() && id != 'bot' && id != 'botStatus'; }
+    match /settings/bot          { allow write: if isOwner(); }
     match /queue/{id}            { allow read, write: if isActive(); }
     match /cells/{id}            { allow read, write: if isActive(); }
     match /warehouseConfig/{id}  { allow read, write: if isActive(); }
@@ -102,6 +109,13 @@ service cloud.firestore {
       allow create:         if isActive() && request.resource.data.created_by == request.auth.token.email.lower();
       allow update, delete: if isActive();
     }
+
+    // ─── Задания телеграм-боту ───────────────────────────────────────────────
+    // Экран «Настройки → Телеграм-бот» кладёт сюда поручение («проверить связь»,
+    // «отправить рассылку сейчас»), бот его выполняет служебным ключом и
+    // дописывает результат. Токен Telegram остаётся только на сервере — сайт
+    // никому напрямую не пишет. Раз это рассылка людям, доступ только управленцу.
+    match /botCommands/{id}      { allow read, write: if isOwner(); }
 
     match /{document=**} { allow read, write: if false; }
   }

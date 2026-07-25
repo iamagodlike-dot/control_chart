@@ -3,6 +3,7 @@ import { api } from '../api';
 import CompanySettings from './CompanySettings';
 import SplusImport from './SplusImport';
 import UsersAdmin from './UsersAdmin';
+import BotAdmin from './BotAdmin';
 import DuplicateCars from './DuplicateCars';
 import Icon from './Icon';
 import {
@@ -19,6 +20,7 @@ const SECTIONS = [
   { id: 'masters', label: 'Мастера', icon: 'wrench' },
   { id: 'posts', label: 'Посты', icon: 'columns' },
   { id: 'dict', label: 'Справочники', icon: 'clipboard' },
+  { id: 'bot', label: 'Телеграм-бот', icon: 'send' },
   { id: 'import', label: 'Импорт данных', icon: 'download' },
   { id: 'duplicates', label: 'Дубликаты машин', icon: 'car' },
 ];
@@ -290,6 +292,8 @@ export default function PostsMasters() {
         {section === 'company' && <CompanySettings />}
 
         {section === 'staff' && <UsersAdmin />}
+
+        {section === 'bot' && <BotAdmin />}
 
         {section === 'masters' && (
           <div className="panel">
