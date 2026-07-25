@@ -1191,15 +1191,16 @@ textarea { width: 100%; min-height: 50px; }
   box-shadow: 0 30px 80px -30px #000;
   animation: fpop .2s cubic-bezier(.2, .8, .2, 1);
 }
-.cc-header, .cc-footer, .cc-claims, .cc-tabs { flex-shrink: 0; }
+.cc-header, .cc-footer, .cc-tabs { flex-shrink: 0; }
 .cc-body { flex: 1 1 auto; min-height: 0; }
 
 /* Полоса убытков (страховых дел) — между шапкой и телом карточки. Закреплена
-   (flex-shrink:0 выше), тело скроллится под ней. Вкладка = поток биллинга:
-   «Убыток 1» | «Убыток 2» | «Допродажи клиента». */
+   Живёт ВНУТРИ разделов «Работы и запчасти» и «Деньги» — там, где выбор дела на
+   что-то влияет, — поэтому это обычный блок сетки, а не закреплённая полоса.
+   Вкладка = поток биллинга: «Убыток 1» | «Убыток 2» | «Допродажи клиента». */
 .cc-claims {
   display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
-  padding: 10px 26px; border-bottom: 1px solid var(--color-border);
+  padding: 8px 10px; border: 1px solid var(--color-border); border-radius: var(--radius-md);
   background: var(--color-surface-alt);
 }
 .cc-claim-tab {
@@ -1249,7 +1250,7 @@ textarea { width: 100%; min-height: 50px; }
 .cc-claim-del:disabled { opacity: .5; cursor: default; }
 
 @media (max-width: 640px) {
-  .cc-claims { padding: 8px 14px; gap: 5px; }
+  .cc-claims { padding: 8px; gap: 5px; }
   .cc-claim-tab, .cc-claim-add { height: 28px; padding: 0 9px; font-size: 11px; }
 }
 
@@ -1335,7 +1336,7 @@ textarea { width: 100%; min-height: 50px; }
 .cc-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
 /* Разделы с одной секцией (Деньги, Журнал) — в одну колонку на всю ширину, иначе
    секция висит в левой половине, а правая пустует. */
-.cc-cols[data-tab="money"], .cc-cols[data-tab="journal"] { grid-template-columns: 1fr; }
+.cc-cols[data-tab="money"] { grid-template-columns: 1fr; }
 .cc-full { grid-column: 1 / -1; }
 .cc-cols .cc-2col { grid-template-columns: 1fr; }
 @media (max-width: 900px) { .cc-cols { grid-template-columns: 1fr; } }
@@ -1443,6 +1444,25 @@ textarea { width: 100%; min-height: 50px; }
 
 /* Journal — derived event timeline */
 .cc-journal { display: flex; flex-direction: column; }
+/* Журнал — выдвижка поверх тела карточки. Держится на position: relative у
+   .modal.cc-modal; z-index выше тела, но ниже вложенных модалок (они на
+   .modal-backdrop, отдельный слой). */
+.cc-journal-drawer {
+  position: absolute; top: 0; right: 0; bottom: 0; z-index: 3;
+  width: min(420px, 100%); overflow-y: auto; padding: 14px 16px;
+  display: flex; flex-direction: column; gap: 10px;
+  background: var(--color-surface); border-left: 1px solid var(--color-border);
+  box-shadow: -20px 0 50px -30px #000;
+  animation: fslide-in .18s ease;
+}
+@keyframes fslide-in { from { opacity: 0; transform: translateX(16px); } to { opacity: 1; transform: none; } }
+.cc-journal-drawer .cc-section-head { margin: 0; }
+.cc-journal-close {
+  margin-left: auto; width: 28px; height: 28px; padding: 0; border-radius: var(--radius-md);
+  display: flex; align-items: center; justify-content: center;
+  background: transparent; border: 1px solid var(--color-border); color: var(--color-text-muted);
+}
+.cc-journal-close:hover { background: var(--color-surface-alt); color: var(--color-text); }
 .cc-journal-item { display: flex; gap: 10px; position: relative; padding: 0 0 12px; }
 .cc-journal-item:last-child { padding-bottom: 0; }
 .cc-journal-dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; margin-top: 4px; position: relative; }

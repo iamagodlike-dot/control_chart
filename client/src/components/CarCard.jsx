@@ -38,14 +38,14 @@ const KIND_BADGES = { used: 'Б/У', used_orig: 'Б/У под ориг.', analog
 // журнал требуют сохранённой машины, поэтому их там нет.
 const TABS_EDIT = [
   { id: 'overview', label: 'Обзор' },
+  { id: 'machine', label: 'Машина' },
   { id: 'works', label: 'Работы и запчасти' },
   { id: 'route', label: 'Маршрут' },
   { id: 'money', label: 'Деньги и страховая' },
   { id: 'photos', label: 'Фото' },
-  { id: 'journal', label: 'Журнал' },
 ];
 const TABS_CREATE = [
-  { id: 'overview', label: 'Обзор' },
+  { id: 'machine', label: 'Машина' },
   { id: 'works', label: 'Работы и запчасти' },
   { id: 'route', label: 'Маршрут' },
   { id: 'money', label: 'Оплата' },
@@ -161,9 +161,7 @@ export default function CarCard({
 }) {
   const isEdit = mode === 'edit';
   const tabs = isEdit ? TABS_EDIT : TABS_CREATE;
-  const [activeTab, setActiveTab] = useState('overview');
-  // «Обзор» — это сводка (чтение). Формы карточки открываются кнопкой «Редактировать».
-  const [ovEdit, setOvEdit] = useState(false);
+  const [activeTab, setActiveTab] = useState(isEdit ? 'overview' : 'machine');
 
   const [form, setForm] = useState(() => formFromJob(job));
   const [stages, setStages] = useState(() => seedStages(job));
@@ -175,6 +173,7 @@ export default function CarCard({
   const [costingOpen, setCostingOpen] = useState(false);
   const [company, setCompany] = useState({});
   const [payOpen, setPayOpen] = useState(false);
+  const [journalOpen, setJournalOpen] = useState(false);
   const [localCosting, setLocalCosting] = useState(job?.costing || null);
   const [existingStages, setExistingStages] = useState([]);
   const [insurers, setInsurers] = useState([]);
@@ -430,7 +429,8 @@ export default function CarCard({
   async function switchStream(id) {
     if (id === activeStream || claimBusy) return;
     if (isEdit && dirtyInfo) {
-      if (!window.confirm('Есть несохранённые правки по этому убытку. Сохранить и переключиться?')) return;
+      // saveInfo пишет всю карточку целиком, а не только активное дело — говорим об этом прямо.
+      if (!window.confirm('Сохранить все несохранённые правки карточки и переключить дело?')) return;
       await saveInfo();
     }
     setActiveStream(id);
@@ -934,7 +934,8 @@ export default function CarCard({
   }
 
   async function submitCreate() {
-    if (!form.car_model.trim()) { alert('Укажите марку и модель автомобиля'); return; }
+    // Марка живёт в разделе «Машина» — покажем его, иначе непонятно, чего не хватает.
+    if (!form.car_model.trim()) { setActiveTab('machine'); alert('Укажите марку и модель автомобиля'); return; }
     // Страховая машина заводится сразу на «Согласование»; наличные/юрлицо — в ремонт.
     const toApproval = isInsurance(form);
     // Запчасти (импорт Audatex и/или добавленные вручную): убираем пустые строки,
@@ -1187,6 +1188,41 @@ export default function CarCard({
     return ev.sort((a, b) => dayjs(a.t).valueOf() - dayjs(b.t).valueOf());
   }, [isEdit, job, posts]);
 
+  // Переключатель страхового дела. Смонтирован ОДИН раз (см. ниже, внутри .cc-cols)
+  // и показывается только там, где дело на что-то влияет — в «Работах и запчастях»
+  // и в «Деньгах». Раньше стоял отдельным рядом под шапкой и выглядел как главный
+  // переключатель карточки, хотя маршрут, склад, фото и прибыль от него не зависят.
+  // ВАЖНО: activeStream — состояние всей карточки, а не раздела: переключив дело
+  // в «Деньгах», пользователь меняет и таблицы «Работ». Об этом говорит подпись.
+  const claimSwitch = isEdit && isInsCarForm && streams.length > 0 ? (
+    <div className="cc-claims cc-full">
+      {streams.map((s, i) => (
+        <button
+          key={s.id}
+          className={`cc-claim-tab${activeStream === s.id ? ' active' : ''}${s.kind === 'client' ? ' is-extras' : ''}`}
+          onClick={() => switchStream(s.id)}
+          disabled={claimBusy}
+          title={s.kind === 'client'
+            ? 'Работы и запчасти, которые клиент оплачивает сам — общие на машину'
+            : `Страховое дело${s.claim?.order_number ? ' · заказ-наряд ' + s.claim.order_number : ''}`}
+        >
+          {s.kind === 'client' ? <Icon name="wallet" size={12} /> : <Icon name="shield" size={12} />}
+          <span>{s.kind === 'client' ? 'Допродажи клиента' : claimLabel(s.claim, i)}</span>
+        </button>
+      ))}
+      {activeTab === 'money' && (
+        <button className="cc-claim-add" onClick={addClaim} disabled={claimBusy} title="Страховая завела по этой машине ещё одно дело — у него будет свой номер заказ-наряда">
+          <Icon name="plus" size={12} />Ещё убыток
+        </button>
+      )}
+      {claims.length > 1 && (
+        <span className="cc-claims-hint">
+          Выбранное дело общее для «Работ и запчастей» и «Денег». Раздельные по делам: документы, номера ЗН, франшиза. Общие на машину: маршрут, склад, фото, прибыль.
+        </span>
+      )}
+    </div>
+  ) : null;
+
   return (
     <div className="modal-backdrop cc-backdrop" onClick={closeCard}>
       <div
@@ -1233,41 +1269,19 @@ export default function CarCard({
               </button>
             )}
             {isEdit && <span className="cc-status-pill" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>}
+            {isEdit && (
+              <button
+                className="cc-close"
+                onClick={() => setJournalOpen(true)}
+                title={journal.length ? 'Журнал событий по машине' : 'Журнал пуст'}
+                aria-label="Журнал"
+              >
+                <Icon name="history" size={17} />
+              </button>
+            )}
             <button className="cc-close" onClick={closeCard} aria-label="Закрыть"><Icon name="x" size={18} strokeWidth={2} /></button>
           </div>
         </div>
-
-        {/* Полоса убытков. Страховая может завести по одной машине несколько дел —
-            у каждого свои реквизиты, свой номер ЗН и свой комплект документов.
-            Живёт МЕЖДУ шапкой и телом: тут работает flex-shrink:0, полоса закреплена,
-            тело скроллится под ней. Внутрь .cc-cols нельзя — columns:2 разорвёт.
-            Только в режиме правки: у новой машины дело всегда одно. */}
-        {isEdit && isInsCarForm && (
-          <div className="cc-claims">
-            {streams.map((s, i) => (
-              <button
-                key={s.id}
-                className={`cc-claim-tab${activeStream === s.id ? ' active' : ''}${s.kind === 'client' ? ' is-extras' : ''}`}
-                onClick={() => switchStream(s.id)}
-                disabled={claimBusy}
-                title={s.kind === 'client'
-                  ? 'Работы и запчасти, которые клиент оплачивает сам — общие на машину'
-                  : `Страховое дело${s.claim?.order_number ? ' · заказ-наряд ' + s.claim.order_number : ''}`}
-              >
-                {s.kind === 'client' ? <Icon name="wallet" size={12} /> : <Icon name="shield" size={12} />}
-                <span>{s.kind === 'client' ? 'Допродажи клиента' : claimLabel(s.claim, i)}</span>
-              </button>
-            ))}
-            <button className="cc-claim-add" onClick={addClaim} disabled={claimBusy} title="Страховая завела по этой машине ещё одно дело — у него будет свой номер заказ-наряда">
-              <Icon name="plus" size={12} />Ещё убыток
-            </button>
-            {claims.length > 1 && (
-              <span className="cc-claims-hint">
-                Раздельные по делам: документы, номера ЗН, франшиза. Общие на машину: маршрут, склад, фото, прибыль.
-              </span>
-            )}
-          </div>
-        )}
 
         {/* Разделы карточки — второй ряд вкладок. Закреплён (flex-shrink:0), тело
             скроллится под ним. Секции ниже помечены `activeTab === …` и показываются
@@ -1289,9 +1303,10 @@ export default function CarCard({
 
         <div className="cc-body">
          <div className="cc-cols" data-tab={activeTab}>
+          {(activeTab === 'works' || activeTab === 'money') && claimSwitch}
           {/* «Обзор» одним взглядом: статус · ответственный · дедлайн · маршрут,
-              затем деньги и запчасти. Правка карточки — по кнопке (ovEdit). */}
-          {isEdit && activeTab === 'overview' && !ovEdit && (
+              затем деньги и запчасти. Правка карточки — в разделе «Машина». */}
+          {isEdit && activeTab === 'overview' && (
             <div className="cc-ov cc-full">
 
               <div className="cc-ov-hero">
@@ -1466,13 +1481,10 @@ export default function CarCard({
                 {form.mileage && <span>{form.mileage} км</span>}
                 {form.color && <span>{form.color}</span>}
                 {form.vin && <span className="cc-ov-vin">VIN {form.vin}</span>}
-                <button type="button" className="cc-ov-edit-btn" onClick={() => setOvEdit(true)}>
-                  <Icon name="edit" size={12} />Редактировать
-                </button>
               </div>
             </div>
           )}
-          {!isEdit && activeTab === 'overview' && (
+          {!isEdit && activeTab === 'machine' && (
             <div className="cc-audatex cc-full">
               <div className="cc-audatex-row">
                 <label className={`audatex-upload-btn${extracting ? ' is-busy' : ''}`}>
@@ -1481,23 +1493,21 @@ export default function CarCard({
                 </label>
                 <span className="cc-audatex-hint">Подгрузит марку, гос. номер, VIN, пробег, № дела и смету в заказ-наряд</span>
               </div>
-              {extractInfo && <div className="cc-audatex-ok"><Icon name="check" size={13} strokeWidth={2} /> {extractInfo}</div>}
+              {extractInfo && (
+                <div className="cc-audatex-ok">
+                  <Icon name="check" size={13} strokeWidth={2} /> {extractInfo}
+                  {' — позиции добавлены в раздел «Работы и запчасти»'}
+                </div>
+              )}
               {extractError && <div className="cc-audatex-err">{extractError}</div>}
             </div>
           )}
 
-          {/* Формы «Обзора». В режиме создания карточки они видны всегда (сводки
-              ещё нет), в режиме правки — только под кнопкой «Редактировать». */}
-          {isEdit && activeTab === 'overview' && ovEdit && (
-            <div className="cc-ov-editbar cc-full">
-              <span>Правка карточки</span>
-              <button type="button" className="cc-ov-done-btn" onClick={() => setOvEdit(false)}>
-                <Icon name="check" size={13} strokeWidth={2} />Готово
-              </button>
-            </div>
-          )}
-
-          {activeTab === 'overview' && (!isEdit || ovEdit) && (
+          {/* Раздел «Машина» — паспорт заказа: авто, клиент, сроки, склад,
+              примечания. Раньше эти же формы жили на «Обзоре» под кнопкой
+              «Редактировать»; теперь это отдельный раздел, одинаковый в обоих
+              режимах, а «Обзор» остался только сводкой. */}
+          {activeTab === 'machine' && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">🚘</span>Автомобиль и клиент</div>
             <div className="cc-grid">
@@ -1570,7 +1580,7 @@ export default function CarCard({
             </section>
           )}
 
-          {activeTab === 'overview' && (!isEdit || ovEdit) && (
+          {activeTab === 'machine' && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">⏱️</span>Сроки и хранение</div>
             <div className="cc-grid">
@@ -1705,7 +1715,7 @@ export default function CarCard({
           </section>
           )}
 
-          {activeTab === 'overview' && (!isEdit || ovEdit) && (
+          {activeTab === 'machine' && (
           <section className="cc-section">
             <div className="cc-section-head"><span className="cc-section-icon">📝</span>Примечания</div>
             <textarea className="cc-notes" placeholder="Комментарии по работе, договорённости с клиентом…" value={form.notes} onChange={(e) => patchForm({ notes: e.target.value })} />
@@ -2088,22 +2098,6 @@ export default function CarCard({
             </section>
           )}
 
-          {isEdit && activeTab === 'journal' && journal.length > 0 && (
-            <section className="cc-section">
-              <div className="cc-section-head"><span className="cc-section-icon" />Журнал</div>
-              <div className="cc-journal">
-                {journal.map((e, i) => (
-                  <div className="cc-journal-item" key={`j-${i}`}>
-                    <span className="cc-journal-dot" style={{ background: e.color }} />
-                    <div className="cc-journal-body">
-                      <span className="cc-journal-time">{dayjs(e.t).format('DD.MM.YY HH:mm')}{e.planned ? ' · план' : ''}</span>
-                      <span className="cc-journal-text">{e.text}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          )}
           {/* Пустые разделы: короткая подсказка вместо белого экрана. Деньги на
               вкладке допродаж (у них нет страховых реквизитов) и работы у машины,
               по которой ещё ничего не заведено. */}
@@ -2115,6 +2109,36 @@ export default function CarCard({
           )}
          </div>
         </div>
+
+        {/* Журнал — не раздел, а выдвижка поверх тела: читают его редко, а место
+            в ряду разделов он занимал наравне с рабочими. Прямой ребёнок
+            .cc-modal (у него position: relative), поэтому переживает смену
+            раздела и не попадает в сетку .cc-cols. */}
+        {isEdit && journalOpen && (
+          <aside className="cc-journal-drawer">
+            <div className="cc-section-head">
+              <span className="cc-section-icon" />Журнал
+              <button type="button" className="cc-journal-close" onClick={() => setJournalOpen(false)} aria-label="Закрыть журнал">
+                <Icon name="x" size={16} strokeWidth={2} />
+              </button>
+            </div>
+            {journal.length > 0 ? (
+              <div className="cc-journal">
+                {journal.map((e, i) => (
+                  <div className="cc-journal-item" key={`j-${i}`}>
+                    <span className="cc-journal-dot" style={{ background: e.color }} />
+                    <div className="cc-journal-body">
+                      <span className="cc-journal-time">{dayjs(e.t).format('DD.MM.YY HH:mm')}{e.planned ? ' · план' : ''}</span>
+                      <span className="cc-journal-text">{e.text}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="cc-tab-empty">Событий пока нет</div>
+            )}
+          </aside>
+        )}
 
         <div className="cc-footer">
           {isEdit ? (
