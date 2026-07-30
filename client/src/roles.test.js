@@ -4,7 +4,7 @@
 // anyone (owner or the whole shop) out — change them only deliberately.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { decideAccess, roleTabs, roleHome } from './roles.js';
+import { decideAccess, roleTabs, roleHome, ROLE_ORDER } from './roles.js';
 
 test('bootstrap — empty list → first login is owner (so it can assign roles)', () => {
   const d = decideAccess([], 'boss@shop.ru');
@@ -74,10 +74,29 @@ test('запчастист: только склад и запчасти, без 
   assert.equal(d.role, 'partsman');
 });
 
+// Derived from ROLE_ORDER, not a hardcoded list — a role added to roles.js with a
+// home tab it can't see would otherwise slip through untested.
 test('each role home tab is within its own allowed tabs', () => {
-  for (const r of ['owner', 'master', 'expeditor', 'partsman', 'founder']) {
+  for (const r of ROLE_ORDER) {
     assert.ok(roleTabs(r).includes(roleHome(r)), `home of ${r} must be an allowed tab`);
   }
+});
+
+test('мастер-приёмщик: приёмка и обзорные экраны, без денег и настроек', () => {
+  const tabs = roleTabs('receptionist');
+  assert.deepEqual(tabs, ['intake', 'approval', 'gantt', 'monitor']);
+  assert.equal(roleHome('receptionist'), 'intake');
+  for (const forbidden of ['finance', 'payroll', 'staffexpenses', 'config', 'supplier-invoices']) {
+    assert.ok(!tabs.includes(forbidden), `приёмщику не положен экран ${forbidden}`);
+  }
+  // Известная роль — не должна проваливаться в fallback «owner».
+  const d = decideAccess([{ email: 'priem@shop.ru', role: 'receptionist', active: true }], 'priem@shop.ru');
+  assert.equal(d.status, 'ready');
+  assert.equal(d.role, 'receptionist');
+});
+
+test('управленец видит экран «Приёмка авто»', () => {
+  assert.ok(roleTabs('owner').includes('intake'));
 });
 
 test('учредитель: только счета поставщиков, без прочих экранов; роль не падает в fallback', () => {

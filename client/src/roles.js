@@ -13,7 +13,7 @@ export const ROLES = {
   owner: {
     label: 'Управленец',
     hint: 'Полный доступ ко всей системе',
-    tabs: ['approval', 'gantt', 'board', 'monitor', 'warehouse', 'parts', 'receiving-history', 'requests', 'purchasing', 'supplier-invoices', 'finance', 'payroll', 'staffexpenses', 'history', 'config'],
+    tabs: ['approval', 'intake', 'gantt', 'board', 'monitor', 'warehouse', 'parts', 'receiving-history', 'requests', 'purchasing', 'supplier-invoices', 'finance', 'payroll', 'staffexpenses', 'history', 'config'],
     home: 'gantt',
   },
   master: {
@@ -34,6 +34,16 @@ export const ROLES = {
     tabs: ['parts', 'warehouse'],
     home: 'parts',
   },
+  // Мастер-приёмщик: встречает машину на заезде. Его экран — «Приёмка авто»
+  // (чек-лист, обязательные фото, повреждения, акт приёмки). Доска согласования и
+  // График нужны ему не для правок, а чтобы честно отвечать клиенту «что дальше» и
+  // «когда встанет в работу»; денежные экраны роли не положены.
+  receptionist: {
+    label: 'Мастер-приёмщик',
+    hint: 'Приёмка машин на заезде: чек-лист, фото, повреждения, акт приёмки',
+    tabs: ['intake', 'approval', 'gantt', 'monitor'],
+    home: 'intake',
+  },
   // Инвестор: даёт деньги на запчасти. Видит ТОЛЬКО счета поставщиков (к оплате и
   // оплаченные), отмечает оплату → позиции уходят в «Заказано». Оперативные экраны
   // и финансы цеха ему не нужны — отдельная узкая роль (не «Управленец»).
@@ -46,7 +56,7 @@ export const ROLES = {
 };
 
 // Order the admin screen offers roles in.
-export const ROLE_ORDER = ['owner', 'master', 'expeditor', 'partsman', 'founder'];
+export const ROLE_ORDER = ['owner', 'master', 'receptionist', 'expeditor', 'partsman', 'founder'];
 
 export const isKnownRole = (r) => Object.prototype.hasOwnProperty.call(ROLES, r);
 

@@ -86,6 +86,13 @@ api.users.remove = async (email) => {
 api.settings.getCompany = async () => ({ ...company });
 api.settings.updateCompany = async (data) => { company = { ...company, ...data }; return { ...company }; };
 
+// Раздел «Приёмка авто». Пустой объект = ни разу не сохраняли → IntakeSettings
+// покажет дефолты из intake.js, то есть ровно то, что увидит управленец в первый
+// раз. Сохранение складываем в память, чтобы кнопка реально отрабатывала.
+let intakeSettings = {};
+api.settings.getIntake = async () => ({ ...intakeSettings });
+api.settings.saveIntake = async (data) => { intakeSettings = { ...data }; return { ...intakeSettings }; };
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
     <div className="app">

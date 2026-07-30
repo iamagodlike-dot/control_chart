@@ -5,6 +5,7 @@ import SplusImport from './SplusImport';
 import UsersAdmin from './UsersAdmin';
 import BotAdmin from './BotAdmin';
 import DuplicateCars from './DuplicateCars';
+import IntakeSettings from './IntakeSettings';
 import Icon from './Icon';
 import {
   PAY_TYPE_ORDER, PAY_TYPES, DEFAULT_PAY_TYPE, DEFAULT_ADVANCE,
@@ -20,6 +21,7 @@ const SECTIONS = [
   { id: 'masters', label: 'Мастера', icon: 'wrench' },
   { id: 'posts', label: 'Посты', icon: 'columns' },
   { id: 'dict', label: 'Справочники', icon: 'clipboard' },
+  { id: 'intake', label: 'Приёмка авто', icon: 'camera' },
   { id: 'bot', label: 'Телеграм-бот', icon: 'send' },
   { id: 'import', label: 'Импорт данных', icon: 'download' },
   { id: 'duplicates', label: 'Дубликаты машин', icon: 'car' },
@@ -530,6 +532,8 @@ export default function PostsMasters() {
             <button className="primary" onClick={() => setShowImport(true)}>Импортировать заказы</button>
           </div>
         )}
+
+        {section === 'intake' && <IntakeSettings />}
 
         {section === 'duplicates' && <DuplicateCars />}
 

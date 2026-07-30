@@ -24,6 +24,7 @@ import Requests from './components/Requests';
 import Purchasing from './components/Purchasing';
 import SupplierInvoices from './components/SupplierInvoices';
 import Monitor from './components/Monitor';
+import Intake from './components/Intake';
 import { GroupedTabs } from './components/NavGroup';
 import { roleTabs, roleHome, roleLabel } from './roles';
 import './App.css';
@@ -32,12 +33,15 @@ const TABS = [
   { id: 'mywork', label: 'Мои машины', icon: 'car' },
   { id: 'earnings', label: 'Мой заработок', icon: 'wallet' },
   { id: 'approval', label: 'Согласование', icon: 'shield' },
+  { id: 'intake', label: 'Приёмка авто', icon: 'clipboard' },
   { id: 'gantt', label: 'График', icon: 'calendar' },
   { id: 'board', label: 'Загрузка', icon: 'chart' },
   { id: 'monitor', label: 'Монитор', icon: 'clock' },
   { id: 'warehouse', label: 'Склад', icon: 'box' },
   { id: 'parts', label: 'Запчасти', icon: 'wrench' },
-  { id: 'receiving', label: 'Приёмка', icon: 'box' },
+  // «Приёмка запчастей», а не просто «Приёмка»: рядом появился экран «Приёмка
+  // авто» (заезд машины), и у управленца оба видны одновременно.
+  { id: 'receiving', label: 'Приёмка запчастей', icon: 'box' },
   { id: 'receiving-history', label: 'История приёмки', icon: 'history' },
   { id: 'requests', label: 'Заявки', icon: 'clipboard' },
   { id: 'purchasing', label: 'Закупки', icon: 'cart' },
@@ -251,6 +255,7 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
           />
         )}
         {effectiveTab === 'approval' && <Approval isOwner={isOwner} />}
+        {effectiveTab === 'intake' && <Intake profile={profile} />}
         {effectiveTab === 'board' && <PostsBoard />}
         {effectiveTab === 'monitor' && <Monitor isOwner={isOwner} />}
         {effectiveTab === 'warehouse' && <Warehouse onOpenJob={openJobDetail} />}
