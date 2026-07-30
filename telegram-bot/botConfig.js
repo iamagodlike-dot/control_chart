@@ -18,9 +18,9 @@ const { db, isReady } = require('./firebase');
 // ВАЖНО: форма документа продублирована на сайте в client/src/botSettings.js —
 // при изменении полей синхронизировать оба файла (как с costing.js и money.js).
 
-const ROLES = ['manager', 'founder', 'partsman', 'staff'];
+const ROLES = ['manager', 'founder', 'partsman', 'receptionist', 'staff'];
 const PUSH_IDS = ['newCar', 'ready', 'payment', 'supplierInvoice', 'partsNeeded', 'invoicePaid'];
-const SCHEDULE_IDS = ['summary', 'reminder', 'founderDigest', 'mailDigest'];
+const SCHEDULE_IDS = ['summary', 'reminder', 'founderDigest', 'mailDigest', 'intakeDigest'];
 
 const pad = (n) => String(n).padStart(2, '0');
 const hhmm = (h, m) => `${pad(h)}:${pad(m)}`;
@@ -64,6 +64,7 @@ function envDefaults() {
   env.managers.forEach((id) => add(id, 'manager'));
   env.founders.forEach((id) => add(id, 'founder'));
   env.partsmen.forEach((id) => add(id, 'partsman'));
+  env.receptionists.forEach((id) => add(id, 'receptionist'));
   env.staff.forEach((id) => add(id, 'staff'));
 
   const sched = (src, extra) => ({ enabled: true, time: hhmm(src.hour, src.minute), tz: src.tz, ...extra });
@@ -74,6 +75,7 @@ function envDefaults() {
       reminder: sched(env.reminder),
       founderDigest: sched(env.founderDigest),
       mailDigest: sched(env.mailDigest, { to: env.mailDigestTo.slice() }),
+      intakeDigest: sched(env.intakeDigest),
     },
     pushes: Object.fromEntries(PUSH_IDS.map((k) => [k, true])),
   };
@@ -229,6 +231,7 @@ module.exports = {
   isManager: (id) => hasRole(id, 'manager'),
   isFounder: (id) => hasRole(id, 'founder'),
   isPartsman: (id) => hasRole(id, 'partsman'),
+  isReceptionist: (id) => hasRole(id, 'receptionist'),
   // Кому в разделе «Запчасти» показывать поставщика и цену закупки: управляющему
   // и запчастисту. Продажную цену и прибыль это НЕ открывает.
   canSeeSupply: (id) => hasRole(id, 'manager') || hasRole(id, 'partsman'),
@@ -242,12 +245,14 @@ for (const [prop, get] of [
   ['managers', () => idsWithRole('manager')],
   ['founders', () => idsWithRole('founder')],
   ['partsmen', () => idsWithRole('partsman')],
+  ['receptionists', () => idsWithRole('receptionist')],
   ['staff', () => idsWithRole('staff')],
   ['mailDigestTo', () => current.schedules.mailDigest.to || []],
   ['summary', () => current.schedules.summary],
   ['reminder', () => current.schedules.reminder],
   ['founderDigest', () => current.schedules.founderDigest],
   ['mailDigest', () => current.schedules.mailDigest],
+  ['intakeDigest', () => current.schedules.intakeDigest],
 ]) {
   Object.defineProperty(module.exports, prop, { get, enumerable: true });
 }

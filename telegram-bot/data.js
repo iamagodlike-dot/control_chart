@@ -64,6 +64,14 @@ async function loadGraph() {
   };
 }
 
+// Только машины, без этапов и документов (сводка приёмщика по дефектовке). Читать
+// весь граф ради неё незачем: loadGraph поднимает пять коллекций, а бесплатная
+// квота чтений у проекта не бесконечная.
+async function listJobs() {
+  if (!isReady()) throw new Error('База ещё не подключена');
+  return readAll('jobs');
+}
+
 // Одна машина по id (для экранов «Запчасти» и «Фото» — незачем читать всю базу).
 async function getJobById(jobId) {
   if (!isReady()) throw new Error('База ещё не подключена');
@@ -162,6 +170,6 @@ async function markSupplierInvoicePaid(id, paidByName) {
 }
 
 module.exports = {
-  loadGraph, getCompany, getDocsForJob, getDocById, getJobById,
+  loadGraph, listJobs, getCompany, getDocsForJob, getDocById, getJobById,
   listUnpaidSupplierInvoices, getSupplierInvoiceById, markSupplierInvoicePaid,
 };

@@ -6,6 +6,7 @@ import {
   normalizeBotSettings, defaultBotSettings, isValidTgId, tgIdError,
   peopleWithRole, roleCounts, recipientsOf, timeInMoscow, tzOffsetMinutes,
   botStatusInfo, commandStatusText, commandTone, agoText, parseTime,
+  BOT_ROLE_ORDER,
 } from './botSettings.js';
 
 test('пустая база — работаем по умолчаниям', () => {
@@ -88,7 +89,23 @@ test('отключённый человек не считается ни в од
     ],
   }).people;
   assert.equal(peopleWithRole(people, 'manager').length, 1);
-  assert.deepEqual(roleCounts(people), { manager: 1, founder: 1, partsman: 0, staff: 0 });
+  // Ожидаемое считаем от BOT_ROLE_ORDER, а не списком вручную: добавленная роль
+  // не должна ронять тест, который проверяет совсем другое.
+  const expected = Object.fromEntries(BOT_ROLE_ORDER.map((r) => [r, r === 'manager' || r === 'founder' ? 1 : 0]));
+  assert.deepEqual(roleCounts(people), expected);
+});
+
+test('сводка «Дефектовка» уходит мастерам-приёмщикам', () => {
+  const s = normalizeBotSettings({
+    people: [
+      { tg_id: '111111111', roles: ['manager'] },
+      { tg_id: '444444444', roles: ['receptionist'] },
+      { tg_id: '555555555', roles: ['receptionist'], active: false },
+    ],
+  });
+  assert.deepEqual(recipientsOf(s, 'intakeDigest').map((p) => p.tg_id), ['444444444']);
+  assert.equal(s.schedules.intakeDigest.time, '08:30');
+  assert.equal(s.schedules.intakeDigest.enabled, true);
 });
 
 test('Telegram ID: цифры да, ники нет', () => {

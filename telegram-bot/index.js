@@ -9,6 +9,7 @@ const { isReady, reason } = require('./firebase');
 const views = require('./views');
 const { startNotifier } = require('./notify');
 const { buildDigestText } = require('./mailDigest');
+const { intakeDigest } = require('./intake');
 const { isConfigured: mailConfigured } = require('./mail');
 const { startControl, explainSendError } = require('./control');
 
@@ -33,19 +34,23 @@ const BTN = {
   digest: 'Состояние ремонтов',
   approvals: 'Согласования',
   mail: 'Почта',
+  intake: 'Дефектовка',
 };
 
-function menuFor(isManager, isFounder) {
+function menuFor(isManager, isFounder, isReceptionist) {
   // Учредителю (если он не управляющий) — узкое меню: его сводка и разделы из неё.
   if (isFounder && !isManager) {
     return Markup.keyboard([[BTN.digest], [BTN.approvals, BTN.invoices]]).resize();
   }
   const rows = [[BTN.find], [BTN.cars, BTN.masters], [BTN.upcoming]];
+  // У приёмщика «Дефектовка» — главная кнопка дня, поэтому наверх.
+  if (isReceptionist && !isManager) rows.unshift([BTN.intake]);
   if (isManager) {
     rows.push([BTN.debts, BTN.revenue]);
     rows.push([BTN.analytics, BTN.summary]);
     rows.push([BTN.digest, BTN.approvals]);
     rows.push([BTN.invoices, BTN.mail]); // счета к оплате + разбор почты за день
+    rows.push([BTN.intake]);
   }
   return Markup.keyboard(rows).resize();
 }
@@ -57,7 +62,11 @@ const periodKb = Markup.inlineKeyboard([
 ]);
 
 async function send(ctx, text, isManager) {
-  return ctx.reply(text, { parse_mode: 'HTML', ...menuFor(isManager, config.isFounder(ctx.from?.id)) });
+  const id = ctx.from?.id;
+  return ctx.reply(text, {
+    parse_mode: 'HTML',
+    ...menuFor(isManager, config.isFounder(id), config.isReceptionist(id)),
+  });
 }
 
 // Аккуратно выполняем запрос к данным и не роняем бота на ошибке.
@@ -136,6 +145,7 @@ const HELP_TEXT = [
   '<b>Состояние ремонтов</b> — новые авто за сутки, согласования со страховой, укомплектованность по запчастям и счета к оплате одним экраном. Приходит автоматически каждое утро; кнопки под ней разворачивают разделы.',
   '<b>Согласования</b> — что где стоит по страховой.',
   '<b>Счета к оплате</b> — неоплаченные счета поставщиков файлом с кнопкой «Оплачено».',
+  '<b>Дефектовка</b> — кто приезжает сегодня, кому позвонить (дефектовка завтра), кто не приехал и кто ещё ждёт приглашения. Приходит мастеру-приёмщику утром.',
   '',
   '<i>Управляющим также:</i> Долги, Выручка, Аналитика, Сводка за день.',
   '',
@@ -257,6 +267,17 @@ async function actMail(ctx) {
   return undefined;
 }
 
+// Сводка «Дефектовка» по требованию — мастеру-приёмщику и управляющему. Ровно то
+// же сообщение, что приходит утром по расписанию: кто приезжает сегодня, кому
+// звонить, кто не приехал, кто ждёт приглашения.
+async function actIntake(ctx) {
+  if (!canSeeIntake(ctx.from.id)) return send(ctx, 'Раздел доступен мастеру-приёмщику и управляющему.', ctx.state.manager);
+  return safe(ctx, async () => (
+    await intakeDigest({ tz: config.intakeDigest.tz })
+    || 'По дефектовке дел нет: все машины приглашены, никто не потерялся.'
+  ));
+}
+
 // Кнопки нижнего меню + одноимённые слэш-команды (для меню ☰ у поля ввода).
 // В hears указываем и СТАРЫЕ подписи с эмодзи — чтобы у тех, у кого нижнее меню
 // ещё не обновилось, кнопки продолжали работать (после ответа меню обновится).
@@ -272,6 +293,7 @@ bot.hears([BTN.invoices, '💳 Счета к оплате'], guard(actInvoices))
 bot.hears(BTN.digest, guard(actDigest));                           bot.command('digest', guard(actDigest));
 bot.hears(BTN.approvals, guard(actApprovals));                     bot.command('approvals', guard(actApprovals));
 bot.hears([BTN.mail, '📬 Почта'], guard(actMail));                 bot.command('mail', guard(actMail));
+bot.hears(BTN.intake, guard(actIntake));                           bot.command('intake', guard(actIntake));
 bot.command('help', guard(actHelp));
 
 // ─── Развороты под сводкой учредителя ───
@@ -318,6 +340,8 @@ const canPay = (id) => config.isFounder(id) || config.isManager(id);
 // Сводка учредителя и её развороты — учредителю и управляющему (тот и так видит
 // всё то же самое по отдельным кнопкам).
 const canSeeDigest = (id) => config.isFounder(id) || config.isManager(id);
+// Сводка «Дефектовка» — мастеру-приёмщику (это его рабочий список) и управляющему.
+const canSeeIntake = (id) => config.isReceptionist(id) || config.isManager(id);
 
 bot.action(/^pay:(.+)$/, async (ctx) => {
   if (!canPay(ctx.from.id)) return ctx.answerCbQuery('Только учредителю или управляющему');
@@ -678,11 +702,24 @@ async function runMailDigest(to) {
   return deliver(ids, await buildDigestText(), { disable_web_page_preview: true });
 }
 
+// Утренняя сводка «Дефектовка» — мастерам-приёмщикам. Как и вечернее напоминание,
+// в пустой день не уходит: приёмщик должен открывать это сообщение, потому что там
+// всегда есть дело, а не потому что «бот опять что-то прислал».
+async function runIntakeDigest(to) {
+  if (!isReady()) return 'база не подключена';
+  const ids = to && to.length ? to : config.receptionists;
+  if (!ids.length) return 'некому отправлять — нет мастеров-приёмщиков';
+  const text = await intakeDigest({ tz: config.intakeDigest.tz });
+  if (!text) return 'по дефектовке дел нет — сообщение не отправлено';
+  return deliver(ids, text);
+}
+
 const RUNNERS = {
   summary: runSummary,
   reminder: runReminder,
   founderDigest: runFounderDigest,
   mailDigest: runMailDigest,
+  intakeDigest: runIntakeDigest,
 };
 
 // ─── Расписание, которое можно менять на лету ────────────────────────────────
@@ -780,6 +817,22 @@ async function setupCommands() {
       await bot.telegram.setMyCommands(founderCmds, { scope: { type: 'chat', chat_id: Number(id) } });
     } catch (e) { console.error(`Меню команд (учредитель ${id}):`, e.message); }
   }
+  // Мастеру-приёмщику — его список дефектовок первым пунктом. (Управляющих и
+  // учредителей не трогаем: у них своё меню, где «Дефектовка» уже есть.)
+  const receptionistCmds = [
+    { command: 'intake', description: 'Дефектовка — кого пригласить и кто приедет' },
+    { command: 'find', description: 'Найти авто — список и поиск' },
+    { command: 'cars', description: 'Машины в работе' },
+    { command: 'upcoming', description: 'Скоро выдача' },
+    { command: 'help', description: 'Что умеет бот' },
+  ];
+  for (const id of config.receptionists) {
+    if (config.isManager(id) || config.isFounder(id)) continue;
+    personal.add(String(id));
+    try {
+      await bot.telegram.setMyCommands(receptionistCmds, { scope: { type: 'chat', chat_id: Number(id) } });
+    } catch (e) { console.error(`Меню команд (приёмщик ${id}):`, e.message); }
+  }
   // Кого-то понизили в правах на сайте — убираем его персональное меню, иначе в
   // Telegram у него так и остались бы команды с финансами.
   for (const id of personalScopes) {
@@ -823,6 +876,7 @@ function logSetup() {
   console.log(`💳 Счета поставщиков: учредителей ${config.founders.length || 'пока нет'} (мгновенный пуш + кнопка «Счета к оплате»)`);
   console.log(`📋 Сводка учредителя «Состояние ремонтов»: ${hm(config.founderDigest)}${off(config.founderDigest)} (${config.founderDigest.tz}), получателей: ${config.founders.length || 'пока нет'}`);
   console.log(`📬 Разбор почты: ${hm(config.mailDigest)}${off(config.mailDigest)} (${config.mailDigest.tz}), получателей ${(config.mailDigestTo.length ? config.mailDigestTo : config.managers).length || 'пока никого'}${mailConfigured() ? '' : ' — ПОЧТА НЕ НАСТРОЕНА (MAIL_USER/MAIL_PASSWORD)'}`);
+  console.log(`🗓  Дефектовка (приёмщику): ${hm(config.intakeDigest)}${off(config.intakeDigest)} (${config.intakeDigest.tz}), приёмщиков ${config.receptionists.length || 'пока нет'}`);
 }
 
 let control = null;

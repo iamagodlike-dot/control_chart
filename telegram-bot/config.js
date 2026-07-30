@@ -16,11 +16,15 @@ const founders = ids(process.env.FOUNDERS);
 // заказать» и «счёт оплачен»; в разделе «Запчасти» видят поставщика и закупку —
 // это их работа, — но НЕ видят выручку/прибыль и финансовые кнопки меню.
 const partsmen = ids(process.env.PARTSMEN);
+// Мастера-приёмщики: зовут машины на дефектовку (роль receptionist на сайте).
+// Получают утреннюю сводку «Дефектовка»: кто приезжает сегодня, кому звонить,
+// кто не приехал, кто ждёт приглашения. Денег не видят.
+const receptionists = ids(process.env.RECEPTIONISTS);
 // Получатели разбора почты. Если задано — шлём только им (напр., управляющему без
 // учредителя); если пусто — по умолчанию всем управляющим.
 const mailDigestTo = ids(process.env.MAIL_DIGEST_TO);
-// Все четыре группы входят в общий список доступа к боту.
-const allowed = new Set([...managers, ...staff, ...founders, ...partsmen]);
+// Все группы входят в общий список доступа к боту.
+const allowed = new Set([...managers, ...staff, ...founders, ...partsmen, ...receptionists]);
 
 const [h = '10', m = '00'] = String(process.env.SUMMARY_TIME || '10:00').split(':');
 const [rh = '18', rm = '00'] = String(process.env.REMINDER_TIME || '18:00').split(':');
@@ -36,6 +40,11 @@ const founderTz = process.env.FOUNDER_DIGEST_TZ || 'Asia/Krasnoyarsk';
 // красноярский, 18:00 = 14:00 МСК). Отдельно от прочих рассылок.
 const [xh = '18', xm = '00'] = String(process.env.MAIL_DIGEST_TIME || '18:00').split(':');
 const mailTz = process.env.MAIL_DIGEST_TZ || 'Asia/Krasnoyarsk';
+
+// Сводка «Дефектовка» мастеру-приёмщику. Рано утром по Красноярску: приёмщик
+// начинает день со звонков, и список нужен ему ДО открытия сервиса.
+const [ih = '08', im = '30'] = String(process.env.INTAKE_DIGEST_TIME || '08:30').split(':');
+const intakeTz = process.env.INTAKE_DIGEST_TZ || 'Asia/Krasnoyarsk';
 
 // Адрес, по которому nginx раздаёт фото (location /uploads/). В базе у фото
 // хранится только относительный путь /uploads/…; бот дополняет его этим адресом,
@@ -71,15 +80,23 @@ module.exports = {
     tz: mailTz,
     cron: `${Number(xm)} ${Number(xh)} * * *`,
   },
+  intakeDigest: {
+    hour: Number(ih),
+    minute: Number(im),
+    tz: intakeTz,
+    cron: `${Number(im)} ${Number(ih)} * * *`,
+  },
   managers,
   staff,
   founders,
   partsmen,
+  receptionists,
   mailDigestTo,
   isAllowed: (id) => allowed.has(String(id)),
   isManager: (id) => managers.includes(String(id)),
   isFounder: (id) => founders.includes(String(id)),
   isPartsman: (id) => partsmen.includes(String(id)),
+  isReceptionist: (id) => receptionists.includes(String(id)),
   // Кому в разделе «Запчасти» показывать поставщика и цену закупки. Управляющему —
   // как и раньше; запчастисту — потому что он этим и занимается. Продажную цену и
   // прибыль это НЕ открывает: они остаются только у управляющего.

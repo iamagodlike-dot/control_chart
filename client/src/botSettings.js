@@ -23,12 +23,16 @@ export const BOT_ROLES = {
     label: 'Запчастист',
     hint: 'Что нужно заказать и когда счёт оплачен; видит закупочные цены',
   },
+  receptionist: {
+    label: 'Мастер-приёмщик',
+    hint: 'Утренний список дефектовок: кого пригласить, кому позвонить, кто не приехал',
+  },
   staff: {
     label: 'Сотрудник',
     hint: 'Машины, статусы, запчасти и фото — без денег',
   },
 };
-export const BOT_ROLE_ORDER = ['manager', 'founder', 'partsman', 'staff'];
+export const BOT_ROLE_ORDER = ['manager', 'founder', 'partsman', 'receptionist', 'staff'];
 
 // ─── Рассылки по расписанию ──────────────────────────────────────────────────
 export const SCHEDULES = [
@@ -60,6 +64,13 @@ export const SCHEDULES = [
     role: 'manager',
     hint: 'Письма страховых, сверенные с базой машин: кто ждёт ответа, что согласовано.',
     pickPeople: true, // у этой рассылки можно выбрать конкретных получателей
+  },
+  {
+    id: 'intakeDigest',
+    label: 'Дефектовка',
+    to: 'Мастерам-приёмщикам',
+    role: 'receptionist',
+    hint: 'Кто приезжает сегодня, кому позвонить (дефектовка завтра), кто не приехал и кто ждёт приглашения. В пустой день не приходит.',
   },
 ];
 export const SCHEDULE_IDS = SCHEDULES.map((s) => s.id);
@@ -97,6 +108,9 @@ export const defaultBotSettings = () => ({
     reminder: { enabled: true, time: '18:00', tz: DEFAULT_TZ },
     founderDigest: { enabled: true, time: '10:00', tz: DEFAULT_TZ },
     mailDigest: { enabled: true, time: '18:00', tz: DEFAULT_TZ, to: [] },
+    // Раньше остальных: приёмщик начинает день со звонков, список нужен ему до
+    // открытия сервиса.
+    intakeDigest: { enabled: true, time: '08:30', tz: DEFAULT_TZ },
   },
   pushes: Object.fromEntries(PUSH_IDS.map((id) => [id, true])),
 });
