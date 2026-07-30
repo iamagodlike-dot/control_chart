@@ -1,143 +1,218 @@
 import Icon from './Icon';
-import { INTAKE_SORTS } from '../intake';
 import { PAYMENT_SHORT } from '../insurance';
+import { fmtDay, fmtDayTime, fmtRelativeDay, fmtTime, pluralDays } from '../intake';
 
-// Презентационная половина экрана «Приёмка авто»: чистые пропсы, без Firestore.
+// Презентационная половина экрана мастера-приёмщика: чистые пропсы, без Firestore.
 // Реальный экран (Intake) кормит её живой подпиской, демо-страница — сидом,
 // поэтому обе рисуют побуквенно одно и то же. Вся логика — в intake.js.
+//
+// Экран читается сверху вниз ровно в том порядке, в котором приёмщик работает:
+//   1. напоминания      — что горит прямо сейчас;
+//   2. пригласить        — кому звонить, пока не начал звонить телефон;
+//   3. календарь         — две недели: кто когда приедет;
+//   4. приедут позже     — дальний хвост, чтобы не забыть о нём вовсе.
 
-function pluralRu(n, one, few, many) {
-  const a = Math.abs(n) % 100;
-  const b = n % 10;
-  if (a > 10 && a < 20) return many;
-  if (b > 1 && b < 5) return few;
-  if (b === 1) return one;
-  return many;
-}
+// Телефон клиента — ссылка tel:, чтобы с телефона звонок начинался одним касанием.
+// Пробелы и скобки из номера убираем: набиратель их не понимает.
+const telHref = (phone) => `tel:${String(phone || '').replace(/[^\d+]/g, '')}`;
 
-// Подпись «сколько стоит»: у только что заехавшей машины «сегодня» честнее, чем «0 дней».
-const waitLabel = (d) => (d <= 0 ? 'сегодня' : `${d} ${pluralRu(d, 'день', 'дня', 'дней')}`);
-
-// Полоска прогресса. Красная, только когда не хватает ОБЯЗАТЕЛЬНОГО, — иначе
-// «7 из 8» с необязательной рубрикой выглядело бы как недоделка.
-function Bar({ label, done, total, blocked }) {
-  const pct = total ? Math.round((done / total) * 100) : 0;
+function Phone({ phone, className = 'ink-tel' }) {
+  if (!phone) return <span className="ink-muted">телефон не указан</span>;
   return (
-    <div className="ink-bar">
-      <span className="ink-bar-label">{label}</span>
-      <span className="ink-bar-track">
-        <span
-          className={`ink-bar-fill${blocked ? ' is-blocked' : ''}${done >= total ? ' is-full' : ''}`}
-          style={{ width: `${pct}%` }}
-        />
-      </span>
-      <span className="ink-bar-num">{done}/{total}</span>
-    </div>
+    <a className={className} href={telHref(phone)} onClick={(e) => e.stopPropagation()}>
+      <Icon name="phone" size={13} />{phone}
+    </a>
   );
 }
 
-function StatusChip({ status }) {
-  if (status.skipped) return <span className="ink-chip is-skipped">Без приёмки</span>;
-  if (status.done) return <span className="ink-chip is-done"><Icon name="check" size={12} strokeWidth={2.4} />Принята</span>;
-  if (status.ready) return <span className="ink-chip is-ready">Можно закрывать</span>;
-  if (status.untouched) return <span className="ink-chip is-new">Не начата</span>;
-  return <span className="ink-chip">В работе</span>;
+// Кто платит: страховая (с названием) или клиент. Одна строка вместо двух полей.
+// Номер убытка сюда НЕ выводим: в списке он ничего не решает, а строку ломает —
+// приёмщик видит его в попапе, когда действительно набирает номер.
+function Payer({ row }) {
+  const insured = row.payment_type === 'insurance';
+  return (
+    <span className={`ink-payer${insured ? ' is-insured' : ''}`}>
+      <Icon name={insured ? 'shield' : 'wallet'} size={13} />
+      {insured ? (row.insurer_name || 'Страховая') : (PAYMENT_SHORT[row.payment_type] || 'Клиент')}
+    </span>
+  );
 }
 
-function Card({ row, onOpen }) {
-  const { status } = row;
-  const insured = row.payment_type === 'insurance';
-  // Первые три блокера — этого хватает, чтобы понять, за чем идти к машине;
-  // полный список приёмщик увидит, когда откроет карточку.
-  const preview = status.blockers.slice(0, 3);
-  const rest = status.blockers.length - preview.length;
-
+function Plate({ row }) {
   return (
-    <button type="button" className={`ink-card is-${row.severity}`} onClick={() => onOpen(row.id)}>
-      <div className="ink-card-top">
-        <div className="ink-card-id">
-          {row.plate_number && <span className="ink-plate">{row.plate_number}</span>}
-          <span className="ink-model">{row.car_model}</span>
+    <span className="ink-car">
+      {row.plate_number && <span className="ink-plate">{row.plate_number}</span>}
+      <span className="ink-model">{row.car_model}</span>
+    </span>
+  );
+}
+
+// ─── Напоминания ─────────────────────────────────────────────────────────────
+
+function Reminder({ item, nowMs, onOpen, onConfirm, onStart }) {
+  const { row, kind } = item;
+  const overdue = kind === 'overdue';
+  return (
+    <li className={`ink-rem-item is-${kind}`}>
+      <span className="ink-rem-mark"><Icon name={overdue ? 'warning' : 'phone'} size={15} /></span>
+      <div className="ink-rem-body">
+        <div className="ink-rem-title">
+          {overdue
+            ? <>Не приехала на дефектовку — <b>{fmtDayTime(row.scheduled_at)}</b> ({fmtRelativeDay(row.scheduled_at, nowMs)})</>
+            : <>Завтра дефектовка в <b>{fmtTime(row.scheduled_at)}</b> — позвонить и подтвердить</>}
         </div>
-        <StatusChip status={status} />
-      </div>
-
-      <div className="ink-card-meta">
-        {row.client_name && <span><Icon name="user" size={12} />{row.client_name}</span>}
-        <span className={insured ? 'is-insured' : ''}>
-          <Icon name={insured ? 'shield' : 'wallet'} size={12} />
-          {insured ? (row.insurer_name || 'Страховая') : PAYMENT_SHORT[row.payment_type] || 'Клиент'}
-        </span>
-        <span className={`ink-days is-${row.severity}`}>
-          <Icon name="clock" size={12} />на площадке {waitLabel(row.daysWaiting)}
-        </span>
-      </div>
-
-      <div className="ink-card-bars">
-        <Bar
-          label="Чек-лист"
-          done={status.checklist.done}
-          total={status.checklist.total}
-          blocked={status.checklistMissing.length > 0}
-        />
-        <Bar
-          label="Фото"
-          done={status.photos.done}
-          total={status.photos.total}
-          blocked={status.photosMissing.length > 0}
-        />
-      </div>
-
-      {status.damages > 0 && (
-        <div className="ink-card-damages">
-          <Icon name="warning" size={12} />
-          отмечено повреждений: <b>{status.damages}</b>
+        <div className="ink-rem-meta">
+          <Plate row={row} />
+          {row.client_name && <span>{row.client_name}</span>}
+          <Phone phone={row.client_phone} />
         </div>
-      )}
+      </div>
+      {/* Главное действие — то, которое чаще всего нужно: по неприехавшей машине
+          сначала звонят и переносят, по завтрашней — отмечают подтверждение. */}
+      <div className="ink-rem-acts">
+        {overdue ? (
+          <>
+            <button type="button" className="ink-btn is-quiet" onClick={() => onStart(row.id)}>Начать дефектовку</button>
+            <button type="button" className="ink-btn is-primary" onClick={() => onOpen(row.id)}>Перенести</button>
+          </>
+        ) : (
+          <>
+            <button type="button" className="ink-btn is-quiet" onClick={() => onOpen(row.id)}>Перенести</button>
+            <button type="button" className="ink-btn is-primary" onClick={() => onConfirm(row.id)}>
+              <Icon name="check" size={14} strokeWidth={2.4} />Подтвердил
+            </button>
+          </>
+        )}
+      </div>
+    </li>
+  );
+}
 
-      {!status.done && !status.skipped && preview.length > 0 && (
-        <div className="ink-card-todo">
-          <span className="ink-card-todo-h">Осталось</span>
-          {preview.join(' · ')}{rest > 0 ? ` · ещё ${rest}` : ''}
+// ─── Зона 1: пригласить ──────────────────────────────────────────────────────
+
+function InviteCard({ row, onOpen }) {
+  return (
+    <article className={`ink-inv is-${row.severity}`}>
+      <div className="ink-inv-days" title="Столько машина ждёт приглашения">
+        <b>{row.daysWaiting}</b>
+        <span>{row.daysWaiting === 0 ? 'заехала\nсегодня' : `${pluralDays(row.daysWaiting)} без\nприглашения`}</span>
+      </div>
+      <div className="ink-inv-main">
+        <Plate row={row} />
+        <div className="ink-inv-rows">
+          <Payer row={row} />
+          <span className="ink-inv-client">
+            {row.client_name && <span><Icon name="user" size={13} />{row.client_name}</span>}
+            <Phone phone={row.client_phone} />
+          </span>
         </div>
-      )}
+      </div>
+      <button type="button" className="ink-btn is-primary is-big" onClick={() => onOpen(row.id)}>
+        <Icon name="phone" size={15} />Пригласить
+      </button>
+    </article>
+  );
+}
 
-      <span className="ink-card-go">Открыть приёмку →</span>
+// ─── Зона 2: календарь двух недель ───────────────────────────────────────────
+
+// Машина в клетке дня: время моноширинным + госномер. Больше в клетку не влезет
+// и не нужно — подробности в попапе, который открывается касанием.
+function DayCar({ row, onOpen }) {
+  const cls = [
+    'ink-daycar',
+    row.phase === 'overdue' ? 'is-overdue' : '',
+    row.confirmed ? 'is-confirmed' : '',
+  ].filter(Boolean).join(' ');
+  return (
+    <button
+      type="button"
+      className={cls}
+      onClick={() => onOpen(row.id)}
+      title={`${fmtTime(row.scheduled_at)} · ${row.car_model}${row.client_name ? ` · ${row.client_name}` : ''}${row.confirmed ? ' · клиент подтвердил' : ''}`}
+    >
+      <span className="ink-daycar-time">{fmtTime(row.scheduled_at)}</span>
+      <span className="ink-daycar-plate">{row.plate_number || row.car_model}</span>
+      {row.confirmed && <Icon name="check" size={11} strokeWidth={3} />}
     </button>
   );
 }
 
+function Day({ day, onOpen }) {
+  const cls = [
+    'ink-day',
+    day.isToday ? 'is-today' : '',
+    day.isPast ? 'is-past' : '',
+    day.isWeekend ? 'is-weekend' : '',
+    day.cars.length ? 'has-cars' : '',
+  ].filter(Boolean).join(' ');
+  return (
+    <div className={cls}>
+      <div className="ink-day-head">
+        <span className="ink-day-num">{day.dayNum}</span>
+        {day.showMonth && <span className="ink-day-month">{day.month}</span>}
+        <span className="ink-day-wd">{day.weekday}</span>
+        {day.cars.length > 1 && <span className="ink-day-count">{day.cars.length}</span>}
+      </div>
+      <div className="ink-day-cars">
+        {day.cars.map((row) => <DayCar key={row.id} row={row} onOpen={onOpen} />)}
+      </div>
+    </div>
+  );
+}
+
+// ─── Экран ───────────────────────────────────────────────────────────────────
+
 export default function IntakeView({
   loading = false,
-  rows = [],
-  counts = {},
+  board = null,
   query = '',
   onQuery = () => {},
-  sort = 'urgent',
-  onSort = () => {},
+  nowMs = 0,
   onOpen = () => {},
+  onConfirm = () => {},
+  onStart = () => {},
 }) {
+  const b = board || { invite: [], weeks: [], later: [], reminders: [], counts: {} };
+  const { counts } = b;
+  const firstDay = b.weeks[0]?.days[0];
+  const lastDay = b.weeks[b.weeks.length - 1]?.days[6];
+
+  if (loading) {
+    return (
+      <div className="ink">
+        <div className="list-loading"><div className="spinner" /><span>Загружаем…</span></div>
+      </div>
+    );
+  }
+
   return (
     <div className="ink">
-      <div className="ink-head">
+      <header className="ink-head">
         <div className="ink-title">
-          <h2><Icon name="clipboard" size={18} />Приёмка авто</h2>
-          <p>Машины на осмотре: зафиксировать состояние до начала ремонта</p>
+          <h2>Дефектовка</h2>
+          <p>Пригласить машину, записать на дату, довести до осмотра</p>
         </div>
-        <div className="ink-summary">
-          <span className="ink-stat">на осмотре <b>{counts.total ?? 0}</b></span>
-          {counts.ready > 0 && <span className="ink-stat is-ready">можно закрывать: <b>{counts.ready}</b></span>}
-          {counts.alert > 0 && <span className="ink-stat is-bad">стоят без приёмки: <b>{counts.alert}</b></span>}
+        <div className="ink-nums">
+          <span className="ink-num">
+            <b>{counts.invite ?? 0}</b>
+            <span>ждут приглашения</span>
+          </span>
+          <span className="ink-num is-good">
+            <b>{counts.today ?? 0}</b>
+            <span>приедут сегодня</span>
+          </span>
+          <span className={`ink-num${counts.overdue ? ' is-bad' : ''}`}>
+            <b>{counts.overdue ?? 0}</b>
+            <span>не приехали</span>
+          </span>
         </div>
-      </div>
-
-      <div className="ink-tools">
         <label className="ink-search">
           <Icon name="search" size={15} />
           <input
             value={query}
             onChange={(e) => onQuery(e.target.value)}
-            placeholder="Госномер, модель или клиент"
+            placeholder="Госномер, клиент, страховая"
             aria-label="Поиск машины"
           />
           {query && (
@@ -146,29 +221,99 @@ export default function IntakeView({
             </button>
           )}
         </label>
-        <select value={sort} onChange={(e) => onSort(e.target.value)} aria-label="Сортировка">
-          {INTAKE_SORTS.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
-        </select>
-      </div>
+      </header>
 
-      {loading ? (
-        <div className="list-loading"><div className="spinner" /><span>Загружаем…</span></div>
-      ) : rows.length === 0 ? (
-        <div className="ink-empty">
-          <Icon name="clipboard" size={40} />
-          <div className="ink-empty-title">
-            {query ? 'Ничего не нашлось' : 'Сейчас машин на осмотре нет'}
+      {b.reminders.length > 0 && (
+        <section className="ink-rem">
+          <div className="ink-rem-head">
+            <Icon name="bell" size={15} />Напоминания
+            {/* Красный счётчик — только когда есть неприехавшие. Звонки накануне
+                это рабочая рутина, а не авария, и красным их метить нечестно. */}
+            <span className={`ink-rem-n${b.reminders.some((x) => x.kind === 'overdue') ? '' : ' is-soft'}`}>
+              {b.reminders.length}
+            </span>
           </div>
-          <div className="ink-empty-text">
-            {query
-              ? 'Попробуйте другой госномер или имя клиента.'
-              : 'Сюда попадают машины из колонки «Осмотр / дефектовка» доски «Согласование» — сразу как их заводят в систему.'}
+          <ul className="ink-rem-list">
+            {b.reminders.map((item) => (
+              <Reminder
+                key={item.id}
+                item={item}
+                nowMs={nowMs}
+                onOpen={onOpen}
+                onConfirm={onConfirm}
+                onStart={onStart}
+              />
+            ))}
+          </ul>
+        </section>
+      )}
+
+      <section className="ink-sec">
+        <div className="ink-sec-head">
+          <h3>Пригласить на дефектовку</h3>
+          <span className="ink-sec-n">{b.invite.length}</span>
+          {counts.stale > 0 && <span className="ink-sec-warn">{counts.stale} висят дольше трёх дней</span>}
+        </div>
+        {b.invite.length === 0 ? (
+          <div className="ink-empty">
+            {query ? 'Среди найденных машин приглашать некого.' : 'Все машины на осмотре уже записаны на дефектовку.'}
           </div>
+        ) : (
+          <div className="ink-inv-list">
+            {b.invite.map((row) => <InviteCard key={row.id} row={row} onOpen={onOpen} />)}
+          </div>
+        )}
+      </section>
+
+      <section className="ink-sec">
+        <div className="ink-sec-head">
+          <h3>Записаны на дефектовку</h3>
+          {firstDay && lastDay && <span className="ink-sec-range">{fmtDay(firstDay.ms)} — {fmtDay(lastDay.ms)}</span>}
         </div>
-      ) : (
-        <div className="ink-grid">
-          {rows.map((row) => <Card key={row.id} row={row} onOpen={onOpen} />)}
+        <div className="ink-cal">
+          {/* Дни недели подписаны один раз сверху, как в месячном календаре. На
+              телефоне сетка разворачивается в список, и подпись переезжает в саму
+              строку дня (см. .ink-day-wd в App.css). */}
+          <div className="ink-cal-head" aria-hidden="true">
+            {(b.weeks[0]?.days || []).map((d) => (
+              <span key={d.key} className={d.isWeekend ? 'is-weekend' : ''}>{d.weekday}</span>
+            ))}
+          </div>
+          {b.weeks.map((week) => (
+            <div className="ink-week" key={week.id}>
+              {week.days.map((day) => <Day key={day.key} day={day} onOpen={onOpen} />)}
+            </div>
+          ))}
         </div>
+      </section>
+
+      {b.later.length > 0 && (
+        <section className="ink-sec">
+          <div className="ink-sec-head">
+            <h3>Приедут позже</h3>
+            <span className="ink-sec-n">{b.later.length}</span>
+            <span className="ink-sec-range">дальше двух недель</span>
+          </div>
+          <ul className="ink-later">
+            {b.later.map((row) => (
+              <li key={row.id}>
+                <button type="button" className="ink-later-row" onClick={() => onOpen(row.id)}>
+                  <span className="ink-later-date">
+                    <b>{fmtDayTime(row.scheduled_at)}</b>
+                    <span className="ink-muted">{fmtRelativeDay(row.scheduled_at, nowMs)}</span>
+                  </span>
+                  <Plate row={row} />
+                  <span className="ink-later-client">
+                    {row.client_name}
+                    <Phone phone={row.client_phone} />
+                  </span>
+                  <Payer row={row} />
+                  {row.confirmed && <span className="ink-ok"><Icon name="check" size={12} strokeWidth={2.6} />подтверждено</span>}
+                </button>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
     </div>
   );

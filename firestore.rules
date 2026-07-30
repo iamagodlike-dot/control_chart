@@ -41,14 +41,9 @@ service cloud.firestore {
     // мало — в Firestore правила складываются (любое разрешившее правило открывает
     // доступ), поэтому исключаем его прямо здесь.
     // botStatus пишет сам бот служебным ключом (правила его не касаются).
-    // settings/intake — правила приёмки: какие пункты чек-листа и какие ракурсы
-    // съёмки обязательны. Приёмщик обязан их ЧИТАТЬ, но не менять: иначе
-    // блокировка «без фото VIN приёмку не закрыть» обходится за два клика в
-    // обход интерфейса. Поэтому исключаем и его — правит только управленец.
     match /settings/{id}         { allow read: if isActive();
-                                   allow write: if isActive() && id != 'bot' && id != 'botStatus' && id != 'intake'; }
+                                   allow write: if isActive() && id != 'bot' && id != 'botStatus'; }
     match /settings/bot          { allow write: if isOwner(); }
-    match /settings/intake       { allow write: if isOwner(); }
     match /queue/{id}            { allow read, write: if isActive(); }
     match /cells/{id}            { allow read, write: if isActive(); }
     match /warehouseConfig/{id}  { allow read, write: if isActive(); }

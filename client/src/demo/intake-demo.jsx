@@ -1,166 +1,208 @@
-/* eslint-disable react-refresh/only-export-components */
-// Standalone-демо экрана «Приёмка авто» — БЕЗ Firebase, БЕЗ авторизации, сид в
-// памяти. Рисует ТЕ ЖЕ <IntakeView> и <IntakeCard> через ТУ ЖЕ вью-модель
-// buildIntakeList, что и реальный экран, поэтому это точный предпросмотр.
+// Standalone-демо экрана мастера-приёмщика — БЕЗ Firebase, БЕЗ авторизации, сид в
+// памяти. Рисует НАСТОЯЩИЙ <Intake> целиком: подменены только вызовы к базе, а
+// подписка, часы экрана, попап и запись даты работают как на бою. Поэтому демо —
+// точный предпросмотр, а не отдельная вёрстка.
 //
-// Сид покрывает все состояния плитки: нетронутая свежая, наполовину заполненная,
-// готовая к закрытию, уже закрытая, просроченная (красная) и клиентская машина
-// (другой шаблон чек-листа).
-//
-// Карточку в демо открываем в «песочном» режиме: все записи в Firestore и
-// загрузка фото подменены заглушками, поэтому кнопки нажимаются, но никуда не
-// ходят. Так проверяется вёрстка и логика готовности, а не сеть.
-import { StrictMode, useMemo, useState } from 'react';
+// Что можно потрогать: пригласить машину (уедет из списка в календарь), перенести
+// с чекбоксом и причиной, отметить «клиент подтвердил», нажать «Начать
+// дефектовку» (следующий шаг проекта — честно скажет, что экрана ещё нет).
+// Что «записалось», видно в window.DEMO_WRITES.
+import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
-import IntakeView from '../components/IntakeView';
-import IntakeCard from '../components/IntakeCard';
+import Intake from '../components/Intake';
 import { api } from '../api';
-import {
-  DAY_MS, DEFAULT_INTAKE_SETTINGS, buildIntakeList, photoCategory,
-} from '../intake';
 import '../App.css';
-import '../orderDoc.css';
 
 document.documentElement.dataset.theme = 'dark';
 
 const now = Date.now();
-const daysAgo = (n) => now - n * DAY_MS;
 
-// Заглушка снимка: серый квадрат data-URI, чтобы демо не ходило в сеть.
-const stub = (label) => `data:image/svg+xml;utf8,${encodeURIComponent(
-  `<svg xmlns="http://www.w3.org/2000/svg" width="120" height="120"><rect width="120" height="120" fill="#243040"/><text x="60" y="64" font-size="11" fill="#8e9bab" text-anchor="middle" font-family="sans-serif">${label}</text></svg>`,
-)}`;
+// Момент внутри суток со сдвигом в днях от сегодняшнего — в МЕСТНОМ времени,
+// как и весь экран (см. комментарий про Красноярск в intake.js).
+function dayAt(offsetDays, hh = 9, mm = 0) {
+  const d = new Date(now);
+  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + offsetDays);
+  d.setHours(hh, mm, 0, 0);
+  return d.getTime();
+}
 
-const photo = (slot, i = 0) => ({
-  id: `${slot}-${i}`, category: photoCategory(slot), url: stub(slot), path: `demo/${slot}`,
+const seed = (over) => ({
+  phase: 'approval',
+  approval_status: 'inspection',
+  payment_type: 'insurance',
+  ...over,
 });
 
-const REQUIRED_SLOTS = DEFAULT_INTAKE_SETTINGS.photo_slots.filter((s) => s.required).map((s) => s.id);
-const allPhotos = () => REQUIRED_SLOTS.map((id) => photo(id));
-const insuranceChecked = DEFAULT_INTAKE_SETTINGS.templates[0].items.filter((i) => i.required).map((i) => i.id);
+let JOBS = [
+  // ── Ждут приглашения: зелёная / жёлтая / красная ────────────────────────
+  seed({
+    id: 'w0', car_model: 'Toyota Camry', plate_number: 'А123АВ 124', client_name: 'Иванов П. С.',
+    client_phone: '+7 902 000-11-22', insurer_name: 'Ингосстрах', claim_number: 'У-123/26',
+    policy_number: 'ККК 1234567890', vin: 'XW8ZZZ61ZJG000123', order_number: 'ЗН-2026-0044',
+    approval_since: dayAt(0, 8, 40),
+  }),
+  seed({
+    id: 'w2', car_model: 'Hyundai Solaris', plate_number: 'К221ВМ 124', client_name: 'Сидоров В. А.',
+    client_phone: '+7 913 555-40-01', payment_type: 'cash',
+    notes: 'Машина не на ходу, привезут на эвакуаторе.',
+    approval_since: dayAt(-2, 11, 0),
+  }),
+  seed({
+    id: 'w6', car_model: 'BMW X5', plate_number: 'О456ОО 124', client_name: 'Максимова Е. Ю.',
+    client_phone: '+7 923 118-77-90', insurer_name: 'СОГАЗ', claim_number: 'PVU-77120',
+    approval_since: dayAt(-6, 15, 20),
+  }),
+  seed({
+    id: 'w1', car_model: 'Lada Vesta', plate_number: 'У771ХА 124', client_name: 'Гончаров Д.',
+    client_phone: '', payment_type: 'legal',
+    approval_since: dayAt(-1, 9, 10),
+  }),
 
-const SEED = [
-  { // только что заехала, приёмку не открывали
-    id: 'j1', car_model: 'Toyota Camry', plate_number: 'А123АВ 124', client_name: 'Иванов П.',
-    client_phone: '+7 902 000-11-22', vin: 'XW8ZZZ61ZJG000123', year: '2019', color: 'Чёрный',
-    payment_type: 'insurance', insurer_name: 'Ингосстрах', claim_number: 'У-123/26', policy_type: 'kasko',
-    order_number: 'ЗН-2026-0044',
-    phase: 'approval', approval_status: 'inspection', created_at: daysAgo(0),
-  },
-  { // начали и бросили — часть фото и половина чек-листа
-    id: 'j2', car_model: 'Hyundai Solaris', plate_number: 'К221ВМ 124', client_name: 'Сидоров В.',
-    payment_type: 'cash', phase: 'approval', approval_status: 'inspection', created_at: daysAgo(1),
-    photos: [photo('front_left'), photo('side_left'), photo('vin')],
+  // ── Записаны: сегодня, завтра (с подтверждением и без), дальше ──────────
+  seed({
+    id: 's-today', car_model: 'Skoda Octavia', plate_number: 'Е303КХ 124', client_name: 'Николаев А.',
+    client_phone: '+7 902 944-13-13', insurer_name: 'РЕСО-Гарантия', claim_number: 'РГ-9014',
+    approval_since: dayAt(-3, 10, 0),
     intake: {
-      status: 'open', mileage: '89120', fuel: 'quarter', keys: '1',
-      docs: ['sts'], equipment: ['jack', 'spare', 'mats'],
-      damages: [
-        { id: 'd1', zone: 'bumper_front', kind: 'crack', note: 'слева, крепления сломаны' },
-        { id: 'd2', zone: 'fender_front_left', kind: 'dent' },
+      scheduled_at: dayAt(0, 15, 0), invited_at: dayAt(-3, 10, 30), invited_by: 'priem@akadem.ru',
+      confirmed_at: dayAt(-1, 17, 0), confirmed_for: dayAt(0, 15, 0), confirmed_by: 'priem@akadem.ru',
+      log: [
+        { at: dayAt(-3, 10, 30), by: 'priem@akadem.ru', kind: 'invite', to: dayAt(0, 15, 0) },
+        { at: dayAt(-1, 17, 0), by: 'priem@akadem.ru', kind: 'confirm', to: dayAt(0, 15, 0) },
       ],
-      checked: ['vin_check', 'mileage', 'fuel', 'keys'],
     },
-  },
-  { // всё заполнено — ждёт нажатия «Завершить»
-    id: 'j3', car_model: 'Skoda Octavia', plate_number: 'Е303КХ 124', client_name: 'Николаев А.',
-    payment_type: 'insurance', insurer_name: 'РЕСО-Гарантия', phase: 'approval', approval_status: 'inspection',
-    created_at: daysAgo(0), photos: allPhotos(),
+  }),
+  seed({
+    id: 's-tomorrow', car_model: 'Kia Rio', plate_number: 'Т555ТТ 124', client_name: 'Орлова С. П.',
+    client_phone: '+7 908 201-33-45', payment_type: 'cash',
+    approval_since: dayAt(-2, 12, 0),
     intake: {
-      status: 'open', mileage: '154300', fuel: 'half', keys: '2',
-      docs: ['sts', 'policy', 'referral'], equipment: ['jack', 'spare', 'wheel_wrench', 'first_aid', 'extinguisher'],
-      damages: [{ id: 'd3', zone: 'door_rear_right', kind: 'paint' }],
-      checked: insuranceChecked,
-      notes: 'Клиент просит позвонить после 18:00.',
+      scheduled_at: dayAt(1, 10, 0), invited_at: dayAt(-2, 12, 40), invited_by: 'priem@akadem.ru',
+      log: [{ at: dayAt(-2, 12, 40), by: 'priem@akadem.ru', kind: 'invite', to: dayAt(1, 10, 0) }],
     },
-  },
-  { // стоит неделю, приёмки нет — красная
-    id: 'j4', car_model: 'BMW X5', plate_number: 'О456ОО 124', client_name: 'Максимова Е.',
-    payment_type: 'insurance', insurer_name: 'СОГАЗ', phase: 'approval', approval_status: 'inspection',
-    created_at: daysAgo(7),
-  },
-  { // приёмка закрыта, но в калькуляцию ещё не перевели
-    id: 'j5', car_model: 'Kia Rio', plate_number: 'Т555ТТ 124', client_name: 'Орлова С.',
-    payment_type: 'legal', phase: 'approval', approval_status: 'inspection', created_at: daysAgo(2),
-    photos: allPhotos(),
+  }),
+  seed({
+    id: 's-tomorrow2', car_model: 'VW Tiguan', plate_number: 'Н881РА 124', client_name: 'Белов К.',
+    client_phone: '+7 391 233-90-12', insurer_name: 'Альфастрахование',
+    approval_since: dayAt(-4, 9, 0),
     intake: {
-      status: 'done', mileage: '61200', fuel: 'full', keys: '2',
-      docs: ['sts', 'pts'], equipment: ['jack', 'spare'], damages: [],
-      checked: DEFAULT_INTAKE_SETTINGS.templates[1].items.map((i) => i.id),
-      act_number: 'ПР-2026-0003', act_date: daysAgo(2), done_at: daysAgo(2),
+      scheduled_at: dayAt(1, 14, 30), invited_at: dayAt(-4, 9, 30), invited_by: 'priem@akadem.ru',
+      confirmed_at: dayAt(0, 9, 5), confirmed_for: dayAt(1, 14, 30), confirmed_by: 'priem@akadem.ru',
+      log: [
+        { at: dayAt(-4, 9, 30), by: 'priem@akadem.ru', kind: 'invite', to: dayAt(1, 14, 30) },
+        { at: dayAt(0, 9, 5), by: 'priem@akadem.ru', kind: 'confirm', to: dayAt(1, 14, 30) },
+      ],
     },
-  },
-  { id: 'j6', car_model: 'VW Tiguan', plate_number: 'Н881РА 124', phase: 'approval', approval_status: 'calc' },
-  { id: 'j7', car_model: 'Mazda CX-5', plate_number: 'Р404ЕК 124', phase: 'repair' },
+  }),
+  seed({
+    id: 's-next', car_model: 'Mazda CX-5', plate_number: 'Р404ЕК 124', client_name: 'Зотова М.',
+    client_phone: '+7 902 777-01-55', insurer_name: 'Ингосстрах', claim_number: 'У-980/26',
+    approval_since: dayAt(-5, 10, 0),
+    // Дважды переносили — в попапе видно всю историю с причинами.
+    intake: {
+      scheduled_at: dayAt(8, 11, 0), invited_at: dayAt(-5, 11, 0), invited_by: 'priem@akadem.ru',
+      log: [
+        { at: dayAt(-5, 11, 0), by: 'priem@akadem.ru', kind: 'invite', to: dayAt(2, 9, 0) },
+        { at: dayAt(-2, 16, 20), by: 'priem@akadem.ru', kind: 'move', from: dayAt(2, 9, 0), to: dayAt(8, 11, 0), reason: 'клиент в командировке до конца недели' },
+      ],
+    },
+  }),
+  seed({
+    id: 's-week2', car_model: 'Renault Duster', plate_number: 'С090МН 124', client_name: 'Пахомов И.',
+    client_phone: '+7 913 004-88-20', payment_type: 'cash',
+    approval_since: dayAt(-1, 13, 0),
+    intake: { scheduled_at: dayAt(9, 16, 0), invited_at: dayAt(-1, 13, 30), log: [] },
+  }),
+
+  // ── Просроченные: вчера и совсем давняя (в сетку уже не попадает) ───────
+  seed({
+    id: 'o-yesterday', car_model: 'Nissan X-Trail', plate_number: 'В700ОР 124', client_name: 'Ефимов А. Л.',
+    client_phone: '+7 923 500-19-04', insurer_name: 'ВСК', claim_number: 'ВСК-4410',
+    approval_since: dayAt(-7, 9, 0),
+    intake: {
+      scheduled_at: dayAt(-1, 9, 0), invited_at: dayAt(-7, 9, 30),
+      log: [{ at: dayAt(-7, 9, 30), by: 'priem@akadem.ru', kind: 'invite', to: dayAt(-1, 9, 0) }],
+    },
+  }),
+  seed({
+    id: 'o-old', car_model: 'Chery Tiggo 7', plate_number: 'М012АК 124', client_name: 'Русанова О.',
+    client_phone: '+7 902 611-22-33', insurer_name: 'Согласие',
+    approval_since: dayAt(-16, 9, 0),
+    intake: {
+      scheduled_at: dayAt(-9, 13, 0), invited_at: dayAt(-16, 10, 0),
+      log: [{ at: dayAt(-16, 10, 0), by: 'priem@akadem.ru', kind: 'invite', to: dayAt(-9, 13, 0) }],
+    },
+  }),
+
+  // ── Далёкий хвост: «приедут позже двух недель» ─────────────────────────
+  seed({
+    id: 'l-far', car_model: 'Geely Monjaro', plate_number: 'Х222ХХ 124', client_name: 'Дементьев Р.',
+    client_phone: '+7 908 900-40-40', insurer_name: 'Ингосстрах', claim_number: 'У-1102/26',
+    approval_since: dayAt(-1, 9, 0),
+    intake: { scheduled_at: dayAt(22, 10, 0), invited_at: dayAt(-1, 9, 30), log: [] },
+  }),
+
+  // ── Не наши: другая колонка и другая фаза — на экран попасть не должны ──
+  seed({ id: 'x-calc', car_model: 'Haval Jolion', plate_number: 'Ж999ЖЖ 124', approval_status: 'calc' }),
+  { id: 'x-repair', car_model: 'Ford Focus', plate_number: 'Ц111ЦЦ 124', phase: 'repair' },
 ];
 
-// «Песочница»: подменяем всё, что ходит в сеть, — демо должно нажиматься целиком.
-// api подменяем прямо в объекте (как car-card-demo); загрузку фото — через проп
-// uploadFn, потому что пространство имён ES-модуля переприсвоить нельзя.
-// Что именно «записалось», видно в window.DEMO_WRITES.
+// ── «Песочница» вместо Firestore ──────────────────────────────────────────
+// Подписку и записи подменяем прямо в объекте api (как car-card-demo). Записи
+// меняют сид в памяти и переизлучают подписку — поэтому приглашённая машина
+// действительно уезжает из списка в календарь, как в приложении.
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const DEMO_WRITES = [];
 window.DEMO_WRITES = DEMO_WRITES;
-api.jobs.saveIntake = async (jobId, patch) => { DEMO_WRITES.push({ op: 'saveIntake', jobId, patch }); await wait(250); };
-api.jobs.addPhoto = async (jobId, p) => { DEMO_WRITES.push({ op: 'addPhoto', jobId, slot: p.category }); await wait(150); };
-api.jobs.removePhoto = async (jobId, id) => { DEMO_WRITES.push({ op: 'removePhoto', jobId, id }); await wait(150); };
-// Возвращает пару { number, at } — тот же контракт, что у настоящего api:
-// печатный лист берёт дату оттуда же, откуда номер.
-api.jobs.ensureIntakeActNumber = async () => { await wait(250); return { number: 'ПР-2026-0009', at: now }; };
-api.jobs.update = async (jobId, patch) => { DEMO_WRITES.push({ op: 'update', jobId, patch }); await wait(250); };
 
-const demoUpload = async (jobId, file, onProgress) => {
-  for (let p = 20; p <= 100; p += 20) { onProgress?.(p); await wait(80); }
-  return { url: stub('новое'), path: 'demo/new', size: 1000, w: 120, h: 120 };
+const listeners = new Set();
+const emit = () => { for (const fn of listeners) fn(JOBS.map((j) => ({ ...j }))); };
+
+api.jobs.subscribeApproval = (onData) => {
+  listeners.add(onData);
+  setTimeout(() => onData(JOBS.map((j) => ({ ...j }))), 80);   // как первый снапшот
+  return () => listeners.delete(onData);
 };
 
-const COMPANY = {
-  name: 'Авто Академия', inn: '246000000000', address: 'г. Красноярск, ул. Пример, 1',
-  phone: '+7 391 000-00-00', director: 'Герасимов А. В.',
+const patchJob = (jobId, fn) => {
+  JOBS = JOBS.map((j) => (j.id === jobId ? { ...j, intake: fn(j.intake || {}) } : j));
+  emit();
 };
 
-function Demo() {
-  const [query, setQuery] = useState('');
-  const [sort, setSort] = useState('urgent');
-  const [openId, setOpenId] = useState(null);
+// Повторяет логику настоящей транзакции: журнал, отметки «кто/когда» и сброс
+// подтверждения при переносе — чтобы в демо ловились те же огрехи, что на бою.
+api.jobs.setIntakeDate = async (jobId, { at, reason = '', agreed = false }) => {
+  DEMO_WRITES.push({ op: 'setIntakeDate', jobId, at, reason, agreed });
+  await wait(300);
+  patchJob(jobId, (prev) => {
+    const had = Number(prev.scheduled_at) || 0;
+    const entry = { at: Date.now(), by: 'priem@akadem.ru (демо)', kind: had ? 'move' : 'invite', to: at };
+    if (had) entry.from = had;
+    if (reason.trim()) entry.reason = reason.trim();
+    return {
+      ...prev,
+      scheduled_at: at,
+      invited_at: Number(prev.invited_at) || Date.now(),
+      confirmed_at: 0, confirmed_for: 0,
+      log: [...(prev.log || []), entry],
+    };
+  });
+};
 
-  const vm = useMemo(
-    () => buildIntakeList(SEED, DEFAULT_INTAKE_SETTINGS, { query, sort, nowMs: now }),
-    [query, sort],
-  );
-
-  const openJob = openId ? SEED.find((j) => j.id === openId) : null;
-
-  return (
-    <>
-      <IntakeView
-        loading={false}
-        rows={vm.rows}
-        counts={vm.counts}
-        query={query}
-        onQuery={setQuery}
-        sort={sort}
-        onSort={setSort}
-        onOpen={setOpenId}
-      />
-      {openJob && (
-        <IntakeCard
-          key={openId}
-          job={openJob}
-          settings={DEFAULT_INTAKE_SETTINGS}
-          company={COMPANY}
-          userName="Петров С. (демо)"
-          uploadFn={demoUpload}
-          onClose={() => setOpenId(null)}
-          onOpenDocs={() => window.alert('Демо: в приложении откроются документы машины (ЗН / акт / счёт).')}
-          onAdvanced={() => window.alert('Демо: машина ушла бы в колонку «Калькуляция».')}
-        />
-      )}
-    </>
-  );
-}
+api.jobs.confirmIntakeVisit = async (jobId) => {
+  DEMO_WRITES.push({ op: 'confirmIntakeVisit', jobId });
+  await wait(250);
+  patchJob(jobId, (prev) => ({
+    ...prev,
+    confirmed_at: Date.now(),
+    confirmed_for: Number(prev.scheduled_at) || 0,
+    log: [...(prev.log || []), { at: Date.now(), by: 'priem@akadem.ru (демо)', kind: 'confirm', to: Number(prev.scheduled_at) || 0 }],
+  }));
+};
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Demo />
+    <Intake />
   </StrictMode>,
 );

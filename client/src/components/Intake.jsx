@@ -1,90 +1,135 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
-import { buildIntakeList } from '../intake';
+import { buildIntakeBoard, fmtDayTime, intakeRow } from '../intake';
 import IntakeView from './IntakeView';
-import IntakeCard from './IntakeCard';
-import DocumentsModal from './DocumentsModal';
+import IntakeCarModal from './IntakeCarModal';
 
-// Контейнер экрана «Приёмка авто»: живая подписка на машины фазы «согласование»
-// (её же слушает доска «Согласование»), настройки приёмки, состояние фильтров и
-// открытие карточки одной машины. Вся логика готовности — в intake.js, вся
-// вёрстка списка — в IntakeView.
+// Контейнер экрана мастера-приёмщика: живая подписка на машины фазы
+// «согласование» (её же слушает доска «Согласование»), состояние поиска и попапа,
+// запись на дефектовку. Вся логика раскладки — в intake.js, вся вёрстка — в
+// IntakeView и IntakeCarModal.
 //
 // Отдельной подписки «только машины на осмотре» нет сознательно: subscribeApproval
 // уже приходит целиком, а лишний onSnapshot — это второй поток чтений Firestore
-// при бесплатной квоте. Отбор по под-статусу делает buildIntakeList.
-export default function Intake({ profile = null }) {
+// при бесплатной квоте. Отбор по под-статусу делает buildIntakeBoard.
+
+export default function Intake() {
   const [jobs, setJobs] = useState(null);        // null → ещё грузим
-  const [settings, setSettings] = useState(null);
-  const [company, setCompany] = useState({});
   const [query, setQuery] = useState('');
-  const [sort, setSort] = useState('urgent');
   const [openId, setOpenId] = useState(null);
-  const [docsJob, setDocsJob] = useState(null);
   const [nowMs, setNowMs] = useState(() => Date.now());
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const [note, setNote] = useState('');
 
   useEffect(() => {
     const unsub = api.jobs.subscribeApproval(setJobs, () => setJobs([]));
     return () => unsub();
   }, []);
 
-  // Настройки и реквизиты читаем разово: они меняются раз в месяц, а живая
-  // подписка на них стоила бы столько же, сколько подписка на машины.
-  // Сбой чтения не должен ронять экран — тогда работаем на дефолтах intake.js.
-  useEffect(() => {
-    api.settings.getIntake().then(setSettings).catch(() => setSettings({}));
-    api.settings.getCompany().then(setCompany).catch(() => {});
-  }, []);
-
-  // Счётчик «сколько дней машина стоит» должен оставаться живым у экрана,
-  // открытого весь день. Date.now() в рендере запрещён правилом чистоты проекта.
+  // Часы экрана. «Сколько дней ждёт», «завтра», подсветка сегодняшней клетки и
+  // сами напоминания зависят от текущего момента, а экран у приёмщика открыт весь
+  // день. Date.now() в рендере запрещён правилом чистоты проекта.
   useEffect(() => {
     const t = setInterval(() => setNowMs(Date.now()), 60000);
     return () => clearInterval(t);
   }, []);
 
-  const vm = useMemo(
-    () => buildIntakeList(jobs || [], settings, { query, sort, nowMs }),
-    [jobs, settings, query, sort, nowMs],
+  // Короткое сообщение об успехе гаснет само: подтверждать его кнопкой — лишнее
+  // касание у человека, который стоит с телефоном в одной руке.
+  useEffect(() => {
+    if (!note) return undefined;
+    const t = setTimeout(() => setNote(''), 4000);
+    return () => clearTimeout(t);
+  }, [note]);
+
+  const board = useMemo(
+    () => buildIntakeBoard(jobs || [], { nowMs, query }),
+    [jobs, nowMs, query],
   );
 
-  // Открытая машина берётся из ЖИВОГО списка: пока приёмщик заполняет карточку,
-  // запчастист мог дописать позиции — карточка не должна показывать слепок.
-  const openJob = useMemo(
-    () => (openId ? (jobs || []).find((j) => j.id === openId) || null : null),
-    [jobs, openId],
-  );
+  // Открытая машина считается от ЖИВОГО списка, а не запоминается при клике: пока
+  // приёмщик звонит, управленец мог дописать примечание или поменять страховую.
+  // Ищем по всем машинам, а не по отфильтрованным поиском, — иначе набранный
+  // текст закрыл бы уже открытый попап.
+  const openRow = useMemo(() => {
+    const job = openId ? (jobs || []).find((j) => j.id === openId) : null;
+    return job ? intakeRow(job, nowMs) : null;
+  }, [jobs, openId, nowMs]);
+
+  function open(id) {
+    setError('');
+    setOpenId(id);
+  }
+
+  function close() {
+    setError('');
+    setOpenId(null);
+  }
+
+  const schedule = useCallback(async ({ at, reason, agreed }) => {
+    if (!openId) return;
+    setBusy(true);
+    setError('');
+    try {
+      const moved = !!openRow?.scheduled_at;
+      await api.jobs.setIntakeDate(openId, { at, reason, agreed });
+      setNote(`${moved ? 'Перенесли' : 'Записали'} на ${fmtDayTime(at)}`);
+      setOpenId(null);
+    } catch (e) {
+      setError(e?.message || 'Не удалось сохранить — нет связи');
+    } finally {
+      setBusy(false);
+    }
+  }, [openId, openRow]);
+
+  const confirmVisit = useCallback(async (id) => {
+    setBusy(true);
+    setError('');
+    try {
+      await api.jobs.confirmIntakeVisit(id);
+      setNote('Отметили: клиент подтвердил приезд');
+    } catch (e) {
+      setError(e?.message || 'Не удалось сохранить — нет связи');
+    } finally {
+      setBusy(false);
+    }
+  }, []);
+
+  // Следующий шаг проекта: сам осмотр (чек-лист, фото, повреждения). Пока кнопка
+  // честно говорит, что экрана ещё нет, — молчащая кнопка выглядела бы поломкой.
+  const startInspection = useCallback(() => {
+    setNote('Экран дефектовки пока не сделан — это следующий шаг');
+  }, []);
 
   return (
     <>
       <IntakeView
-        loading={jobs === null || settings === null}
-        rows={vm.rows}
-        counts={vm.counts}
+        loading={jobs === null}
+        board={board}
         query={query}
         onQuery={setQuery}
-        sort={sort}
-        onSort={setSort}
-        onOpen={setOpenId}
+        nowMs={nowMs}
+        onOpen={open}
+        onConfirm={confirmVisit}
+        onStart={startInspection}
       />
 
-      {/* key={openId} — карточка каждой машины стартует с чистым состоянием */}
-      {openJob && (
-        <IntakeCard
-          key={openId}
-          job={openJob}
-          settings={vm.settings}
-          company={company}
-          userName={profile?.name || ''}
-          onClose={() => setOpenId(null)}
-          onOpenDocs={async (job) => setDocsJob(await api.jobs.get(job.id))}
-          onAdvanced={() => setOpenId(null)}
+      {openRow && (
+        <IntakeCarModal
+          key={openRow.id}
+          row={openRow}
+          nowMs={nowMs}
+          busy={busy}
+          error={error}
+          onClose={close}
+          onSchedule={schedule}
+          onConfirm={confirmVisit}
+          onStart={startInspection}
         />
       )}
 
-      {docsJob && (
-        <DocumentsModal job={docsJob} company={company} onClose={() => setDocsJob(null)} />
-      )}
+      {note && <div className="ink-toast">{note}</div>}
     </>
   );
 }

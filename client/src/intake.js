@@ -1,419 +1,229 @@
-// Экран «Приёмка авто» — предремонтная приёмка машины мастером-приёмщиком.
+// Экран мастера-приёмщика — диспетчерская дефектовки.
 //
-// ЧТО ЭТО. Машина заехала на площадку и стоит в колонке «Осмотр / дефектовка»
-// доски «Согласование» (phase = approval, approval_status = 'inspection'). До
-// того как её отдадут в калькуляцию, приёмщик обязан зафиксировать состояние:
-// пробег, топливо, ключи, документы, комплектность, все видимые повреждения и
-// обязательный набор фотографий. Это защита сервиса в споре «а вот этой царапины
-// не было» — и одновременно исходник для сметы.
+// ЧТО ЭТО. Машина заведена в систему (страховая дала направление или клиент
+// обратился сам), но физически её ещё нет: сначала приёмщик обязан позвонить и
+// договориться, когда её привезут на дефектовку. Экран отвечает на три вопроса —
+// кому звонить прямо сейчас, кто приедет в ближайшие две недели и про кого пора
+// напомнить. Сама дефектовка (осмотр, фото, повреждения) — следующий шаг, здесь
+// только запись на неё.
 //
-// ГДЕ ЖИВУТ ДАННЫЕ. Всё лежит в самом документе машины, в поле `job.intake`
-// (см. api.jobs.saveIntake). Отдельная коллекция не заводится сознательно: экран
-// и так подписан на машины, лишние чтения Firestore не нужны — при бесплатной
-// квоте это заметно (см. память «Нагрузка на Firebase»). Фотографии — в общем
-// `job.photos` с категорией `intake:<слот>`, чтобы переиспользовать готовую
-// загрузку на свой сервер и удаление файлов вместе с машиной.
+// ОТКУДА МАШИНЫ. Колонка «Осмотр / дефектовка» доски «Согласование»
+// (phase = approval, approval_status = 'inspection'). Как только машину переводят
+// в «Калькуляцию», она с экрана уходит — приёмщику она больше не нужна.
 //
-// НАСТРОЙКИ. Шаблоны чек-листов, рубрики фото, зоны повреждений и списки
-// комплектности редактируются управленцем в «Настройки → Приёмка авто»
-// (settings/intake). Здесь — только ДЕФОЛТЫ и чистая логика поверх них.
+// ГДЕ ЖИВУТ ДАННЫЕ. В самом документе машины, поле `job.intake`
+// (см. api.jobs.setIntakeDate). Отдельная коллекция не заводится сознательно:
+// экран и так подписан на машины, лишние чтения Firestore при бесплатной квоте
+// заметны (см. память «Нагрузка на Firebase»).
+//
+// ВРЕМЯ — ВСЕГДА МЕСТНОЕ. Сервис работает по Красноярску, а «завтра», «день
+// прошёл» и клетки календаря считаются по календарным суткам, а не по разнице в
+// миллисекундах: дефектовка в 09:00 завтра — это «завтра» и в 23:50, и в 00:10.
 //
 // Модуль намеренно без зависимостей (как billing.js / monitor.js), чтобы
 // гоняться юнит-тестами:  node --test src/intake.test.js
 
 import { isApproval } from './phase.js';
 
-// Под-статус согласования, машины которого попадают на экран приёмки.
+// Под-статус согласования, машины которого попадают на экран приёмщика.
 export const INTAKE_APPROVAL_STATUS = 'inspection';
 
-// Префикс категории фото приёмки в общем job.photos. Именно по нему экран
-// отбирает свои снимки, а зона «Фото — до ремонта» в карточке машины их НЕ
-// подхватывает (она фильтрует category === 'before').
-export const INTAKE_PHOTO_PREFIX = 'intake:';
+// Сколько дней машина может висеть без приглашения, прежде чем строка начнёт
+// желтеть и краснеть. Направление от страховой отрабатывают в день получения,
+// поэтому пороги низкие: сутки — уже пора звонить, три дня — просрочено.
+export const INVITE_WARN_DAYS = 1;
+export const INVITE_ALERT_DAYS = 3;
 
-export const photoCategory = (slotId) => `${INTAKE_PHOTO_PREFIX}${slotId}`;
-export const photoSlotId = (category) =>
-  (typeof category === 'string' && category.startsWith(INTAKE_PHOTO_PREFIX)
-    ? category.slice(INTAKE_PHOTO_PREFIX.length)
-    : null);
+// Горизонт календаря: текущая и следующая недели. Всё, что дальше, уходит в
+// список «приедут позже» — в сетке от них был бы только шум.
+export const CALENDAR_WEEKS = 2;
 
-// ─── Дефолтные справочники ───────────────────────────────────────────────────
+export const DAY_MS = 86400000;
 
-// Обязательные ракурсы съёмки. `required: true` → без снимка приёмку не закрыть.
-// «Повреждения крупно» обязателен всегда: именно эти кадры потом решают спор.
-export const DEFAULT_PHOTO_SLOTS = [
-  { id: 'front_left', label: 'Перед ¾ слева', required: true },
-  { id: 'rear_right', label: 'Зад ¾ справа', required: true },
-  { id: 'side_left', label: 'Левый борт', required: true },
-  { id: 'side_right', label: 'Правый борт', required: true },
-  { id: 'vin', label: 'VIN-табличка', required: true },
-  { id: 'odometer', label: 'Панель приборов (пробег)', required: true },
-  { id: 'interior', label: 'Салон', required: false },
-  { id: 'damage', label: 'Повреждения крупно', required: true },
-];
+const MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+const WEEKDAYS_SHORT = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
 
-// Уровень топлива — как на приборной панели, восемь делений слишком мелко.
-export const FUEL_LEVELS = [
-  { id: 'empty', label: 'Пусто' },
-  { id: 'quarter', label: '¼' },
-  { id: 'half', label: '½' },
-  { id: 'three_quarters', label: '¾' },
-  { id: 'full', label: 'Полный' },
-];
-
-// Документы, которые клиент передаёт вместе с машиной.
-export const DEFAULT_DOC_ITEMS = [
-  { id: 'sts', label: 'СТС' },
-  { id: 'pts', label: 'ПТС' },
-  { id: 'policy', label: 'Полис (ОСАГО/КАСКО)' },
-  { id: 'referral', label: 'Направление страховой' },
-  { id: 'passport', label: 'Паспорт собственника (копия)' },
-  { id: 'power_of_attorney', label: 'Доверенность' },
-];
-
-// Комплектность — то, из-за чего чаще всего возникают претензии при выдаче.
-export const DEFAULT_EQUIPMENT_ITEMS = [
-  { id: 'jack', label: 'Домкрат' },
-  { id: 'spare', label: 'Запасное колесо' },
-  { id: 'wheel_wrench', label: 'Баллонный ключ' },
-  { id: 'tools', label: 'Набор инструмента' },
-  { id: 'first_aid', label: 'Аптечка' },
-  { id: 'extinguisher', label: 'Огнетушитель' },
-  { id: 'warning_triangle', label: 'Знак аварийной остановки' },
-  { id: 'radio', label: 'Магнитола / мультимедиа' },
-  { id: 'mats', label: 'Коврики' },
-  { id: 'wheel_lock_key', label: 'Секретка на колёса' },
-];
-
-// Зоны кузова для отметки повреждений. Плоский список, а не кликабельная схема:
-// приёмщик работает с телефона одной рукой, галочки быстрее и надёжнее рисунка,
-// и такой список потом переносится в смету построчно.
-export const DEFAULT_DAMAGE_ZONES = [
-  { id: 'bumper_front', label: 'Бампер передний', group: 'Перед' },
-  { id: 'hood', label: 'Капот', group: 'Перед' },
-  { id: 'grille', label: 'Решётка радиатора', group: 'Перед' },
-  { id: 'headlight_left', label: 'Фара левая', group: 'Перед' },
-  { id: 'headlight_right', label: 'Фара правая', group: 'Перед' },
-  { id: 'windshield', label: 'Лобовое стекло', group: 'Перед' },
-
-  { id: 'fender_front_left', label: 'Крыло переднее левое', group: 'Левый борт' },
-  { id: 'door_front_left', label: 'Дверь передняя левая', group: 'Левый борт' },
-  { id: 'door_rear_left', label: 'Дверь задняя левая', group: 'Левый борт' },
-  { id: 'sill_left', label: 'Порог левый', group: 'Левый борт' },
-  { id: 'fender_rear_left', label: 'Крыло заднее левое', group: 'Левый борт' },
-  { id: 'mirror_left', label: 'Зеркало левое', group: 'Левый борт' },
-
-  { id: 'fender_front_right', label: 'Крыло переднее правое', group: 'Правый борт' },
-  { id: 'door_front_right', label: 'Дверь передняя правая', group: 'Правый борт' },
-  { id: 'door_rear_right', label: 'Дверь задняя правая', group: 'Правый борт' },
-  { id: 'sill_right', label: 'Порог правый', group: 'Правый борт' },
-  { id: 'fender_rear_right', label: 'Крыло заднее правое', group: 'Правый борт' },
-  { id: 'mirror_right', label: 'Зеркало правое', group: 'Правый борт' },
-
-  { id: 'bumper_rear', label: 'Бампер задний', group: 'Зад' },
-  { id: 'trunk', label: 'Крышка багажника', group: 'Зад' },
-  { id: 'taillight_left', label: 'Фонарь левый', group: 'Зад' },
-  { id: 'taillight_right', label: 'Фонарь правый', group: 'Зад' },
-  { id: 'rear_window', label: 'Заднее стекло', group: 'Зад' },
-
-  { id: 'roof', label: 'Крыша', group: 'Прочее' },
-  { id: 'wheel_front_left', label: 'Диск переднего левого', group: 'Прочее' },
-  { id: 'wheel_front_right', label: 'Диск переднего правого', group: 'Прочее' },
-  { id: 'wheel_rear_left', label: 'Диск заднего левого', group: 'Прочее' },
-  { id: 'wheel_rear_right', label: 'Диск заднего правого', group: 'Прочее' },
-  { id: 'interior', label: 'Салон', group: 'Прочее' },
-];
-
-// Характер повреждения. Порядок = по возрастанию тяжести, чтобы в акте строки
-// читались единообразно.
-export const DAMAGE_KINDS = [
-  { id: 'scratch', label: 'Царапина' },
-  { id: 'chip', label: 'Скол' },
-  { id: 'dent', label: 'Вмятина' },
-  { id: 'crack', label: 'Излом / трещина' },
-  { id: 'tear', label: 'Разрыв' },
-  { id: 'missing', label: 'Отсутствует' },
-  { id: 'paint', label: 'Требует окраски' },
-  { id: 'replace', label: 'Требует замены' },
-];
-
-export const DEFAULT_DAMAGE_KIND = 'scratch';
-
-// ─── Дефолтные шаблоны чек-листов ────────────────────────────────────────────
-// `payment_types` решает, какой шаблон подставится машине автоматически. Шаблон
-// без payment_types считается универсальным (fallback, если ничего не подошло).
-
-const INSURANCE_ITEMS = [
-  { id: 'vin_check', text: 'Сверить VIN и госномер с документами', required: true },
-  { id: 'mileage', text: 'Записать пробег', required: true },
-  { id: 'fuel', text: 'Отметить уровень топлива', required: true },
-  { id: 'keys', text: 'Принять ключи, записать количество комплектов', required: true },
-  { id: 'docs', text: 'Принять документы: СТС, полис, направление страховой', required: true },
-  { id: 'equipment', text: 'Проверить комплектность (домкрат, запаска, аптечка…)', required: true },
-  { id: 'damages', text: 'Осмотреть кузов и отметить все видимые повреждения', required: true },
-  { id: 'photos', text: 'Сделать круговую фотосъёмку', required: true },
-  { id: 'upsell', text: 'Уточнить у клиента дополнительные пожелания (допродажи)', required: false },
-  { id: 'act', text: 'Распечатать акт приёмки и подписать у клиента', required: true },
-  { id: 'term', text: 'Согласовать с клиентом ориентировочный срок', required: false },
-  { id: 'contact', text: 'Записать телефон и удобное время для звонка', required: true },
-];
-
-const CLIENT_ITEMS = [
-  { id: 'vin_check', text: 'Сверить VIN и госномер с документами', required: true },
-  { id: 'mileage', text: 'Записать пробег', required: true },
-  { id: 'fuel', text: 'Отметить уровень топлива', required: true },
-  { id: 'keys', text: 'Принять ключи, записать количество комплектов', required: true },
-  { id: 'docs', text: 'Принять документы на машину', required: true },
-  { id: 'equipment', text: 'Проверить комплектность (домкрат, запаска, аптечка…)', required: true },
-  { id: 'damages', text: 'Осмотреть кузов и отметить все видимые повреждения', required: true },
-  { id: 'photos', text: 'Сделать круговую фотосъёмку', required: true },
-  { id: 'scope', text: 'Согласовать с клиентом объём работ', required: true },
-  { id: 'prepay', text: 'Обсудить предоплату', required: false },
-  { id: 'act', text: 'Распечатать акт приёмки и подписать у клиента', required: true },
-  { id: 'contact', text: 'Записать телефон и удобное время для звонка', required: true },
-];
-
-export const DEFAULT_TEMPLATES = [
-  { id: 'insurance', label: 'Страховая машина', payment_types: ['insurance'], items: INSURANCE_ITEMS },
-  { id: 'client', label: 'Клиент / юрлицо', payment_types: ['cash', 'legal'], items: CLIENT_ITEMS },
-];
-
-// Юридический блок печатного акта приёмки. Правится управленцем в настройках —
-// формулировки под конкретный сервис подбирает он, а не программа.
-export const DEFAULT_ACT_TEXT =
-  'Транспортное средство передано Исполнителю для проведения осмотра (дефектовки) и ' +
-  'последующего ремонта. Настоящий акт фиксирует комплектность и состояние ТС на момент ' +
-  'приёмки. Заказчик подтверждает, что перечень повреждений и комплектность, указанные в ' +
-  'акте, соответствуют фактическому состоянию ТС, и что ценные вещи и документы из салона и ' +
-  'багажника изъяты. Исполнитель не несёт ответственности за оставленные в ТС ценности. ' +
-  'Скрытые повреждения и дефекты, не выявляемые при внешнем осмотре, фиксируются ' +
-  'дополнительно в ходе дефектовки и согласуются с Заказчиком отдельно.';
-
-// Полные настройки экрана по умолчанию — то, что увидит управленец, ни разу не
-// заходивший в «Настройки → Приёмка авто».
-export const DEFAULT_INTAKE_SETTINGS = {
-  templates: DEFAULT_TEMPLATES,
-  photo_slots: DEFAULT_PHOTO_SLOTS,
-  damage_zones: DEFAULT_DAMAGE_ZONES,
-  equipment: DEFAULT_EQUIPMENT_ITEMS,
-  docs: DEFAULT_DOC_ITEMS,
-  act_text: DEFAULT_ACT_TEXT,
-  require_mileage: true,
-  require_photos: true,
-  // Через сколько дней стояния без закрытой приёмки машина краснеет в списке.
-  warn_days: 1,
-  alert_days: 2,
-};
-
-// ─── Нормализация ────────────────────────────────────────────────────────────
+// ─── Мелкие утилиты ──────────────────────────────────────────────────────────
 
 const str = (v) => (typeof v === 'string' ? v : v == null ? '' : String(v));
-const bool = (v, fallback = false) => (typeof v === 'boolean' ? v : fallback);
 const arr = (v) => (Array.isArray(v) ? v : []);
+const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
-// Список-справочник {id, label, …} из базы: выбрасываем мусор (записи без id или
-// без подписи), но сохраняем прочие поля — так добавление нового поля в справочник
-// не требует правок здесь.
-function cleanDict(list, fallback) {
-  const out = arr(list)
-    .filter((x) => x && typeof x === 'object' && str(x.id).trim() && str(x.label).trim())
-    .map((x) => ({ ...x, id: str(x.id).trim(), label: str(x.label).trim() }));
-  return out.length ? out : fallback;
+// ─── Календарные сутки (местное время) ───────────────────────────────────────
+
+// Полночь того дня, в который попадает момент. Основа всех сравнений «какой это
+// день»: сравнивать сами моменты нельзя — 23:50 и 00:10 отличаются на 20 минут,
+// но это разные сутки.
+export function startOfDay(ms) {
+  const t = num(ms);
+  if (!t) return 0;
+  const d = new Date(t);
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
 }
 
-function cleanTemplate(t) {
-  const items = arr(t.items)
-    .filter((i) => i && typeof i === 'object' && str(i.id).trim() && str(i.text).trim())
-    .map((i) => ({ id: str(i.id).trim(), text: str(i.text).trim(), required: bool(i.required, true) }));
-  return {
-    id: str(t.id).trim(),
-    label: str(t.label).trim() || 'Без названия',
-    payment_types: arr(t.payment_types).map(str).filter(Boolean),
-    items,
-  };
+// 'ГГГГ-ММ-ДД' в МЕСТНОМ времени — ключ клетки календаря. Через toISOString()
+// ночная запись по Красноярску попала бы во вчерашнюю клетку.
+export function dayKey(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  const d = new Date(t);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 }
 
-// Слитые с дефолтами настройки. Пустой/битый раздел откатывается к дефолту
-// целиком — полупустой справочник (например, ноль рубрик фото) сломал бы правило
-// «без фото не закрыть», а молчаливая поломка правила хуже, чем игнор кривых данных.
-export function normalizeIntakeSettings(raw) {
-  const s = raw && typeof raw === 'object' ? raw : {};
-  const templates = arr(s.templates)
-    .filter((t) => t && typeof t === 'object' && str(t.id).trim())
-    .map(cleanTemplate)
-    .filter((t) => t.items.length);
-  return {
-    templates: templates.length ? templates : DEFAULT_TEMPLATES,
-    photo_slots: cleanDict(s.photo_slots, DEFAULT_PHOTO_SLOTS).map((x) => ({ ...x, required: bool(x.required, true) })),
-    damage_zones: cleanDict(s.damage_zones, DEFAULT_DAMAGE_ZONES),
-    equipment: cleanDict(s.equipment, DEFAULT_EQUIPMENT_ITEMS),
-    docs: cleanDict(s.docs, DEFAULT_DOC_ITEMS),
-    // Пустой текст = «печатать без юр-блока» и сохраняется как есть; к дефолту
-    // откатываемся только если поля не было вовсе.
-    act_text: typeof s.act_text === 'string' ? s.act_text : DEFAULT_ACT_TEXT,
-    require_mileage: bool(s.require_mileage, true),
-    require_photos: bool(s.require_photos, true),
-    warn_days: Number.isFinite(Number(s.warn_days)) ? Math.max(0, Number(s.warn_days)) : 1,
-    alert_days: Number.isFinite(Number(s.alert_days)) ? Math.max(1, Number(s.alert_days)) : 2,
-  };
+// Разница в КАЛЕНДАРНЫХ днях: «сколько раз наступила полночь между from и to».
+// Может быть отрицательной (to раньше from). Через деление на DAY_MS без
+// нормализации к полуночи ответ зависел бы от времени суток.
+export function dayDiff(fromMs, toMs) {
+  const a = startOfDay(fromMs);
+  const b = startOfDay(toMs);
+  if (!a || !b) return 0;
+  return Math.round((b - a) / DAY_MS);
 }
+
+// Полночь понедельника той недели, в которую попадает момент. Неделя начинается
+// с понедельника — так её видит вся страна и так же устроен DateTimeField.
+export function startOfWeek(ms) {
+  const t = startOfDay(ms);
+  if (!t) return 0;
+  const d = new Date(t);
+  const shift = (d.getDay() + 6) % 7;   // Вс = 0 у Date → 6 у нас
+  d.setDate(d.getDate() - shift);
+  return d.getTime();
+}
+
+// Прибавить дни через сам Date, а не через +n*DAY_MS: на переходах зимнего
+// времени арифметика в миллисекундах даёт 23-часовые «сутки».
+export function addDays(ms, n) {
+  const t = startOfDay(ms);
+  if (!t) return 0;
+  const d = new Date(t);
+  d.setDate(d.getDate() + Math.round(num(n)));
+  return d.getTime();
+}
+
+// 'ГГГГ-ММ-ДДTЧЧ:ММ' (то, что отдаёт DateTimeField) → ms в местном времени.
+// new Date('2026-08-12T14:30') браузеры читают как местное, но Node — по-разному
+// в зависимости от версии, а модуль обязан считаться одинаково и в тестах.
+export function parseLocalDateTime(value) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})(?:[T ](\d{2}):(\d{2}))?/.exec(str(value).trim());
+  if (!m) return 0;
+  const [, y, mo, d, hh, mm] = m;
+  const dt = new Date(Number(y), Number(mo) - 1, Number(d), Number(hh || 0), Number(mm || 0), 0, 0);
+  return Number.isFinite(dt.getTime()) ? dt.getTime() : 0;
+}
+
+// ms → 'ГГГГ-ММ-ДДTЧЧ:ММ' для подстановки в поле ввода при переносе.
+export function toLocalInput(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  const d = new Date(t);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// ─── Подписи ─────────────────────────────────────────────────────────────────
+
+export function fmtTime(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  const d = new Date(t);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
+export function fmtDay(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  const d = new Date(t);
+  return `${d.getDate()} ${MONTHS_SHORT[d.getMonth()]}`;
+}
+
+export function fmtWeekday(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  return WEEKDAYS_SHORT[(new Date(t).getDay() + 6) % 7];
+}
+
+export function fmtDayTime(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  return `${fmtDay(t)}, ${fmtTime(t)}`;
+}
+
+// «сегодня» / «завтра» / «через 3 дня» / «5 дней назад» — человеческая подпись
+// того же числа, что стоит в дате. Приёмщику важнее «завтра», чем «13 августа».
+export function fmtRelativeDay(ms, nowMs) {
+  const diff = dayDiff(nowMs, ms);
+  if (diff === 0) return 'сегодня';
+  if (diff === 1) return 'завтра';
+  if (diff === 2) return 'послезавтра';
+  if (diff === -1) return 'вчера';
+  if (diff < 0) return `${-diff} ${pluralDays(-diff)} назад`;
+  return `через ${diff} ${pluralDays(diff)}`;
+}
+
+export function pluralDays(n) {
+  const a = Math.abs(n) % 100;
+  const b = Math.abs(n) % 10;
+  if (a > 10 && a < 20) return 'дней';
+  if (b > 1 && b < 5) return 'дня';
+  if (b === 1) return 'день';
+  return 'дней';
+}
+
+// ─── Данные приёмки в машине ─────────────────────────────────────────────────
 
 // Пустая приёмка — то, с чего начинается машина, которую ещё не трогали.
 export function emptyIntake() {
   return {
-    status: 'open',       // 'open' | 'done' | 'skipped'
-    template_id: '',
-    mileage: '',
-    fuel: '',
-    keys: '',
-    docs: [],
-    equipment: [],
-    damages: [],
-    checked: [],          // id отмеченных пунктов чек-листа
-    notes: '',
+    scheduled_at: 0,      // согласованные дата и время дефектовки
+    invited_at: 0,        // когда назначили впервые
+    invited_by: '',
+    confirmed_at: 0,      // накануне позвонили, клиент подтвердил
+    confirmed_for: 0,     // ДЛЯ КАКОЙ даты подтверждено (см. ниже)
+    started_at: 0,        // дефектовка начата — задел под следующий шаг
+    log: [],              // журнал приглашений и переносов
   };
 }
 
-// Приёмка машины в нормальном виде. Старые машины (поля нет вовсе) → пустая.
+// Приёмка машины в нормальном виде. У старых машин поля нет вовсе → пустая.
 export function readIntake(job) {
   const raw = job && typeof job.intake === 'object' && job.intake ? job.intake : null;
   const base = emptyIntake();
-  // Пробег у машины один. Если приёмщик его ещё не вписал, показываем пробег из
-  // карточки (мог прийти из Audatex или из документа) — чтобы экран приёмки, акт
-  // приёмки и акт приёма-передачи не расходились. Вписанное на экране приёмки
-  // сильнее и уходит обратно в карточку (см. api.jobs.saveIntake).
-  const fromCar = str(job?.mileage);
-  if (!raw) return { ...base, mileage: fromCar };
+  if (!raw) return base;
   return {
     ...base,
-    ...raw,
-    status: ['open', 'done', 'skipped'].includes(raw.status) ? raw.status : 'open',
-    mileage: str(raw.mileage) || fromCar,
-    fuel: str(raw.fuel),
-    keys: str(raw.keys),
-    notes: str(raw.notes),
-    docs: arr(raw.docs).map(str),
-    equipment: arr(raw.equipment).map(str),
-    checked: arr(raw.checked).map(str),
-    damages: arr(raw.damages)
-      .filter((d) => d && typeof d === 'object' && str(d.zone).trim())
-      .map((d) => ({
-        id: str(d.id) || str(d.zone),
-        zone: str(d.zone),
-        kind: str(d.kind) || DEFAULT_DAMAGE_KIND,
-        note: str(d.note),
-      })),
+    scheduled_at: num(raw.scheduled_at),
+    invited_at: num(raw.invited_at),
+    invited_by: str(raw.invited_by),
+    confirmed_at: num(raw.confirmed_at),
+    confirmed_for: num(raw.confirmed_for),
+    started_at: num(raw.started_at),
+    log: arr(raw.log)
+      .filter((e) => e && typeof e === 'object')
+      .map((e) => ({
+        at: num(e.at),
+        by: str(e.by),
+        kind: ['invite', 'move', 'confirm'].includes(e.kind) ? e.kind : 'move',
+        from: num(e.from),
+        to: num(e.to),
+        reason: str(e.reason),
+      }))
+      .sort((a, b) => b.at - a.at),   // свежее сверху: журнал читают с конца
   };
 }
 
-// Машина вообще ни разу не открывалась приёмщиком? (Нужно, чтобы отличить
-// «заехала до внедрения экрана» от «начали и бросили».)
-export function isIntakeUntouched(job) {
-  return !(job && job.intake && typeof job.intake === 'object');
+// Подтверждение привязано к КОНКРЕТНОЙ дате: после переноса «клиент подтвердил»
+// обнуляется само, без отдельной чистки. Иначе машина, подтверждённая на среду и
+// перенесённая на пятницу, считалась бы подтверждённой — и звонок накануне
+// пятницы никто бы не сделал.
+export function isConfirmed(intake) {
+  const i = intake || {};
+  return !!(i.confirmed_at && i.scheduled_at && i.confirmed_for === i.scheduled_at);
 }
 
-// ─── Выбор шаблона ───────────────────────────────────────────────────────────
-
-// Шаблон чек-листа для машины: сначала явно выбранный приёмщиком, иначе — по
-// типу оплаты, иначе — универсальный (без payment_types), иначе — первый.
-export function pickTemplate(job, settings) {
-  const s = normalizeIntakeSettings(settings);
-  const intake = readIntake(job);
-  const byId = s.templates.find((t) => t.id === intake.template_id);
-  if (byId) return byId;
-  const pay = str(job?.payment_type) || 'cash';
-  return (
-    s.templates.find((t) => t.payment_types.includes(pay))
-    || s.templates.find((t) => !t.payment_types.length)
-    || s.templates[0]
-  );
-}
-
-// ─── Готовность приёмки ──────────────────────────────────────────────────────
-
-// Фото машины, относящиеся к приёмке, разложенные по рубрикам: { slotId: [фото] }.
-export function intakePhotosBySlot(job) {
-  const out = {};
-  for (const p of arr(job?.photos)) {
-    const slot = photoSlotId(p?.category);
-    if (!slot) continue;
-    (out[slot] || (out[slot] = [])).push(p);
-  }
-  return out;
-}
-
-// Полная сводка по одной машине: что заполнено, чего не хватает, можно ли
-// закрывать приёмку. ЕДИНСТВЕННОЕ место, где живёт правило «что обязательно» —
-// его читают и список машин (прогресс-бары), и кнопка «Завершить приёмку»,
-// поэтому они не могут разойтись.
-export function intakeStatus(job, settings) {
-  const s = normalizeIntakeSettings(settings);
-  const intake = readIntake(job);
-  const tpl = pickTemplate(job, s);
-  const items = tpl ? tpl.items : [];
-  const checked = new Set(intake.checked);
-
-  const checklistDone = items.filter((i) => checked.has(i.id)).length;
-  const checklistMissing = items.filter((i) => i.required && !checked.has(i.id));
-
-  const bySlot = intakePhotosBySlot(job);
-  const slots = s.photo_slots.map((slot) => ({
-    ...slot,
-    count: (bySlot[slot.id] || []).length,
-  }));
-  const photosDone = slots.filter((slot) => slot.count > 0).length;
-  const photosMissing = s.require_photos ? slots.filter((slot) => slot.required && !slot.count) : [];
-
-  // Поля-обязаловка вне чек-листа: пробег нужен и в акте, и в смете.
-  const fieldsMissing = [];
-  if (s.require_mileage && !str(intake.mileage).trim()) fieldsMissing.push('Пробег');
-
-  // Человекочитаемый список причин, почему кнопка «Завершить» ещё не горит.
-  const blockers = [
-    ...fieldsMissing,
-    ...checklistMissing.map((i) => i.text),
-    ...photosMissing.map((slot) => `Фото: ${slot.label}`),
-  ];
-
-  return {
-    intake,
-    template: tpl,
-    items,
-    slots,
-    checklist: { done: checklistDone, total: items.length },
-    photos: { done: photosDone, total: slots.length },
-    damages: intake.damages.length,
-    checklistMissing,
-    photosMissing,
-    fieldsMissing,
-    blockers,
-    ready: blockers.length === 0,
-    done: intake.status === 'done',
-    skipped: intake.status === 'skipped',
-    untouched: isIntakeUntouched(job),
-  };
-}
-
-// ─── Список машин на экране ──────────────────────────────────────────────────
-
-// Сортировки списка — общий словарь для реального экрана и демо-страницы.
-export const INTAKE_SORTS = [
-  { id: 'urgent', label: 'Сначала просроченные' },
-  { id: 'new', label: 'Сначала новые' },
-  { id: 'plate', label: 'По госномеру' },
-];
-
-export const DAY_MS = 86400000;
-
-// Полных дней между двумя моментами (ms). Не бывает отрицательным.
-export function daysBetween(fromMs, toMs) {
-  const a = Number(fromMs);
-  const b = Number(toMs);
-  if (!Number.isFinite(a) || !Number.isFinite(b)) return 0;
-  return Math.max(0, Math.floor((b - a) / DAY_MS));
-}
-
-// Машина стоит на приёмке? = согласование + под-статус «Осмотр / дефектовка».
+// Машина на экране приёмщика? = согласование + под-статус «Осмотр / дефектовка».
 // Пустой approval_status трактуем как 'inspection' — ровно так же, как доска
 // «Согласование» (DEFAULT_APPROVAL_STATUS), иначе машина без статуса потерялась
 // бы между двумя экранами.
@@ -424,157 +234,219 @@ export function isOnIntake(job) {
   return st === INTAKE_APPROVAL_STATUS;
 }
 
-// Светофор строки: сколько дней машина стоит с незакрытой приёмкой.
-function severity(daysWaiting, done, s) {
-  if (done) return 'done';
-  if (daysWaiting >= s.alert_days) return 'alert';
-  if (daysWaiting >= s.warn_days) return 'warn';
+// С какого момента считаем «сколько машина ждёт приглашения»: с попадания в
+// колонку осмотра, а если её туда не переводили — с заведения в систему.
+export function waitingSince(job) {
+  return num(job?.approval_since) || num(job?.created_at) || 0;
+}
+
+// ─── Строка машины ───────────────────────────────────────────────────────────
+
+// Вью-модель одной машины. Здесь же разложены все поля, которые нужны попапу
+// звонка, — чтобы интерфейс не выковыривал их из документа машины сам.
+export function intakeRow(job, nowMs = 0) {
+  const intake = readIntake(job);
+  const since = waitingSince(job);
+  const daysWaiting = since ? Math.max(0, dayDiff(since, nowMs)) : 0;
+  const scheduled = intake.scheduled_at;
+  const dueDiff = scheduled ? dayDiff(nowMs, scheduled) : null;
+
+  let phase;
+  if (intake.started_at) phase = 'started';
+  else if (!scheduled) phase = 'invite';
+  else if (dueDiff < 0) phase = 'overdue';       // день прошёл, машины не было
+  else phase = 'scheduled';
+
+  return {
+    id: job.id,
+    job,
+    car_model: str(job.car_model) || 'Без модели',
+    plate_number: str(job.plate_number),
+    client_name: str(job.client_name),
+    client_phone: str(job.client_phone),
+    payment_type: str(job.payment_type) || 'cash',
+    insurer_name: str(job.insurer_name),
+    claim_number: str(job.claim_number),
+    policy_number: str(job.policy_number),
+    order_number: str(job.order_number),
+    notes: str(job.notes),
+    vin: str(job.vin),
+
+    intake,
+    scheduled_at: scheduled,
+    confirmed: isConfirmed(intake),
+    log: intake.log,
+
+    phase,
+    daysWaiting,
+    dueDiff,                                     // null, если дата не назначена
+    severity: inviteSeverity(phase, daysWaiting),
+  };
+}
+
+// Светофор строки. Красное — только там, где реально просрочено: если красным
+// подсвечивать всё подряд, приёмщик перестанет на него смотреть.
+function inviteSeverity(phase, daysWaiting) {
+  if (phase === 'overdue') return 'alert';
+  if (phase !== 'invite') return 'ok';
+  if (daysWaiting >= INVITE_ALERT_DAYS) return 'alert';
+  if (daysWaiting >= INVITE_WARN_DAYS) return 'warn';
   return 'ok';
 }
 
-const SEVERITY_ORDER = { alert: 0, warn: 1, ok: 2, done: 3 };
+// ─── Сетка календаря ─────────────────────────────────────────────────────────
 
-// Вью-модель списка. `nowMs` передаём снаружи (Date.now() в рендере запрещён
-// правилом чистоты проекта — см. Approval.jsx).
-export function buildIntakeList(jobs, settings, { query = '', sort = 'urgent', nowMs = 0 } = {}) {
-  const s = normalizeIntakeSettings(settings);
+// Две недели клетками: [{ days: [день × 7] }, …]. Клетка знает про себя всё, что
+// нужно нарисовать, — экран не считает даты сам.
+export function buildWeeks(nowMs, weeks = CALENDAR_WEEKS) {
+  const today = startOfDay(nowMs);
+  const first = startOfWeek(nowMs);
+  const out = [];
+  for (let w = 0; w < Math.max(1, weeks); w += 1) {
+    const days = [];
+    for (let i = 0; i < 7; i += 1) {
+      const ms = addDays(first, w * 7 + i);
+      const d = new Date(ms);
+      days.push({
+        ms,
+        key: dayKey(ms),
+        dayNum: d.getDate(),
+        month: MONTHS_SHORT[d.getMonth()],
+        weekday: WEEKDAYS_SHORT[i],
+        isToday: ms === today,
+        isPast: ms < today,
+        isWeekend: i >= 5,
+        // Первое число месяца подписываем месяцем — иначе на стыке августа и
+        // сентября непонятно, где кончился один и начался другой.
+        showMonth: d.getDate() === 1 || (w === 0 && i === 0),
+        cars: [],
+      });
+    }
+    out.push({ id: `w${w}`, start: days[0].ms, days });
+  }
+  return out;
+}
+
+// ─── Напоминания ─────────────────────────────────────────────────────────────
+
+// Два повода напомнить, оба названы владельцем:
+//   overdue — день прошёл, а машину не отдефектовали (и не перенесли);
+//   call    — дефектовка завтра, надо позвонить и убедиться, что всё в силе.
+// Напоминания вычисляются, а не хранятся: «прочитанное» напоминание, которое
+// исчезло, но дело осталось, — худший вид напоминания.
+//
+// Текущий момент отдельно не передаётся: строки его уже несут в `phase` и
+// `dueDiff` (см. intakeRow). Второй источник «сейчас» рано или поздно разошёлся
+// бы с первым — и напоминание жило бы по своему времени.
+export function buildReminders(rows) {
+  const overdue = rows
+    .filter((r) => r.phase === 'overdue')
+    .sort((a, b) => a.scheduled_at - b.scheduled_at)   // самые давние сверху
+    .map((r) => ({ id: `overdue-${r.id}`, kind: 'overdue', row: r }));
+
+  const call = rows
+    .filter((r) => r.phase === 'scheduled' && r.dueDiff === 1 && !r.confirmed)
+    .sort((a, b) => a.scheduled_at - b.scheduled_at)
+    .map((r) => ({ id: `call-${r.id}`, kind: 'call', row: r }));
+
+  // Просроченные впереди: пропущенная машина — это сорванный срок ремонта,
+  // а звонок накануне ещё можно сделать в любой момент дня.
+  return [...overdue, ...call];
+}
+
+// ─── Сборка экрана ───────────────────────────────────────────────────────────
+
+function matchesQuery(row, q) {
+  if (!q) return true;
+  return [row.car_model, row.plate_number, row.client_name, row.client_phone, row.insurer_name, row.claim_number]
+    .some((v) => str(v).toLowerCase().includes(q));
+}
+
+const SEVERITY_ORDER = { alert: 0, warn: 1, ok: 2 };
+
+// Всё, что рисует экран, одним вызовом. `nowMs` передаём снаружи (Date.now() в
+// рендере запрещён правилом чистоты проекта — см. Approval.jsx).
+export function buildIntakeBoard(jobs, { nowMs = 0, query = '', weeks = CALENDAR_WEEKS } = {}) {
   const q = str(query).trim().toLowerCase();
+  const all = arr(jobs).filter(isOnIntake).map((j) => intakeRow(j, nowMs));
+  const rows = all.filter((r) => matchesQuery(r, q));
 
-  const rows = arr(jobs)
-    .filter(isOnIntake)
-    .map((job) => {
-      const st = intakeStatus(job, s);
-      const since = Number(job.approval_since || job.created_at) || 0;
-      const daysWaiting = since ? daysBetween(since, nowMs) : 0;
-      return {
-        id: job.id,
-        job,
-        car_model: str(job.car_model) || 'Без модели',
-        plate_number: str(job.plate_number),
-        client_name: str(job.client_name),
-        payment_type: str(job.payment_type) || 'cash',
-        insurer_name: str(job.insurer_name),
-        daysWaiting,
-        severity: severity(daysWaiting, st.done || st.skipped, s),
-        status: st,
-      };
-    })
-    .filter((r) => {
-      if (!q) return true;
-      return [r.car_model, r.plate_number, r.client_name, r.insurer_name]
-        .some((v) => v.toLowerCase().includes(q));
+  // Пригласить: дольше всех ждущие сверху — это и есть смысл экрана.
+  const invite = rows
+    .filter((r) => r.phase === 'invite')
+    .sort((a, b) => {
+      const bySeverity = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
+      if (bySeverity) return bySeverity;
+      if (b.daysWaiting !== a.daysWaiting) return b.daysWaiting - a.daysWaiting;
+      return a.plate_number.localeCompare(b.plate_number, 'ru');
     });
 
-  rows.sort((a, b) => {
-    if (sort === 'plate') return a.plate_number.localeCompare(b.plate_number, 'ru');
-    if (sort === 'new') return a.daysWaiting - b.daysWaiting;   // сначала только что заехавшие
-    // 'urgent' (по умолчанию): сначала самые проблемные, внутри — кто дольше стоит.
-    const bySeverity = SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity];
-    if (bySeverity) return bySeverity;
-    return b.daysWaiting - a.daysWaiting;
-  });
+  const grid = buildWeeks(nowMs, weeks);
+  const cells = new Map();
+  for (const week of grid) for (const day of week.days) cells.set(day.key, day);
+  const windowEnd = grid[grid.length - 1].days[6].ms;
 
-  const counts = {
-    total: rows.length,
-    ready: rows.filter((r) => r.status.ready && !r.status.done).length,
-    done: rows.filter((r) => r.status.done || r.status.skipped).length,
-    alert: rows.filter((r) => r.severity === 'alert').length,
-  };
-
-  return { rows, counts, settings: s };
-}
-
-// ─── Подписи для интерфейса и акта ───────────────────────────────────────────
-
-const labelFrom = (list, id, fallback = '') => {
-  const found = arr(list).find((x) => x && x.id === id);
-  return found ? found.label : fallback;
-};
-
-export const fuelLabel = (id) => labelFrom(FUEL_LEVELS, id, '—');
-export const damageKindLabel = (id) => labelFrom(DAMAGE_KINDS, id, '—');
-export const zoneLabel = (zones, id) => labelFrom(zones, id, id || '—');
-
-// Зоны, сгруппированные для колонок интерфейса: [{ group, zones: [...] }].
-// Порядок групп — порядок первого появления в справочнике, чтобы правка списка
-// в настройках сразу читалась в том же порядке на экране.
-export function groupZones(zones) {
-  const order = [];
-  const map = new Map();
-  for (const z of arr(zones)) {
-    const g = str(z.group) || 'Прочее';
-    if (!map.has(g)) { map.set(g, []); order.push(g); }
-    map.get(g).push(z);
+  const scheduled = rows.filter((r) => r.scheduled_at && r.phase !== 'invite');
+  const later = [];
+  for (const row of scheduled) {
+    const cell = cells.get(dayKey(row.scheduled_at));
+    if (cell) cell.cars.push(row);
+    else if (startOfDay(row.scheduled_at) > windowEnd) later.push(row);
+    // Машины с датой РАНЬШЕ окна (прошлая неделя и глубже) в сетку не попадают —
+    // их держат напоминания «не отдефектован», иначе они молча исчезли бы.
   }
-  return order.map((g) => ({ group: g, zones: map.get(g) }));
-}
+  for (const day of cells.values()) day.cars.sort((a, b) => a.scheduled_at - b.scheduled_at);
+  later.sort((a, b) => a.scheduled_at - b.scheduled_at);
 
-// Строки таблицы повреждений для печатного акта — уже с подписями, в порядке
-// справочника зон (а не в порядке кликов приёмщика).
-export function damageRows(intake, zones) {
-  const index = new Map(arr(zones).map((z, i) => [z.id, i]));
-  return arr(intake?.damages)
-    .slice()
-    .sort((a, b) => (index.get(a.zone) ?? 999) - (index.get(b.zone) ?? 999))
-    .map((d) => ({
-      zone: zoneLabel(zones, d.zone),
-      kind: damageKindLabel(d.kind),
-      note: str(d.note),
-    }));
-}
+  // Напоминания считаем по ВСЕМ машинам, а не по отфильтрованным поиском: иначе
+  // набранный в поиске номер спрятал бы напоминание про другую машину.
+  const reminders = buildReminders(all);
 
-// ms → 'ГГГГ-ММ-ДД' в МЕСТНОМ времени (формат, который ждёт formatDocDate).
-// Именно местное, а не UTC: сервис работает по Красноярску (UTC+7), и у ночной
-// приёмки toISOString() напечатал бы в акте вчерашнее число.
-function isoDay(ms) {
-  const t = Number(ms);
-  if (!Number.isFinite(t) || !t) return '';
-  const d = new Date(t);
-  const p = (n) => String(n).padStart(2, '0');
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-}
-
-// Снимок для печатного акта приёмки. Как и у остальных документов проекта —
-// «замороженные» данные, компонент листа ничего не дочитывает сам.
-export function buildIntakeActSnapshot(job, settings, company, { docNumber = '', docDate = 0, acceptedBy = '' } = {}) {
-  const s = normalizeIntakeSettings(settings);
-  const intake = readIntake(job);
-  const docSet = new Set(intake.docs);
-  const eqSet = new Set(intake.equipment);
   return {
-    doc_number: str(docNumber) || str(intake.act_number),
-    doc_date: isoDay(Number(docDate) || Number(intake.act_date) || 0),
-    accepted_by: str(acceptedBy),
-    company: company || {},
-    customer: {
-      name: str(job?.client_name),
-      phone: str(job?.client_phone),
+    rows,
+    invite,
+    weeks: grid,
+    later,
+    reminders,
+    counts: {
+      invite: invite.length,
+      scheduled: scheduled.filter((r) => r.phase === 'scheduled').length,
+      today: all.filter((r) => r.phase === 'scheduled' && r.dueDiff === 0).length,
+      overdue: all.filter((r) => r.phase === 'overdue').length,
+      later: later.length,
+      stale: invite.filter((r) => r.severity === 'alert').length,
     },
-    vehicle: {
-      car_model: str(job?.car_model),
-      plate_number: str(job?.plate_number),
-      vin: str(job?.vin),
-      year: str(job?.year),
-      color: str(job?.color),
-    },
-    insurance: {
-      payment_type: str(job?.payment_type) || 'cash',
-      insurer_name: str(job?.insurer_name),
-      claim_number: str(job?.claim_number),
-      policy_type: str(job?.policy_type),
-      order_number: str(job?.order_number),
-    },
-    condition: {
-      mileage: str(intake.mileage),
-      fuel: str(intake.fuel),
-      fuel_label: fuelLabel(intake.fuel),
-      keys: str(intake.keys),
-    },
-    docs: s.docs.map((d) => ({ label: d.label, present: docSet.has(d.id) })),
-    equipment: s.equipment.map((e) => ({ label: e.label, present: eqSet.has(e.id) })),
-    damages: damageRows(intake, s.damage_zones),
-    notes: str(intake.notes),
-    act_text: str(s.act_text),
-    photos_count: arr(job?.photos).filter((p) => photoSlotId(p?.category)).length,
   };
+}
+
+// ─── Форма приглашения и переноса ────────────────────────────────────────────
+
+export const MIN_REASON_LEN = 3;
+
+// Проверка формы перед записью. ОДНО место, где живут правила, — его читают и
+// кнопка «Сохранить», и подсказки под полями, поэтому они не могут разойтись.
+//
+// `isMove` = у машины уже была дата. Владелец потребовал: переносить только с
+// отметкой «согласовано с клиентом» и с причиной — перенос без звонка клиенту
+// это и есть та ситуация, из-за которой машину потом не привозят.
+export function validateSchedule({ at = 0, reason = '', agreed = false, isMove = false, nowMs = 0 } = {}) {
+  const errors = {};
+  const ms = num(at);
+  if (!ms) errors.at = 'Укажите дату и время';
+  else if (startOfDay(ms) < startOfDay(nowMs)) errors.at = 'Эта дата уже прошла';
+
+  if (isMove) {
+    if (!agreed) errors.agreed = 'Без согласования с клиентом переносить нельзя';
+    if (str(reason).trim().length < MIN_REASON_LEN) errors.reason = 'Коротко напишите причину переноса';
+  }
+  return { ok: Object.keys(errors).length === 0, errors };
+}
+
+// Строка журнала для интерфейса: «12 авг, 14:30 → 15 авг, 10:00 — клиент в отъезде».
+export function describeLogEntry(entry) {
+  const e = entry || {};
+  if (e.kind === 'invite') return `Записан на ${fmtDayTime(e.to)}`;
+  if (e.kind === 'confirm') return `Клиент подтвердил ${fmtDayTime(e.to)}`;
+  const from = e.from ? fmtDayTime(e.from) : '—';
+  return `Перенос ${from} → ${fmtDayTime(e.to)}`;
 }

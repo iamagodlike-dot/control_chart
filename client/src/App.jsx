@@ -33,14 +33,14 @@ const TABS = [
   { id: 'mywork', label: 'Мои машины', icon: 'car' },
   { id: 'earnings', label: 'Мой заработок', icon: 'wallet' },
   { id: 'approval', label: 'Согласование', icon: 'shield' },
-  { id: 'intake', label: 'Приёмка авто', icon: 'clipboard' },
+  { id: 'intake', label: 'Дефектовка', icon: 'clipboard' },
   { id: 'gantt', label: 'График', icon: 'calendar' },
   { id: 'board', label: 'Загрузка', icon: 'chart' },
   { id: 'monitor', label: 'Монитор', icon: 'clock' },
   { id: 'warehouse', label: 'Склад', icon: 'box' },
   { id: 'parts', label: 'Запчасти', icon: 'wrench' },
-  // «Приёмка запчастей», а не просто «Приёмка»: рядом появился экран «Приёмка
-  // авто» (заезд машины), и у управленца оба видны одновременно.
+  // «Приёмка запчастей», а не просто «Приёмка»: у управленца рядом висит экран
+  // приёмщика («Дефектовка»), и путать заезд машины с приходом деталей нельзя.
   { id: 'receiving', label: 'Приёмка запчастей', icon: 'box' },
   { id: 'receiving-history', label: 'История приёмки', icon: 'history' },
   { id: 'requests', label: 'Заявки', icon: 'clipboard' },
@@ -255,7 +255,7 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
           />
         )}
         {effectiveTab === 'approval' && <Approval isOwner={isOwner} />}
-        {effectiveTab === 'intake' && <Intake profile={profile} />}
+        {effectiveTab === 'intake' && <Intake />}
         {effectiveTab === 'board' && <PostsBoard />}
         {effectiveTab === 'monitor' && <Monitor isOwner={isOwner} />}
         {effectiveTab === 'warehouse' && <Warehouse onOpenJob={openJobDetail} />}

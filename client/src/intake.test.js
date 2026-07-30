@@ -1,368 +1,317 @@
-// Тесты экрана «Приёмка авто»: какие машины попадают на экран, правило
-// готовности (что блокирует «Завершить приёмку»), выбор шаблона по типу оплаты,
-// нормализация кривых настроек и снимок для печатного акта.
-// Zero-dependency — run with:  node --test src/intake.test.js
+// Тесты экрана мастера-приёмщика (диспетчерская дефектовки).
+//
+// Запуск:  node --test src/intake.test.js
+//
+// Все даты собираются через new Date(год, месяц, день, час) — то есть в МЕСТНОМ
+// времени машины, на которой идут тесты. Так проверяется именно то, что важно на
+// бою: «завтра» и клетки календаря считаются по местным суткам, а не по UTC.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import {
-  DAY_MS, DEFAULT_INTAKE_SETTINGS, DEFAULT_PHOTO_SLOTS,
-  buildIntakeActSnapshot, buildIntakeList, damageRows, groupZones,
-  intakePhotosBySlot, intakeStatus, isIntakeUntouched, isOnIntake,
-  normalizeIntakeSettings, photoCategory, photoSlotId, pickTemplate, readIntake,
+  CALENDAR_WEEKS, INVITE_ALERT_DAYS, INVITE_WARN_DAYS, MIN_REASON_LEN,
+  addDays, buildIntakeBoard, buildReminders, buildWeeks, dayDiff, dayKey,
+  describeLogEntry, emptyIntake, fmtDayTime, fmtRelativeDay, intakeRow, isConfirmed,
+  isOnIntake, parseLocalDateTime, readIntake, startOfDay, startOfWeek, toLocalInput,
+  validateSchedule, waitingSince,
 } from './intake.js';
 
-const NOW = new Date('2026-07-28T12:00:00').getTime();
-const daysAgo = (n) => NOW - n * DAY_MS;
+// Среда, 12 августа 2026, 10:00 по местному времени.
+const NOW = new Date(2026, 7, 12, 10, 0).getTime();
+const at = (y, m, d, hh = 0, mm = 0) => new Date(y, m - 1, d, hh, mm).getTime();
 
-// Машина на приёмке со всеми обязательными полями закрытыми — база, от которой
-// тесты «отламывают» по одному условию.
-const photo = (slot, i = 0) => ({ id: `ph-${slot}-${i}`, category: photoCategory(slot), url: `/p/${slot}.jpg` });
-const allPhotos = () => DEFAULT_PHOTO_SLOTS.filter((s) => s.required).map((s) => photo(s.id));
-const allChecked = (tplId = 'insurance') => {
-  const tpl = DEFAULT_INTAKE_SETTINGS.templates.find((t) => t.id === tplId);
-  return tpl.items.filter((i) => i.required).map((i) => i.id);
-};
-
-const readyJob = (over = {}) => ({
-  id: 'j1',
-  car_model: 'Toyota Camry',
-  plate_number: 'А123АВ 124',
-  client_name: 'Иванов П.',
-  payment_type: 'insurance',
-  phase: 'approval',
-  approval_status: 'inspection',
-  created_at: daysAgo(1),
-  photos: allPhotos(),
-  intake: { status: 'open', mileage: '124500', fuel: 'half', keys: '2', checked: allChecked() },
-  ...over,
-});
-
-// ─── Какие машины попадают на экран ──────────────────────────────────────────
-
-test('на экран попадает только «Осмотр / дефектовка» на согласовании', () => {
-  assert.equal(isOnIntake({ phase: 'approval', approval_status: 'inspection' }), true);
-  assert.equal(isOnIntake({ phase: 'approval', approval_status: 'calc' }), false);
-  assert.equal(isOnIntake({ phase: 'approval', approval_status: 'approved' }), false);
-  assert.equal(isOnIntake({ phase: 'repair' }), false);
-  assert.equal(isOnIntake({}), false, 'машина без фазы = ремонт, на приёмку не идёт');
-});
-
-test('пустой approval_status трактуется как «Осмотр» — как на доске согласования', () => {
-  assert.equal(isOnIntake({ phase: 'approval' }), true);
-  assert.equal(isOnIntake({ phase: 'approval', approval_status: '' }), true);
-});
-
-test('архивная машина на экран не попадает', () => {
-  assert.equal(isOnIntake({ phase: 'approval', approval_status: 'inspection', archived: true }), false);
-});
-
-// ─── Правило готовности ──────────────────────────────────────────────────────
-
-test('заполненная машина готова к завершению приёмки', () => {
-  const st = intakeStatus(readyJob(), DEFAULT_INTAKE_SETTINGS);
-  assert.equal(st.ready, true);
-  assert.deepEqual(st.blockers, []);
-  assert.equal(st.checklist.done, 10);   // 10 обязательных из 12 пунктов страхового шаблона
-  assert.equal(st.checklist.total, 12);
-  assert.equal(st.photos.done, 7);       // 7 обязательных рубрик закрыто
-  assert.equal(st.photos.total, 8);
-});
-
-test('нет пробега → приёмку не закрыть', () => {
-  const st = intakeStatus(readyJob({ intake: { mileage: '', fuel: 'half', checked: allChecked() } }), DEFAULT_INTAKE_SETTINGS);
-  assert.equal(st.ready, false);
-  assert.deepEqual(st.fieldsMissing, ['Пробег']);
-  assert.ok(st.blockers.includes('Пробег'));
-});
-
-test('не хватает обязательного фото → приёмку не закрыть, видно какого', () => {
-  const photos = allPhotos().filter((p) => photoSlotId(p.category) !== 'vin');
-  const st = intakeStatus(readyJob({ photos }), DEFAULT_INTAKE_SETTINGS);
-  assert.equal(st.ready, false);
-  assert.deepEqual(st.photosMissing.map((s) => s.id), ['vin']);
-  assert.ok(st.blockers.includes('Фото: VIN-табличка'));
-});
-
-test('необязательная рубрика фото готовности не блокирует', () => {
-  // 'interior' — единственная необязательная рубрика в дефолтах; её и не снимали.
-  const st = intakeStatus(readyJob(), DEFAULT_INTAKE_SETTINGS);
-  assert.equal(st.photos.done, 7);
-  assert.equal(st.ready, true);
-});
-
-test('не отмечен обязательный пункт чек-листа → приёмку не закрыть', () => {
-  const checked = allChecked().filter((id) => id !== 'act');
-  const st = intakeStatus(readyJob({ intake: { mileage: '100', fuel: 'full', checked } }), DEFAULT_INTAKE_SETTINGS);
-  assert.equal(st.ready, false);
-  assert.deepEqual(st.checklistMissing.map((i) => i.id), ['act']);
-  assert.ok(st.blockers.includes('Распечатать акт приёмки и подписать у клиента'));
-});
-
-test('необязательные пункты чек-листа не блокируют', () => {
-  const st = intakeStatus(readyJob(), DEFAULT_INTAKE_SETTINGS);
-  const optional = st.items.filter((i) => !i.required).map((i) => i.id);
-  assert.deepEqual(optional, ['upsell', 'term'], 'в страховом шаблоне два необязательных пункта');
-  assert.equal(st.ready, true);
-});
-
-test('выключенное требование фото снимает блокировку целиком', () => {
-  const settings = { ...DEFAULT_INTAKE_SETTINGS, require_photos: false };
-  const st = intakeStatus(readyJob({ photos: [] }), settings);
-  assert.deepEqual(st.photosMissing, []);
-  assert.equal(st.ready, true);
-});
-
-test('нетронутая машина: untouched, ничего не отмечено, всё в блокерах', () => {
-  const job = { id: 'x', phase: 'approval', approval_status: 'inspection' };
-  const st = intakeStatus(job, DEFAULT_INTAKE_SETTINGS);
-  assert.equal(st.untouched, true);
-  assert.equal(st.done, false);
-  assert.equal(st.ready, false);
-  assert.equal(st.checklist.done, 0);
-  assert.equal(st.photos.done, 0);
-  assert.equal(isIntakeUntouched(job), true);
-});
-
-test('закрытая приёмка помечается done, пропущенная — skipped', () => {
-  assert.equal(intakeStatus(readyJob({ intake: { status: 'done' } }), DEFAULT_INTAKE_SETTINGS).done, true);
-  assert.equal(intakeStatus(readyJob({ intake: { status: 'skipped' } }), DEFAULT_INTAKE_SETTINGS).skipped, true);
-});
-
-// ─── Шаблоны ─────────────────────────────────────────────────────────────────
-
-test('шаблон подбирается по типу оплаты', () => {
-  assert.equal(pickTemplate({ payment_type: 'insurance' }, DEFAULT_INTAKE_SETTINGS).id, 'insurance');
-  assert.equal(pickTemplate({ payment_type: 'cash' }, DEFAULT_INTAKE_SETTINGS).id, 'client');
-  assert.equal(pickTemplate({ payment_type: 'legal' }, DEFAULT_INTAKE_SETTINGS).id, 'client');
-});
-
-test('машина без типа оплаты считается клиентской', () => {
-  assert.equal(pickTemplate({}, DEFAULT_INTAKE_SETTINGS).id, 'client');
-});
-
-test('явно выбранный приёмщиком шаблон важнее типа оплаты', () => {
-  const job = { payment_type: 'insurance', intake: { template_id: 'client' } };
-  assert.equal(pickTemplate(job, DEFAULT_INTAKE_SETTINGS).id, 'client');
-});
-
-test('неизвестный тип оплаты падает на универсальный шаблон', () => {
-  const settings = {
-    templates: [
-      { id: 'ins', label: 'Страховая', payment_types: ['insurance'], items: [{ id: 'a', text: 'A' }] },
-      { id: 'any', label: 'Общий', payment_types: [], items: [{ id: 'b', text: 'B' }] },
-    ],
+// Машина на осмотре: минимум полей, которые смотрит экран.
+function car(over = {}) {
+  return {
+    id: 'j1',
+    phase: 'approval',
+    approval_status: 'inspection',
+    car_model: 'Geely Atlas',
+    plate_number: 'А123ВС124',
+    client_name: 'Иванов И.',
+    client_phone: '+7 900 000-00-00',
+    payment_type: 'insurance',
+    insurer_name: 'Ингосстрах',
+    created_at: at(2026, 8, 11, 9, 0),
+    ...over,
   };
-  assert.equal(pickTemplate({ payment_type: 'barter' }, settings).id, 'any');
+}
+
+// ─── Календарные сутки ───────────────────────────────────────────────────────
+
+test('startOfDay — полночь того же дня, а не UTC', () => {
+  const night = at(2026, 8, 12, 23, 50);
+  assert.equal(startOfDay(night), at(2026, 8, 12));
+  assert.equal(new Date(startOfDay(night)).getDate(), 12);
+  assert.equal(startOfDay(0), 0);
 });
 
-// ─── Настройки ───────────────────────────────────────────────────────────────
-
-test('пустые настройки = дефолты', () => {
-  const s = normalizeIntakeSettings(null);
-  assert.equal(s.templates.length, 2);
-  assert.equal(s.photo_slots.length, DEFAULT_PHOTO_SLOTS.length);
-  assert.equal(s.require_photos, true);
-  assert.equal(s.require_mileage, true);
+test('dayKey — местная дата (ночная запись не уезжает во вчера)', () => {
+  assert.equal(dayKey(at(2026, 8, 12, 23, 50)), '2026-08-12');
+  assert.equal(dayKey(at(2026, 8, 13, 0, 10)), '2026-08-13');
+  assert.equal(dayKey(0), '');
 });
 
-test('битый раздел настроек откатывается к дефолту целиком', () => {
-  const s = normalizeIntakeSettings({ photo_slots: [{ label: 'без id' }, null, 42] });
-  assert.equal(s.photo_slots.length, DEFAULT_PHOTO_SLOTS.length, 'иначе правило «без фото не закрыть» тихо отключилось бы');
+test('dayDiff — считает наступившие полночи, а не разницу в часах', () => {
+  // 20 минут разницы, но это разные сутки → один день.
+  assert.equal(dayDiff(at(2026, 8, 12, 23, 50), at(2026, 8, 13, 0, 10)), 1);
+  // 23 часа разницы внутри одних суток → ноль.
+  assert.equal(dayDiff(at(2026, 8, 12, 0, 30), at(2026, 8, 12, 23, 30)), 0);
+  assert.equal(dayDiff(at(2026, 8, 12), at(2026, 8, 10)), -2);
 });
 
-test('шаблон без пунктов отбрасывается, оставшиеся сохраняются', () => {
-  const s = normalizeIntakeSettings({
-    templates: [
-      { id: 'empty', label: 'Пустой', items: [] },
-      { id: 'ok', label: 'Рабочий', items: [{ id: 'a', text: 'Проверить' }] },
-    ],
-  });
-  assert.deepEqual(s.templates.map((t) => t.id), ['ok']);
-  assert.equal(s.templates[0].items[0].required, true, 'пункт без флага считается обязательным');
+test('startOfWeek — понедельник; воскресенье относится к своей неделе', () => {
+  assert.equal(startOfWeek(at(2026, 8, 12, 15, 0)), at(2026, 8, 10));   // ср → пн 10.08
+  assert.equal(startOfWeek(at(2026, 8, 10, 0, 1)), at(2026, 8, 10));    // сам пн
+  assert.equal(startOfWeek(at(2026, 8, 16, 23, 0)), at(2026, 8, 10));   // вс → тот же пн
 });
 
-test('все шаблоны негодные → возвращаются дефолтные', () => {
-  const s = normalizeIntakeSettings({ templates: [{ id: 'x', label: 'X', items: [] }] });
-  assert.deepEqual(s.templates.map((t) => t.id), ['insurance', 'client']);
+test('addDays — переход через границу месяца', () => {
+  assert.equal(addDays(at(2026, 8, 30), 3), at(2026, 9, 2));
+  assert.equal(addDays(at(2026, 8, 2), -3), at(2026, 7, 30));
 });
 
-test('пороги светофора чистятся от мусора', () => {
-  const s = normalizeIntakeSettings({ warn_days: -5, alert_days: 'ага' });
-  assert.equal(s.warn_days, 0);
-  assert.equal(s.alert_days, 2);
+test('parseLocalDateTime и toLocalInput — туда и обратно без сдвига', () => {
+  const ms = parseLocalDateTime('2026-08-15T14:30');
+  assert.equal(ms, at(2026, 8, 15, 14, 30));
+  assert.equal(toLocalInput(ms), '2026-08-15T14:30');
+  // Дата без времени = полночь; мусор = 0, а не NaN и не «сегодня».
+  assert.equal(parseLocalDateTime('2026-08-15'), at(2026, 8, 15));
+  assert.equal(parseLocalDateTime('завтра'), 0);
+  assert.equal(parseLocalDateTime(''), 0);
+  assert.equal(toLocalInput(0), '');
 });
 
-// ─── Фото ────────────────────────────────────────────────────────────────────
-
-test('фото приёмки отделяются от фото «до/после» по категории', () => {
-  const job = {
-    photos: [
-      { id: '1', category: 'before' },
-      { id: '2', category: 'after' },
-      { id: '3', category: photoCategory('vin') },
-      { id: '4', category: photoCategory('vin') },
-      { id: '5' },                                   // старое фото без категории
-    ],
-  };
-  const bySlot = intakePhotosBySlot(job);
-  assert.deepEqual(Object.keys(bySlot), ['vin']);
-  assert.equal(bySlot.vin.length, 2);
+test('подписи дат — человеческие', () => {
+  assert.equal(fmtDayTime(at(2026, 8, 15, 9, 5)), '15 авг, 09:05');
+  assert.equal(fmtRelativeDay(at(2026, 8, 12, 18, 0), NOW), 'сегодня');
+  assert.equal(fmtRelativeDay(at(2026, 8, 13, 8, 0), NOW), 'завтра');
+  assert.equal(fmtRelativeDay(at(2026, 8, 17, 8, 0), NOW), 'через 5 дней');
+  assert.equal(fmtRelativeDay(at(2026, 8, 11, 8, 0), NOW), 'вчера');
+  assert.equal(fmtRelativeDay(at(2026, 8, 9, 8, 0), NOW), '3 дня назад');
 });
 
-test('photoSlotId разбирает только свои категории', () => {
-  assert.equal(photoSlotId('intake:vin'), 'vin');
-  assert.equal(photoSlotId('before'), null);
-  assert.equal(photoSlotId(undefined), null);
-});
+// ─── Чтение данных машины ────────────────────────────────────────────────────
 
-// ─── Повреждения ─────────────────────────────────────────────────────────────
+test('readIntake — у нетронутой машины пустая приёмка, мусор в журнале выбрасывается', () => {
+  assert.deepEqual(readIntake(car()), emptyIntake());
+  assert.deepEqual(readIntake(null), emptyIntake());
 
-test('повреждения в акте идут в порядке справочника зон, а не кликов', () => {
-  const intake = readIntake({
+  const i = readIntake(car({
     intake: {
-      damages: [
-        { id: 'd1', zone: 'trunk', kind: 'dent' },
-        { id: 'd2', zone: 'hood', kind: 'scratch', note: 'по всей длине' },
+      scheduled_at: at(2026, 8, 14, 11, 0),
+      log: [
+        null,
+        { at: 100, kind: 'invite', to: at(2026, 8, 13, 9, 0) },
+        { at: 200, kind: 'move', from: at(2026, 8, 13, 9, 0), to: at(2026, 8, 14, 11, 0), reason: 'клиент в отъезде' },
       ],
     },
-  });
-  const rows = damageRows(intake, DEFAULT_INTAKE_SETTINGS.damage_zones);
-  assert.deepEqual(rows.map((r) => r.zone), ['Капот', 'Крышка багажника']);
-  assert.equal(rows[0].kind, 'Царапина');
-  assert.equal(rows[0].note, 'по всей длине');
+  }));
+  assert.equal(i.scheduled_at, at(2026, 8, 14, 11, 0));
+  assert.equal(i.log.length, 2);
+  assert.equal(i.log[0].at, 200);            // свежее сверху
+  assert.equal(i.log[0].reason, 'клиент в отъезде');
 });
 
-test('повреждение без характера получает «Царапина» по умолчанию', () => {
-  const intake = readIntake({ intake: { damages: [{ zone: 'roof' }] } });
-  assert.equal(intake.damages[0].kind, 'scratch');
-  assert.equal(intake.damages[0].id, 'roof', 'id подставляется из зоны');
+test('подтверждение слетает после переноса — иначе накануне никто не позвонит', () => {
+  const day = at(2026, 8, 14, 11, 0);
+  assert.ok(isConfirmed({ scheduled_at: day, confirmed_at: NOW, confirmed_for: day }));
+  // Перенесли на другое время — подтверждение больше не считается.
+  assert.ok(!isConfirmed({ scheduled_at: at(2026, 8, 15, 11, 0), confirmed_at: NOW, confirmed_for: day }));
+  assert.ok(!isConfirmed({ scheduled_at: day, confirmed_at: 0, confirmed_for: 0 }));
 });
 
-test('мусор в списке повреждений выбрасывается', () => {
-  const intake = readIntake({ intake: { damages: [null, {}, { zone: '' }, { zone: 'hood' }] } });
-  assert.equal(intake.damages.length, 1);
+test('isOnIntake — только колонка «Осмотр / дефектовка», архив не в счёт', () => {
+  assert.ok(isOnIntake(car()));
+  assert.ok(isOnIntake(car({ approval_status: '' })));            // пустой статус = осмотр
+  assert.ok(!isOnIntake(car({ approval_status: 'calc' })));
+  assert.ok(!isOnIntake(car({ phase: 'repair' })));
+  assert.ok(!isOnIntake(car({ archived: true })));
+  assert.ok(!isOnIntake(null));
 });
 
-test('зоны группируются в порядке первого появления', () => {
-  const groups = groupZones(DEFAULT_INTAKE_SETTINGS.damage_zones);
-  assert.deepEqual(groups.map((g) => g.group), ['Перед', 'Левый борт', 'Правый борт', 'Зад', 'Прочее']);
+test('waitingSince — сначала дата попадания в колонку, потом дата заведения', () => {
+  assert.equal(waitingSince(car({ approval_since: 555 })), 555);
+  assert.equal(waitingSince(car()), at(2026, 8, 11, 9, 0));
+  assert.equal(waitingSince({}), 0);
 });
 
-// ─── Список машин ────────────────────────────────────────────────────────────
+// ─── Состояние машины ────────────────────────────────────────────────────────
 
-test('список: сортировка по срочности, счётчики, дни стояния', () => {
+test('машина без даты — «пригласить», с днями ожидания', () => {
+  const r = intakeRow(car({ approval_since: at(2026, 8, 10, 9, 0) }), NOW);
+  assert.equal(r.phase, 'invite');
+  assert.equal(r.daysWaiting, 2);
+  assert.equal(r.dueDiff, null);
+});
+
+test('светофор ожидания: сутки → жёлтый, три дня → красный', () => {
+  assert.equal(INVITE_WARN_DAYS, 1);
+  assert.equal(INVITE_ALERT_DAYS, 3);
+  const sev = (days) => intakeRow(car({ approval_since: addDays(NOW, -days) }), NOW).severity;
+  assert.equal(sev(0), 'ok');
+  assert.equal(sev(1), 'warn');
+  assert.equal(sev(2), 'warn');
+  assert.equal(sev(3), 'alert');
+  assert.equal(sev(9), 'alert');
+});
+
+test('назначенная дата: сегодня и завтра — «назначено», вчера — «просрочено»', () => {
+  const row = (ms) => intakeRow(car({ intake: { scheduled_at: ms } }), NOW);
+  assert.equal(row(at(2026, 8, 12, 16, 0)).phase, 'scheduled');   // сегодня, позже
+  assert.equal(row(at(2026, 8, 12, 8, 0)).phase, 'scheduled');    // сегодня, но утро уже прошло
+  assert.equal(row(at(2026, 8, 13, 9, 0)).dueDiff, 1);
+  assert.equal(row(at(2026, 8, 11, 9, 0)).phase, 'overdue');
+  assert.equal(row(at(2026, 8, 11, 9, 0)).severity, 'alert');
+});
+
+test('начатая дефектовка выходит из просрочки', () => {
+  const r = intakeRow(car({ intake: { scheduled_at: at(2026, 8, 11, 9, 0), started_at: at(2026, 8, 11, 9, 30) } }), NOW);
+  assert.equal(r.phase, 'started');
+});
+
+// ─── Сетка календаря ─────────────────────────────────────────────────────────
+
+test('buildWeeks — две недели по семь дней, начиная с понедельника текущей', () => {
+  const weeks = buildWeeks(NOW);
+  assert.equal(weeks.length, CALENDAR_WEEKS);
+  assert.equal(weeks[0].days.length, 7);
+  assert.equal(weeks[0].days[0].key, '2026-08-10');
+  assert.equal(weeks[0].days[0].weekday, 'Пн');
+  assert.equal(weeks[1].days[6].key, '2026-08-23');
+  const today = weeks[0].days.find((d) => d.isToday);
+  assert.equal(today.key, '2026-08-12');
+  assert.ok(weeks[0].days[0].isPast);            // понедельник уже прошёл
+  assert.ok(!today.isPast);
+  assert.ok(weeks[0].days[5].isWeekend && weeks[0].days[6].isWeekend);
+});
+
+// ─── Сборка экрана ───────────────────────────────────────────────────────────
+
+function board(jobs, over = {}) {
+  return buildIntakeBoard(jobs, { nowMs: NOW, ...over });
+}
+
+test('машины раскладываются по трём зонам, дальние — в «приедут позже»', () => {
   const jobs = [
-    readyJob({ id: 'ready', created_at: daysAgo(0) }),                                    // 0 дней → 🟢
-    { id: 'stale', phase: 'approval', approval_status: 'inspection', car_model: 'Kia Rio', created_at: daysAgo(5) },
-    { id: 'warn', phase: 'approval', approval_status: 'inspection', car_model: 'Lada', created_at: daysAgo(1) },
-    { id: 'other', phase: 'approval', approval_status: 'calc', car_model: 'BMW' },        // не «Осмотр» — мимо
-    { id: 'repair', phase: 'repair', car_model: 'Audi' },                                 // в ремонте — мимо
+    car({ id: 'need', intake: null, approval_since: at(2026, 8, 9, 9, 0) }),
+    car({ id: 'today', plate_number: 'Б001АА124', intake: { scheduled_at: at(2026, 8, 12, 15, 0) } }),
+    car({ id: 'nextweek', plate_number: 'В002АА124', intake: { scheduled_at: at(2026, 8, 20, 9, 0) } }),
+    car({ id: 'far', plate_number: 'Г003АА124', intake: { scheduled_at: at(2026, 9, 3, 9, 0) } }),
+    car({ id: 'late', plate_number: 'Д004АА124', intake: { scheduled_at: at(2026, 8, 11, 9, 0) } }),
+    car({ id: 'other', approval_status: 'calc' }),      // не на осмотре — не наша
   ];
-  const { rows, counts } = buildIntakeList(jobs, DEFAULT_INTAKE_SETTINGS, { nowMs: NOW });
-  assert.deepEqual(rows.map((r) => r.id), ['stale', 'warn', 'ready'], 'сначала те, кто дольше стоит без приёмки');
-  assert.equal(rows[0].daysWaiting, 5);
-  assert.equal(rows[0].severity, 'alert');
-  assert.equal(rows[1].severity, 'warn');
-  assert.equal(rows[2].severity, 'ok');
-  assert.equal(counts.total, 3);
-  assert.equal(counts.ready, 1);
-  assert.equal(counts.alert, 1);
+  const b = board(jobs);
+
+  assert.deepEqual(b.invite.map((r) => r.id), ['need']);
+  assert.deepEqual(b.later.map((r) => r.id), ['far']);
+
+  const cell = (key) => b.weeks.flatMap((w) => w.days).find((d) => d.key === key);
+  assert.deepEqual(cell('2026-08-12').cars.map((r) => r.id), ['today']);
+  assert.deepEqual(cell('2026-08-20').cars.map((r) => r.id), ['nextweek']);
+  assert.deepEqual(cell('2026-08-11').cars.map((r) => r.id), ['late']);   // просроченная видна в своей клетке
+  assert.equal(b.counts.invite, 1);
+  assert.equal(b.counts.today, 1);
+  assert.equal(b.counts.overdue, 1);
+  assert.equal(b.counts.later, 1);
 });
 
-test('список: поиск по номеру, модели и клиенту', () => {
-  const jobs = [readyJob(), { id: 'j2', phase: 'approval', approval_status: 'inspection', car_model: 'Kia Rio' }];
-  const byPlate = buildIntakeList(jobs, DEFAULT_INTAKE_SETTINGS, { query: 'а123', nowMs: NOW });
-  assert.deepEqual(byPlate.rows.map((r) => r.id), ['j1']);
-  const byClient = buildIntakeList(jobs, DEFAULT_INTAKE_SETTINGS, { query: 'иванов', nowMs: NOW });
-  assert.deepEqual(byClient.rows.map((r) => r.id), ['j1']);
-  const byModel = buildIntakeList(jobs, DEFAULT_INTAKE_SETTINGS, { query: 'kia', nowMs: NOW });
-  assert.deepEqual(byModel.rows.map((r) => r.id), ['j2']);
+test('внутри дня машины идут по времени', () => {
+  const jobs = [
+    car({ id: 'late', intake: { scheduled_at: at(2026, 8, 14, 16, 0) } }),
+    car({ id: 'early', intake: { scheduled_at: at(2026, 8, 14, 9, 30) } }),
+    car({ id: 'mid', intake: { scheduled_at: at(2026, 8, 14, 12, 0) } }),
+  ];
+  const day = board(jobs).weeks.flatMap((w) => w.days).find((d) => d.key === '2026-08-14');
+  assert.deepEqual(day.cars.map((r) => r.id), ['early', 'mid', 'late']);
 });
 
-test('список: закрытая приёмка перестаёт быть срочной', () => {
-  const jobs = [readyJob({ id: 'closed', created_at: daysAgo(9), intake: { status: 'done' } })];
-  const { rows, counts } = buildIntakeList(jobs, DEFAULT_INTAKE_SETTINGS, { nowMs: NOW });
-  assert.equal(rows[0].severity, 'done');
-  assert.equal(counts.alert, 0);
-  assert.equal(counts.done, 1);
+test('список приглашений: сначала красные, внутри — кто дольше ждёт', () => {
+  const jobs = [
+    car({ id: 'fresh', approval_since: NOW }),
+    car({ id: 'old', approval_since: addDays(NOW, -9) }),
+    car({ id: 'yesterday', approval_since: addDays(NOW, -1) }),
+    car({ id: 'stale', approval_since: addDays(NOW, -4) }),
+  ];
+  assert.deepEqual(board(jobs).invite.map((r) => r.id), ['old', 'stale', 'yesterday', 'fresh']);
+  assert.equal(board(jobs).counts.stale, 2);
 });
 
-// ─── Печатный акт ────────────────────────────────────────────────────────────
-
-test('снимок акта замораживает состояние машины', () => {
-  const job = readyJob({
-    vin: 'XW8ZZZ61ZJG000123',
-    client_phone: '+7 999 000-11-22',
-    insurer_name: 'Ингосстрах',
-    claim_number: 'У-123/26',
-    intake: {
-      mileage: '124500', fuel: 'half', keys: '2',
-      docs: ['sts', 'policy'],
-      equipment: ['jack', 'spare'],
-      damages: [{ zone: 'hood', kind: 'dent', note: 'слева' }],
-      notes: 'Машина не на ходу',
-      act_number: 'ПР-2026-0007',
-      act_date: NOW,
-    },
-  });
-  const snap = buildIntakeActSnapshot(job, DEFAULT_INTAKE_SETTINGS, { name: 'Авто Академия' }, { acceptedBy: 'Петров С.' });
-
-  assert.equal(snap.doc_number, 'ПР-2026-0007');
-  // Дата — местная, в формате formatDocDate ('ГГГГ-ММ-ДД'), а не UTC-слепок:
-  // ночная приёмка по Красноярску не должна печататься вчерашним числом.
-  assert.equal(snap.doc_date, '2026-07-28');
-  assert.equal(snap.accepted_by, 'Петров С.');
-  assert.equal(snap.company.name, 'Авто Академия');
-  assert.equal(snap.customer.name, 'Иванов П.');
-  assert.equal(snap.vehicle.vin, 'XW8ZZZ61ZJG000123');
-  assert.equal(snap.insurance.claim_number, 'У-123/26');
-  assert.equal(snap.condition.mileage, '124500');
-  assert.equal(snap.condition.fuel_label, '½');
-  assert.equal(snap.notes, 'Машина не на ходу');
-  assert.equal(snap.photos_count, 7);
-
-  // Комплектность и документы печатаются ПОЛНЫМ списком с отметкой «есть/нет» —
-  // «запаски не было» защищает не хуже, чем «запаска была».
-  assert.equal(snap.docs.length, DEFAULT_INTAKE_SETTINGS.docs.length);
-  assert.deepEqual(snap.docs.filter((d) => d.present).map((d) => d.label), ['СТС', 'Полис (ОСАГО/КАСКО)']);
-  assert.equal(snap.equipment.filter((e) => e.present).length, 2);
-  assert.deepEqual(snap.damages, [{ zone: 'Капот', kind: 'Вмятина', note: 'слева' }]);
+test('машина с датой раньше окна календаря не теряется — её держит напоминание', () => {
+  const jobs = [car({ id: 'forgotten', intake: { scheduled_at: at(2026, 8, 3, 9, 0) } })];
+  const b = board(jobs);
+  const inCells = b.weeks.flatMap((w) => w.days).flatMap((d) => d.cars);
+  assert.equal(inCells.length, 0);
+  assert.equal(b.later.length, 0);
+  assert.deepEqual(b.reminders.map((x) => x.kind), ['overdue']);
+  assert.equal(b.reminders[0].row.id, 'forgotten');
 });
 
-test('акт печатается даже с поздним временем — дата остаётся местной', () => {
-  // 23:40 по местному времени: UTC-слепок дал бы предыдущий день в UTC+7.
-  const late = new Date('2026-07-28T23:40:00').getTime();
-  const snap = buildIntakeActSnapshot({}, null, null, { docDate: late });
-  assert.equal(snap.doc_date, '2026-07-28');
+test('поиск фильтрует зоны, но не прячет напоминания', () => {
+  const jobs = [
+    car({ id: 'a', plate_number: 'А111АА124', client_name: 'Петров', intake: null }),
+    car({ id: 'b', plate_number: 'Б222ББ124', client_name: 'Сидоров', intake: null }),
+    car({ id: 'c', plate_number: 'В333ВВ124', client_name: 'Кузнецов', intake: { scheduled_at: at(2026, 8, 11, 9, 0) } }),
+  ];
+  const b = board(jobs, { query: 'петров' });
+  assert.deepEqual(b.invite.map((r) => r.id), ['a']);
+  assert.deepEqual(b.reminders.map((x) => x.row.id), ['c']);
+  assert.equal(board(jobs, { query: 'Б222' }).invite.length, 1);
+  assert.equal(board(jobs, { query: 'ингос' }).invite.length, 2);   // по страховой тоже
 });
 
-test('снимок акта у нетронутой машины не падает', () => {
-  const snap = buildIntakeActSnapshot({ car_model: 'Kia Rio' }, null, null);
-  assert.equal(snap.doc_number, '');
-  assert.equal(snap.doc_date, '', 'нет даты → formatDocDate напечатает прочерк');
-  assert.equal(snap.vehicle.car_model, 'Kia Rio');
-  assert.equal(snap.condition.fuel_label, '—');
-  assert.deepEqual(snap.damages, []);
-  assert.equal(snap.photos_count, 0);
+// ─── Напоминания ─────────────────────────────────────────────────────────────
+
+test('напоминания: просроченные впереди, звонок — только по неподтверждённым', () => {
+  const day = at(2026, 8, 13, 10, 0);
+  const rows = [
+    intakeRow(car({ id: 'call', intake: { scheduled_at: day } }), NOW),
+    intakeRow(car({ id: 'confirmed', intake: { scheduled_at: day, confirmed_at: NOW, confirmed_for: day } }), NOW),
+    intakeRow(car({ id: 'overdue-old', intake: { scheduled_at: at(2026, 8, 5, 9, 0) } }), NOW),
+    intakeRow(car({ id: 'overdue-new', intake: { scheduled_at: at(2026, 8, 11, 9, 0) } }), NOW),
+    intakeRow(car({ id: 'later', intake: { scheduled_at: at(2026, 8, 18, 9, 0) } }), NOW),
+    intakeRow(car({ id: 'need' }), NOW),
+  ];
+  const rem = buildReminders(rows);
+  assert.deepEqual(rem.map((x) => `${x.kind}:${x.row.id}`), [
+    'overdue:overdue-old',
+    'overdue:overdue-new',
+    'call:call',
+  ]);
 });
 
-// ===== Пробег: одно число на машину =====
-// Пробег, вписанный на экране приёмки, api.jobs.saveIntake кладёт и в карточку;
-// обратный ход — здесь: пока приёмщик не вписал свой, показываем пробег карточки
-// (мог прийти из Audatex или из документа), чтобы экран, акт приёмки и акт
-// приёма-передачи не расходились.
-test('пробег из карточки подставляется в приёмку, пока свой не вписан', () => {
-  assert.equal(readIntake({ mileage: '84000', intake: { status: 'open' } }).mileage, '84000');
-  assert.equal(readIntake({ mileage: '84000' }).mileage, '84000', 'машина без приёмки вообще');
-  // Вписанное на экране приёмки сильнее карточки.
-  assert.equal(readIntake({ mileage: '84000', intake: { mileage: '124500' } }).mileage, '124500');
-  assert.equal(readIntake({}).mileage, '');
+test('напоминание о звонке появляется только накануне, не за три дня', () => {
+  const rows = [intakeRow(car({ intake: { scheduled_at: at(2026, 8, 15, 9, 0) } }), NOW)];
+  assert.equal(buildReminders(rows).length, 0);
 });
 
-test('пробег в карточке снимает блокировку «Пробег» на закрытии приёмки', () => {
-  const job = readyJob({ mileage: '84000', intake: { status: 'open', mileage: '', fuel: 'half', keys: '2', checked: allChecked() } });
-  const st = intakeStatus(job, DEFAULT_INTAKE_SETTINGS);
-  assert.deepEqual(st.fieldsMissing, []);
-  // И в печатный акт приёмки попадает то же число.
-  assert.equal(buildIntakeActSnapshot(job, DEFAULT_INTAKE_SETTINGS, {}).condition.mileage, '84000');
+// ─── Форма ───────────────────────────────────────────────────────────────────
+
+test('приглашение: нужна только дата, и не в прошлом', () => {
+  assert.ok(validateSchedule({ at: at(2026, 8, 14, 10, 0), nowMs: NOW }).ok);
+  // Сегодня, но время уже прошло — разрешаем: машину могли привезти утром.
+  assert.ok(validateSchedule({ at: at(2026, 8, 12, 8, 0), nowMs: NOW }).ok);
+  assert.equal(validateSchedule({ at: 0, nowMs: NOW }).errors.at, 'Укажите дату и время');
+  assert.equal(validateSchedule({ at: at(2026, 8, 11, 9, 0), nowMs: NOW }).errors.at, 'Эта дата уже прошла');
+});
+
+test('перенос: без чекбокса «согласовано» и без причины не сохранить', () => {
+  const base = { at: at(2026, 8, 15, 10, 0), isMove: true, nowMs: NOW };
+  const empty = validateSchedule(base);
+  assert.ok(!empty.ok);
+  assert.ok(empty.errors.agreed);
+  assert.ok(empty.errors.reason);
+
+  assert.ok(!validateSchedule({ ...base, agreed: true }).ok);                          // причины нет
+  assert.ok(!validateSchedule({ ...base, reason: 'клиент просил' }).ok);               // галочки нет
+  assert.ok(!validateSchedule({ ...base, agreed: true, reason: ' '.repeat(9) }).ok);   // пробелы не причина
+  assert.ok(validateSchedule({ ...base, agreed: true, reason: 'клиент в отъезде' }).ok);
+  assert.ok(MIN_REASON_LEN >= 3);
+});
+
+test('журнал читается человеком', () => {
+  const to = at(2026, 8, 15, 10, 0);
+  const from = at(2026, 8, 13, 9, 0);
+  assert.equal(describeLogEntry({ kind: 'invite', to }), 'Записан на 15 авг, 10:00');
+  assert.equal(describeLogEntry({ kind: 'move', from, to }), 'Перенос 13 авг, 09:00 → 15 авг, 10:00');
+  assert.equal(describeLogEntry({ kind: 'confirm', to }), 'Клиент подтвердил 15 авг, 10:00');
 });

@@ -820,80 +820,86 @@ export const api = {
         return { id: jobId, ...data, photos };
       });
     },
-    // ─── Предремонтная приёмка (job.intake) ─────────────────────────────────
-    // Данные экрана «Приёмка авто» живут в самой машине, а не в отдельной
-    // коллекции: экран и так подписан на машины — лишние чтения Firestore при
-    // бесплатной квоте заметны.
+    // ─── Запись на дефектовку (job.intake) ──────────────────────────────────
+    // Экран мастера-приёмщика: пригласить машину на дефектовку и переносить дату.
+    // Данные живут в самой машине, а не в отдельной коллекции: экран и так
+    // подписан на машины — лишние чтения Firestore при бесплатной квоте заметны.
     //
     // Транзакция (а не updateDoc), по той же причине, что и в savePart: приёмщик
-    // заполняет приёмку с телефона, стоя у машины, пока управленец открыл ту же
-    // карточку на компьютере. Мержим ПО КЛЮЧАМ — переданные поля перезаписываются,
-    // остальные остаются как есть, поэтому две вкладки не стирают работу друг друга.
+    // переносит машину с телефона, пока управленец открыл ту же карточку на
+    // компьютере, — журнал переносов нельзя терять при одновременной записи.
     //
     // Отметки «кто и когда» — server-owned (как receiving_log): вызывающий их не
-    // передаёт и не может подделать, иначе в акте нельзя было бы опереться на то,
-    // кто именно принял машину.
-    async saveIntake(jobId, patch) {
+    // передаёт и подделать не может. Журнал — это то, чем приёмщик объясняется
+    // перед управленцем, поэтому подписывать его должен слой данных, не экран.
+    async setIntakeDate(jobId, { at: whenMs, reason = '', agreed = false } = {}) {
       const ref = doc(jobsCol, jobId);
-      const clean = stripUndefined(patch || {});
+      const when = Number(whenMs) || 0;
+      if (!when) throw new Error('Не указаны дата и время дефектовки');
       const by = auth.currentUser?.email || null;
-      const at = Date.now();
+      const now = Date.now();
       return runTransaction(db, async (tx) => {
         const snap = await tx.get(ref);
         if (!snap.exists()) throw new Error('Машина не найдена');
         const data = snap.data();
         const prev = (data.intake && typeof data.intake === 'object') ? data.intake : {};
-        const intake = { ...prev, ...clean, started_at: prev.started_at || at, updated_at: at, updated_by: by };
-        if ('status' in clean && clean.status !== prev.status) {
-          if (clean.status === 'done') { intake.done_at = at; intake.done_by = by; }
-          if (clean.status === 'skipped') { intake.skipped_at = at; intake.skipped_by = by; }
-          // Переоткрытие приёмки снимает отметку о закрытии, иначе в акте осталась
-          // бы подпись «принял такой-то» от отменённого закрытия.
-          if (clean.status === 'open') { intake.done_at = null; intake.done_by = null; intake.skipped_at = null; intake.skipped_by = null; }
-        }
-        // Пробег из приёмки — это пробег МАШИНЫ, а не отдельная запись экрана:
-        // держим его и в карточке, иначе заказ-наряд и акт приёма-передачи печатали
-        // бы старое число (или прочерк), пока приёмщик стоит у машины с верным.
-        const upd = { intake };
-        const mileage = String(clean.mileage ?? '').trim();
-        if ('mileage' in clean && mileage) upd.mileage = mileage;
-        tx.update(ref, upd);
-        return { id: jobId, ...data, ...upd };
+        const had = Number(prev.scheduled_at) || 0;
+        // Требование владельца: переносить только после звонка клиенту. Проверка
+        // стоит и здесь, а не только в форме, — интерфейс не единственный вход в
+        // базу, а тихий перенос «за спиной клиента» и есть причина, по которой
+        // машину потом не привозят.
+        if (had && !agreed) throw new Error('Перенос возможен только после согласования с клиентом');
+
+        const entry = { at: now, by, kind: had ? 'move' : 'invite', to: when };
+        if (had) entry.from = had;
+        const note = String(reason || '').trim();
+        if (note) entry.reason = note;
+
+        const intake = {
+          ...prev,
+          scheduled_at: when,
+          invited_at: Number(prev.invited_at) || now,
+          invited_by: prev.invited_by || by,
+          // Подтверждение относится к КОНКРЕТНОЙ дате, поэтому перенос его снимает:
+          // иначе машина, подтверждённая на среду и перенесённая на пятницу,
+          // считалась бы подтверждённой и звонка накануне никто бы не сделал.
+          confirmed_at: 0,
+          confirmed_for: 0,
+          confirmed_by: null,
+          log: [...(Array.isArray(prev.log) ? prev.log : []), entry],
+          updated_at: now,
+          updated_by: by,
+        };
+        tx.update(ref, { intake });
+        return { id: jobId, ...data, intake };
       });
     },
 
-    // Номер акта приёмки (ПР-2026-0001). Выдаётся ОДИН РАЗ — при первой печати, а
-    // не при заведении машины: иначе очередь номеров расходовалась бы на машины,
-    // до акта которых так и не дошло.
-    //
-    // Гонка двух устройств решается «кто первый записал»: счётчик атомарен, но
-    // между выдачей номера и записью в машину может вклиниться второй печатающий.
-    // Поэтому запись условная — если номер уже стоит, отдаём ЕГО, а свой просто не
-    // используем. Дырка в нумерации безобиднее двух актов с одним номером.
-    //
-    // Возвращает { number, at } — И НОМЕР, И ДАТУ. Дату отдаёт именно этот слой,
-    // потому что здесь она и записывается: печатный лист обязан показать ту же
-    // дату, что легла в базу, а не пересчитать своё «сейчас» в момент рендера.
-    async ensureIntakeActNumber(jobId) {
+    // «Позвонил накануне, клиент подтвердил» — гасит напоминание о звонке.
+    // Отметка привязана к дате, на которую подтверждали (confirmed_for), поэтому
+    // после переноса возвращается сама (см. isConfirmed в intake.js).
+    async confirmIntakeVisit(jobId) {
       const ref = doc(jobsCol, jobId);
-      const snap = await getDoc(ref);
-      const stored = snap.exists() ? (snap.data().intake || {}) : {};
-      if (stored.act_number) return { number: stored.act_number, at: stored.act_date || 0 };
-      const year = new Date().getFullYear();
-      const number = formatDocNumber('intake', year, await api.counters.next('intake', year));
-      const at = Date.now();
       const by = auth.currentUser?.email || null;
+      const now = Date.now();
       return runTransaction(db, async (tx) => {
-        const s = await tx.get(ref);
-        if (!s.exists()) throw new Error('Машина не найдена');
-        const data = s.data();
+        const snap = await tx.get(ref);
+        if (!snap.exists()) throw new Error('Машина не найдена');
+        const data = snap.data();
         const prev = (data.intake && typeof data.intake === 'object') ? data.intake : {};
-        // Успел другой печатающий — берём его номер и его дату.
-        if (prev.act_number) return { number: prev.act_number, at: prev.act_date || 0 };
-        tx.update(ref, {
-          intake: { ...prev, act_number: number, act_date: at, started_at: prev.started_at || at, updated_at: at, updated_by: by },
-        });
-        return { number, at };
+        const when = Number(prev.scheduled_at) || 0;
+        if (!when) throw new Error('У машины нет назначенной дефектовки');
+        const intake = {
+          ...prev,
+          confirmed_at: now,
+          confirmed_by: by,
+          confirmed_for: when,
+          log: [...(Array.isArray(prev.log) ? prev.log : []), { at: now, by, kind: 'confirm', to: when }],
+          updated_at: now,
+          updated_by: by,
+        };
+        tx.update(ref, { intake });
+        return { id: jobId, ...data, intake };
       });
     },
 
@@ -1063,26 +1069,6 @@ export const api = {
     async updateCompany(data) {
       await setDoc(doc(settingsCol, 'company'), stripUndefined(data), { merge: true });
       return api.settings.getCompany();
-    },
-
-    // Настройки экрана «Приёмка авто»: шаблоны чек-листов, рубрики обязательных
-    // фото, зоны повреждений, списки документов и комплектности. Управленец правит
-    // их в «Настройки → Приёмка авто», приёмщик читает при открытии экрана.
-    // Дефолты (если документа ещё нет) живут в intake.js, а не здесь, — так их
-    // видят и юнит-тесты, и демо-страница без Firebase.
-    async getIntake() {
-      const snap = await getDoc(doc(settingsCol, 'intake'));
-      return snap.exists() ? snap.data() : {};
-    },
-    // merge:true, но массивы Firestore заменяет целиком — ровно то, что нужно:
-    // «удалить пункт чек-листа» должно удалять, а не дописывать.
-    async saveIntake(data) {
-      await setDoc(doc(settingsCol, 'intake'), stripUndefined({
-        ...data,
-        updated_at: Date.now(),
-        updated_by: normEmail(auth.currentUser?.email || '') || null,
-      }), { merge: true });
-      return api.settings.getIntake();
     },
   },
 

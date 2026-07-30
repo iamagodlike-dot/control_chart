@@ -1430,6 +1430,8 @@ textarea { width: 100%; min-height: 50px; }
 .cc-sum-val { flex-shrink: 0; font-family: var(--font-mono); font-weight: 700; }
 .cc-sum-total { display: flex; justify-content: space-between; font-family: var(--font-mono); font-size: 12px; margin-top: 8px; padding-top: 8px; border-top: 1px solid var(--line2); }
 .cc-doc-pill { flex-shrink: 0; font-size: 10px; font-weight: 700; padding: 2px 8px; border-radius: 999px; font-family: var(--font-mono); text-transform: uppercase; }
+/* Подпись у счёта в списке документов: «предыдущая версия», «доп. счёт». */
+.cc-doc-note { font-size: 11px; color: var(--color-text-muted); }
 
 /* Journal — derived event timeline */
 .cc-journal { display: flex; flex-direction: column; }
@@ -2436,6 +2438,9 @@ textarea { width: 100%; min-height: 50px; }
 .cc-ov-money-val { font-family: var(--font-mono); font-variant-numeric: tabular-nums; font-size: 24px; font-weight: 800; line-height: 1; color: var(--color-text); }
 .cc-ov-money-state { display: inline-flex; align-items: center; gap: 7px; margin-top: 9px; font-size: 11.5px; font-weight: 600; color: var(--color-text-muted); }
 .cc-ov-empty { font-size: 12.5px; color: var(--color-text-muted); }
+/* «Считается счёт №… · не учитывается: 2» — под суммой, когда по ремонту выпущено
+   несколько счетов и в деньги идёт не всё, что видно в списке документов. */
+.cc-ov-note { margin-top: 6px; font-size: 11px; line-height: 1.35; color: var(--color-text-muted); }
 .cc-ov-insurer { margin-top: auto; padding-top: 12px; display: flex; align-items: center; gap: 8px; color: var(--color-text-muted); }
 .cc-ov-insurer-name { font-weight: 700; font-size: 13px; color: var(--color-text); }
 .cc-ov-claimno { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--color-text-muted); }
@@ -2625,4 +2630,294 @@ textarea { width: 100%; min-height: 50px; }
   .mon-c-cause { grid-area: cause; justify-self: end; font-size: 11.5px; color: var(--color-text-muted); }
   .mon-c-client { grid-area: client; flex-direction: row; align-items: center; gap: 8px; }
   .mon-c-mobilemeta { display: block; grid-area: meta; font-family: var(--font-mono); font-size: 11px; color: var(--text3); }
+}
+/* ─── Экран мастера-приёмщика «Дефектовка» (.ink-*) ────────────────────────────
+   Три зоны сверху вниз: напоминания → кого пригласить → календарь двух недель →
+   кто приедет позже. Оформление держим графичным и тихим: один акцент на элемент,
+   волосяные линии вместо заливок, статус — цветная планка слева, а не цветной
+   блок. Крупным набрано только то, по чему решают: число дней без приглашения,
+   телефон клиента и время заезда.
+   Рассчитано и на телефон — приёмщик звонит и записывает на ходу: цели касания
+   от 34px, а на ≤640px сетка календаря разворачивается в список дней. */
+
+.ink { max-width: 1240px; margin: 0 auto; padding: 4px 2px 28px; }
+
+/* ── Шапка ─────────────────────────────────────────────────────────────────── */
+.ink-head { display: flex; align-items: flex-end; gap: 20px; flex-wrap: wrap; margin-bottom: 18px; }
+.ink-title { flex: 1 1 260px; }
+.ink-title h2 { margin: 0; font-size: 20px; font-weight: 800; letter-spacing: -.01em; }
+.ink-title p { margin: 3px 0 0; font-size: 12.5px; color: var(--color-text-muted); }
+
+.ink-nums { display: flex; gap: 22px; }
+.ink-num { display: flex; flex-direction: column; gap: 1px; }
+.ink-num b { font-family: var(--font-mono); font-size: 24px; font-weight: 700; line-height: 1.05; }
+.ink-num span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
+.ink-num.is-good b { color: var(--color-success); }
+.ink-num.is-bad b { color: var(--color-danger); }
+
+.ink-search { display: flex; align-items: center; gap: 8px; padding: 0 10px; height: 36px; min-width: 240px;
+  background: var(--color-surface); border: 1px solid var(--color-border); border-radius: 8px; color: var(--text3); }
+.ink-search:focus-within { border-color: var(--color-primary); }
+.ink-search input { flex: 1; min-width: 0; border: 0; background: none; color: var(--color-text); font-size: 13px; outline: none; }
+.ink-search button { display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 5px;
+  background: none; color: var(--text3); cursor: pointer; }
+.ink-search button:hover { color: var(--color-text); background: var(--color-surface-alt); }
+
+/* ── Общие мелочи ──────────────────────────────────────────────────────────── */
+.ink-muted { color: var(--text3); font-weight: 400; }
+.ink-ok { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; color: var(--color-success); }
+.ink-err { font-size: 11.5px; color: var(--color-danger-text); font-style: normal; }
+.ink-vin { letter-spacing: .02em; }
+
+.ink-plate { display: inline-block; padding: 2px 7px; border: 1px solid var(--line2); border-radius: 5px;
+  font-family: var(--font-mono); font-size: 12.5px; font-weight: 700; letter-spacing: .03em; white-space: nowrap; }
+.ink-model { font-weight: 700; font-size: 14px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ink-car { display: inline-flex; align-items: center; gap: 8px; min-width: 0; }
+
+.ink-tel { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 12.5px;
+  color: var(--color-primary); text-decoration: none; white-space: nowrap; }
+.ink-tel:hover { text-decoration: underline; }
+.ink-payer { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--color-text-muted); }
+.ink-payer.is-insured { color: var(--color-text); }
+
+.ink-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; min-height: 34px;
+  padding: 0 14px; border: 1px solid var(--color-border); border-radius: 8px; background: var(--color-surface-alt);
+  color: var(--color-text); font-family: inherit; font-size: 13px; font-weight: 600; cursor: pointer; white-space: nowrap; }
+.ink-btn:hover:not(:disabled) { border-color: var(--line2); }
+.ink-btn:disabled { opacity: .45; cursor: not-allowed; }
+.ink-btn.is-primary { background: var(--color-primary); border-color: var(--color-primary); color: var(--color-on-primary); }
+.ink-btn.is-primary:hover:not(:disabled) { background: var(--color-primary-dark); border-color: var(--color-primary-dark); }
+.ink-btn.is-quiet { background: none; }
+.ink-btn.is-big { min-height: 42px; padding: 0 18px; font-size: 13.5px; }
+
+.ink-banner { display: flex; align-items: center; gap: 8px; padding: 9px 12px; border-radius: 8px; font-size: 12.5px; }
+.ink-banner.is-error { background: var(--color-danger-bg); color: var(--color-danger-text); }
+
+.ink-empty { padding: 16px 18px; border: 1px dashed var(--color-border); border-radius: 10px;
+  color: var(--color-text-muted); font-size: 13px; }
+
+/* ── Напоминания ───────────────────────────────────────────────────────────── */
+.ink-rem { margin-bottom: 22px; border: 1px solid var(--color-border); border-radius: 12px;
+  background: var(--color-surface); overflow: hidden; }
+.ink-rem-head { display: flex; align-items: center; gap: 8px; padding: 10px 14px;
+  border-bottom: 1px solid var(--color-border); background: var(--bg2);
+  font-family: var(--font-mono); font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--color-text-muted); }
+.ink-rem-n { margin-left: auto; padding: 1px 7px; border-radius: 999px; background: var(--color-danger);
+  color: #fff; font-size: 11px; font-weight: 700; letter-spacing: 0; }
+.ink-rem-n.is-soft { background: var(--color-warning); color: #1a1206; }
+.ink-rem-list { list-style: none; margin: 0; padding: 0; }
+.ink-rem-item { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 12px;
+  padding: 11px 14px 11px 12px; border-top: 1px solid var(--color-border); border-left: 2px solid transparent; }
+.ink-rem-item:first-child { border-top: 0; }
+.ink-rem-item.is-overdue { border-left-color: var(--color-danger); }
+.ink-rem-item.is-call { border-left-color: var(--color-warning); }
+.ink-rem-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 7px; }
+.ink-rem-item.is-overdue .ink-rem-mark { background: var(--color-danger-bg); color: var(--color-danger-text); }
+.ink-rem-item.is-call .ink-rem-mark { background: var(--color-warning-bg); color: var(--color-warning); }
+.ink-rem-body { min-width: 0; }
+.ink-rem-title { font-size: 13.5px; }
+.ink-rem-title b { font-family: var(--font-mono); }
+.ink-rem-meta { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 3px;
+  font-size: 12px; color: var(--color-text-muted); }
+.ink-rem-meta > span { display: inline-flex; align-items: center; gap: 5px; }
+.ink-rem-acts { display: flex; align-items: center; gap: 8px; }
+
+/* ── Секции ────────────────────────────────────────────────────────────────── */
+.ink-sec { margin-bottom: 26px; }
+.ink-sec-head { display: flex; align-items: baseline; gap: 10px; margin-bottom: 10px; }
+.ink-sec-head h3 { margin: 0; font-size: 15px; font-weight: 700; }
+.ink-sec-n { font-family: var(--font-mono); font-size: 12px; color: var(--text3); }
+.ink-sec-range { margin-left: auto; font-family: var(--font-mono); font-size: 11.5px; color: var(--text3); }
+.ink-sec-warn { font-size: 11.5px; color: var(--color-danger-text); }
+
+/* ── Зона 1: пригласить ────────────────────────────────────────────────────── */
+.ink-inv-list { display: grid; grid-template-columns: repeat(auto-fill, minmax(390px, 1fr)); gap: 10px; }
+.ink-inv { display: grid; grid-template-columns: 86px minmax(0, 1fr) auto; align-items: center; gap: 14px;
+  padding: 12px 14px 12px 0; border: 1px solid var(--color-border); border-left: 3px solid var(--status-planned);
+  border-radius: 10px; background: var(--color-surface); }
+/* Название модели в списке приглашений НЕ обрезаем: приёмщик по нему узнаёт
+   машину в разговоре с клиентом. Пусть лучше перенесётся на вторую строку. */
+.ink-inv .ink-car { flex-wrap: wrap; gap: 6px 8px; }
+.ink-inv .ink-model { white-space: normal; overflow: visible; }
+.ink-inv.is-warn { border-left-color: var(--color-warning); }
+.ink-inv.is-alert { border-left-color: var(--color-danger); }
+
+.ink-inv-days { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 1px;
+  padding-left: 14px; border-right: 1px solid var(--color-border); align-self: stretch; }
+.ink-inv-days b { font-family: var(--font-mono); font-size: 32px; font-weight: 800; line-height: 1; }
+.ink-inv-days span { font-size: 9.5px; line-height: 1.25; text-align: center; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--text3); white-space: pre-line; }
+.ink-inv.is-warn .ink-inv-days b { color: var(--color-warning); }
+.ink-inv.is-alert .ink-inv-days b { color: var(--color-danger); }
+
+.ink-inv-main { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
+.ink-inv-rows { display: flex; flex-direction: column; gap: 3px; }
+.ink-inv-client { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 12px; color: var(--color-text-muted); }
+.ink-inv-client > span { display: inline-flex; align-items: center; gap: 5px; }
+
+/* ── Зона 2: календарь двух недель ─────────────────────────────────────────── */
+/* Сетка склеена из клеток на фоне цвета линии: зазор 1px и есть та самая
+   волосяная линия, без отдельных бордеров у каждой ячейки. */
+.ink-cal { border: 1px solid var(--color-border); border-radius: 12px; overflow: hidden;
+  background: var(--color-border); display: flex; flex-direction: column; gap: 1px; }
+.ink-cal-head { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--color-border); }
+.ink-cal-head span { padding: 7px 8px; background: var(--bg2); font-family: var(--font-mono); font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--text3); }
+.ink-cal-head span.is-weekend { color: color-mix(in srgb, var(--text3) 70%, var(--color-danger)); }
+.ink-week { display: grid; grid-template-columns: repeat(7, 1fr); gap: 1px; background: var(--color-border); }
+
+.ink-day { display: flex; flex-direction: column; gap: 5px; min-height: 112px; padding: 7px 7px 9px;
+  background: var(--color-surface); }
+.ink-day.is-past { background: color-mix(in srgb, var(--color-surface) 88%, var(--color-bg)); }
+.ink-day.is-weekend:not(.is-today) { background: color-mix(in srgb, var(--color-surface) 94%, var(--color-bg)); }
+.ink-day.is-today { background: color-mix(in srgb, var(--color-primary) 6%, var(--color-surface)); }
+
+.ink-day-head { display: flex; align-items: center; gap: 6px; }
+.ink-day-num { display: grid; place-items: center; min-width: 21px; height: 21px; padding: 0 4px;
+  font-family: var(--font-mono); font-size: 13px; font-weight: 700; }
+.ink-day.is-today .ink-day-num { background: var(--color-primary); color: var(--color-on-primary); border-radius: 999px; }
+.ink-day.is-past .ink-day-num { color: var(--text3); }
+.ink-day-month { font-size: 10px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
+.ink-day-wd { display: none; }
+.ink-day-count { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text3); }
+.ink-day-cars { display: flex; flex-direction: column; gap: 4px; }
+
+.ink-daycar { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 7px;
+  border: 1px solid var(--color-border); border-left: 2px solid var(--color-primary); border-radius: 6px;
+  background: var(--color-surface-alt); color: var(--color-text); font-family: inherit; font-size: 11.5px;
+  text-align: left; cursor: pointer; }
+.ink-daycar:hover { border-color: var(--line2); }
+.ink-daycar-time { font-family: var(--font-mono); font-weight: 700; }
+.ink-daycar-plate { font-family: var(--font-mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ink-daycar.is-confirmed { border-left-color: var(--color-success); }
+.ink-daycar.is-confirmed > svg { margin-left: auto; color: var(--color-success); }
+.ink-daycar.is-overdue { border-left-color: var(--color-danger); background: var(--color-danger-bg); }
+
+/* ── Зона 3: приедут позже ─────────────────────────────────────────────────── */
+.ink-later { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.ink-later-row { display: grid; grid-template-columns: 165px minmax(0, 1.1fr) minmax(0, 1fr) auto auto;
+  align-items: center; gap: 14px; width: 100%; padding: 10px 14px; border: 1px solid var(--color-border);
+  border-radius: 9px; background: var(--color-surface); color: var(--color-text); font-family: inherit;
+  text-align: left; cursor: pointer; }
+.ink-later-row:hover { border-color: var(--line2); }
+.ink-later-date { display: flex; flex-direction: column; gap: 1px; }
+.ink-later-date b { font-family: var(--font-mono); font-size: 12.5px; }
+.ink-later-date span { font-size: 11px; }
+.ink-later-client { display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: 12.5px; color: var(--color-text-muted); }
+
+/* ── Попап машины ──────────────────────────────────────────────────────────── */
+.ink-modal { display: flex; flex-direction: column; width: min(580px, 100vw - 24px); max-height: 92vh;
+  background: var(--color-surface); border: 1px solid var(--line2); border-radius: 14px; overflow: hidden;
+  box-shadow: var(--shadow-md); }
+.ink-modal-head { display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 13px 14px; border-bottom: 1px solid var(--color-border); background: var(--bg2); }
+.ink-modal-id { display: flex; align-items: center; gap: 9px; min-width: 0; }
+.ink-x { display: grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px;
+  background: none; color: var(--color-text-muted); cursor: pointer; }
+.ink-x:hover { background: var(--color-surface-alt); color: var(--color-text); }
+/* flex: 1 — чтобы на телефоне (лист во весь экран) подвал с кнопкой прижимался
+   к низу, а не висел посреди пустоты под коротким содержимым. */
+.ink-modal-body { display: flex; flex: 1 1 auto; flex-direction: column; gap: 14px; padding: 14px; overflow: auto; }
+.ink-modal-foot { padding: 11px 14px; border-top: 1px solid var(--color-border); background: var(--bg2); }
+
+/* Блок «что сказать в трубку»: телефон — самое крупное на экране, потому что
+   первое действие приёмщика именно звонок. */
+.ink-call { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px;
+  background: var(--color-surface-alt); border-radius: 10px; }
+.ink-call-phone { display: inline-flex; align-items: center; gap: 9px; font-family: var(--font-mono);
+  font-size: 21px; font-weight: 700; letter-spacing: .01em; color: var(--color-primary); text-decoration: none; }
+.ink-call-phone:hover { text-decoration: underline; }
+.ink-call-phone.is-empty { color: var(--text3); font-size: 15px; }
+.ink-call-who { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; font-size: 13px; font-weight: 600; }
+
+.ink-facts { display: grid; grid-template-columns: auto 1fr; gap: 5px 16px; margin: 0; font-size: 12.5px; }
+.ink-facts dt { color: var(--text3); }
+.ink-facts dd { margin: 0; font-family: var(--font-mono); }
+
+.ink-note { padding-left: 11px; border-left: 2px solid var(--color-warning); font-size: 12.5px; color: var(--color-text-muted); }
+.ink-note span { display: block; font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
+
+.ink-current { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; padding: 11px 13px;
+  border: 1px solid var(--color-border); border-left: 3px solid var(--color-primary); border-radius: 9px; }
+.ink-current.is-overdue { border-left-color: var(--color-danger); }
+.ink-current-when { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; }
+.ink-current-when b { font-family: var(--font-mono); }
+.ink-current-warn { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-danger-text); }
+.ink-current .ink-btn { margin-left: auto; }
+
+.ink-form { display: flex; flex-direction: column; gap: 11px; }
+.ink-field { display: flex; flex-direction: column; gap: 5px; }
+.ink-field > span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
+.ink-field textarea { padding: 9px 11px; border: 1px solid var(--color-border); border-radius: 8px;
+  background: var(--color-surface-alt); color: var(--color-text); font-family: inherit; font-size: 13px;
+  resize: vertical; outline: none; }
+.ink-field textarea:focus { border-color: var(--color-primary); }
+
+.ink-agree { display: flex; align-items: center; gap: 11px; padding: 11px 13px; border: 1px solid var(--color-border);
+  border-radius: 9px; background: var(--color-surface-alt); font-size: 13px; cursor: pointer; }
+.ink-agree input { width: 20px; height: 20px; flex: none; accent-color: var(--color-primary); cursor: pointer; }
+.ink-agree.is-err { border-color: var(--color-danger); }
+
+.ink-log { border-top: 1px solid var(--color-border); padding-top: 12px; }
+.ink-log-head { font-family: var(--font-mono); font-size: 10.5px; text-transform: uppercase; letter-spacing: .07em;
+  color: var(--text3); margin-bottom: 8px; }
+.ink-log ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 7px; }
+.ink-log li { display: grid; grid-template-columns: 92px 1fr auto; gap: 10px; align-items: baseline;
+  font-size: 12px; padding-left: 9px; border-left: 2px solid var(--color-border); }
+.ink-log li.is-move { border-left-color: var(--color-warning); }
+.ink-log li.is-confirm { border-left-color: var(--color-success); }
+.ink-log-when { font-family: var(--font-mono); font-size: 11px; color: var(--text3); }
+.ink-log-what em { display: block; font-style: normal; color: var(--color-text-muted); }
+.ink-log-by { font-size: 10.5px; color: var(--text3); overflow: hidden; text-overflow: ellipsis; }
+
+/* Всплывающая подсказка об успехе — гаснет сама, подтверждать нечего. */
+.ink-toast { position: fixed; left: 50%; bottom: 26px; transform: translateX(-50%); z-index: 80;
+  padding: 11px 18px; border: 1px solid var(--line2); border-radius: 999px; background: var(--bg2);
+  box-shadow: var(--shadow-md); font-size: 13px; font-weight: 600; }
+
+/* ── Телефон ───────────────────────────────────────────────────────────────── */
+@media (max-width: 640px) {
+  .ink { padding: 0 0 22px; }
+  .ink-head { gap: 12px; margin-bottom: 14px; }
+  .ink-nums { width: 100%; justify-content: space-between; gap: 10px; }
+  .ink-num b { font-size: 21px; }
+  .ink-search { width: 100%; min-width: 0; }
+
+  .ink-rem-item { grid-template-columns: auto 1fr; }
+  .ink-rem-acts { grid-column: 1 / -1; flex-wrap: wrap; }
+  .ink-rem-acts .ink-btn { flex: 1 1 auto; }
+
+  .ink-inv-list { grid-template-columns: 1fr; }
+  .ink-inv { grid-template-columns: 76px minmax(0, 1fr); padding: 10px 12px 12px 0; }
+  .ink-inv-days { padding-left: 8px; }
+  .ink-inv-days b { font-size: 26px; }
+  /* «приглашения» длиннее колонки — переносим по буквам, иначе слово залезает
+     на данные машины (поймано на 390px). */
+  .ink-inv-days span { font-size: 8.5px; overflow-wrap: anywhere; }
+  .ink-inv > .ink-btn { grid-column: 1 / -1; margin: 2px 12px 0 14px; }
+
+  /* Сетка 7×2 на телефоне нечитаема — разворачиваем в список дней. Пустые дни
+     скрываем совсем (кроме сегодняшнего), иначе список из 14 строк — тот самый
+     визуальный шум, ради которого экран и переделывали. */
+  .ink-cal-head { display: none; }
+  .ink-week { grid-template-columns: 1fr; }
+  .ink-day { flex-direction: row; align-items: flex-start; gap: 10px; min-height: 0; padding: 9px 11px; }
+  .ink-day:not(.has-cars):not(.is-today) { display: none; }
+  .ink-day-head { flex-direction: column; align-items: center; gap: 1px; width: 34px; flex: none; }
+  .ink-day-wd { display: block; font-size: 10px; text-transform: uppercase; color: var(--text3); }
+  .ink-day-count { display: none; }
+  .ink-day-cars { flex: 1; min-width: 0; }
+  .ink-daycar { padding: 8px 10px; font-size: 12.5px; }
+
+  .ink-later-row { grid-template-columns: 1fr; gap: 6px; }
+  .ink-later-date { flex-direction: row; align-items: baseline; gap: 8px; }
+
+  /* Попап на телефоне — лист во весь экран: так до кнопки не надо тянуться. */
+  .ink-modal { width: 100vw; max-width: 100vw; height: 100%; max-height: 100%; border: 0; border-radius: 0; }
+  .ink-modal-body { gap: 12px; }
+  .ink-call-phone { font-size: 24px; }
+  .ink-current .ink-btn { margin-left: 0; width: 100%; }
+  .ink-log li { grid-template-columns: 1fr; gap: 2px; }
+  .ink-log-by { display: none; }
+  .ink-toast { left: 12px; right: 12px; bottom: 14px; transform: none; text-align: center; }
 }
