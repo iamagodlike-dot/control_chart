@@ -116,8 +116,9 @@ function InviteCard({ row, onOpen }) {
 
 // ─── Зона 2: календарь двух недель ───────────────────────────────────────────
 
-// Машина в клетке дня: время моноширинным + госномер. Больше в клетку не влезет
-// и не нужно — подробности в попапе, который открывается касанием.
+// Машина в клетке дня: время и госномер строкой, марка с моделью — второй.
+// В одну строку они не влезают (клетка ≈ 1/7 ширины), а узнают машину чаще именно
+// по марке: «Тигуан на 14:30» помнят, номер — нет.
 function DayCar({ row, onOpen }) {
   const cls = [
     'ink-daycar',
@@ -131,9 +132,12 @@ function DayCar({ row, onOpen }) {
       onClick={() => onOpen(row.id)}
       title={`${fmtTime(row.scheduled_at)} · ${row.car_model}${row.client_name ? ` · ${row.client_name}` : ''}${row.confirmed ? ' · клиент подтвердил' : ''}`}
     >
-      <span className="ink-daycar-time">{fmtTime(row.scheduled_at)}</span>
-      <span className="ink-daycar-plate">{row.plate_number || row.car_model}</span>
-      {row.confirmed && <Icon name="check" size={11} strokeWidth={3} />}
+      <span className="ink-daycar-top">
+        <span className="ink-daycar-time">{fmtTime(row.scheduled_at)}</span>
+        {row.plate_number && <span className="ink-daycar-plate">{row.plate_number}</span>}
+        {row.confirmed && <Icon name="check" size={11} strokeWidth={3} />}
+      </span>
+      <span className="ink-daycar-model">{row.car_model}</span>
     </button>
   );
 }

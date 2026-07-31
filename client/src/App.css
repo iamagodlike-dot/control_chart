@@ -2782,15 +2782,19 @@ textarea { width: 100%; min-height: 50px; }
 .ink-day-count { margin-left: auto; font-family: var(--font-mono); font-size: 10.5px; color: var(--text3); }
 .ink-day-cars { display: flex; flex-direction: column; gap: 4px; }
 
-.ink-daycar { display: flex; align-items: center; gap: 6px; width: 100%; padding: 5px 7px;
+.ink-daycar { display: flex; flex-direction: column; gap: 1px; width: 100%; padding: 5px 7px;
   border: 1px solid var(--color-border); border-left: 2px solid var(--color-primary); border-radius: 6px;
   background: var(--color-surface-alt); color: var(--color-text); font-family: inherit; font-size: 11.5px;
   text-align: left; cursor: pointer; }
 .ink-daycar:hover { border-color: var(--line2); }
+.ink-daycar-top { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .ink-daycar-time { font-family: var(--font-mono); font-weight: 700; }
 .ink-daycar-plate { font-family: var(--font-mono); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Марка второй строкой и приглушённой: она для узнавания, а решает время. */
+.ink-daycar-model { font-size: 10.5px; color: var(--color-text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ink-daycar.is-confirmed { border-left-color: var(--color-success); }
-.ink-daycar.is-confirmed > svg { margin-left: auto; color: var(--color-success); }
+.ink-daycar.is-confirmed .ink-daycar-top > svg { margin-left: auto; flex: none; color: var(--color-success); }
 .ink-daycar.is-overdue { border-left-color: var(--color-danger); background: var(--color-danger-bg); }
 
 /* ── Зона 3: приедут позже ─────────────────────────────────────────────────── */
