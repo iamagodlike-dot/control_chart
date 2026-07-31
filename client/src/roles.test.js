@@ -82,11 +82,15 @@ test('each role home tab is within its own allowed tabs', () => {
   }
 });
 
-test('мастер-приёмщик: приёмка и обзорные экраны, без денег и настроек', () => {
+test('мастер-приёмщик: дефектовка, цех и запчасти — без денег и настроек', () => {
   const tabs = roleTabs('receptionist');
-  assert.deepEqual(tabs, ['intake', 'approval', 'gantt', 'monitor']);
+  assert.deepEqual(tabs, ['intake', 'approval', 'gantt', 'board', 'monitor',
+    'parts', 'warehouse', 'receiving', 'receiving-history']);
   assert.equal(roleHome('receptionist'), 'intake');
-  for (const forbidden of ['finance', 'payroll', 'staffexpenses', 'config', 'supplier-invoices']) {
+  // «Заявки» и «Закупки» — это запись потраченных денег, приёмщику они закрыты
+  // вместе с остальными денежными экранами.
+  for (const forbidden of ['finance', 'payroll', 'staffexpenses', 'config',
+    'supplier-invoices', 'purchasing', 'requests', 'expenses']) {
     assert.ok(!tabs.includes(forbidden), `приёмщику не положен экран ${forbidden}`);
   }
   // Известная роль — не должна проваливаться в fallback «owner».

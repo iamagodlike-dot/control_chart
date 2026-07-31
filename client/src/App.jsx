@@ -27,32 +27,10 @@ import Monitor from './components/Monitor';
 import Intake from './components/Intake';
 import PhotoQueueRunner from './components/PhotoQueueRunner';
 import { GroupedTabs } from './components/NavGroup';
+import { TABS } from './nav';
 import { roleTabs, roleHome, roleLabel } from './roles';
 import './App.css';
 
-const TABS = [
-  { id: 'mywork', label: 'Мои машины', icon: 'car' },
-  { id: 'earnings', label: 'Мой заработок', icon: 'wallet' },
-  { id: 'approval', label: 'Согласование', icon: 'shield' },
-  { id: 'intake', label: 'Дефектовка', icon: 'clipboard' },
-  { id: 'gantt', label: 'График', icon: 'calendar' },
-  { id: 'board', label: 'Загрузка', icon: 'chart' },
-  { id: 'monitor', label: 'Монитор', icon: 'clock' },
-  { id: 'warehouse', label: 'Склад', icon: 'box' },
-  { id: 'parts', label: 'Запчасти', icon: 'wrench' },
-  // «Приёмка запчастей», а не просто «Приёмка»: у управленца рядом висит экран
-  // приёмщика («Дефектовка»), и путать заезд машины с приходом деталей нельзя.
-  { id: 'receiving', label: 'Приёмка запчастей', icon: 'box' },
-  { id: 'receiving-history', label: 'История приёмки', icon: 'history' },
-  { id: 'requests', label: 'Заявки', icon: 'clipboard' },
-  { id: 'purchasing', label: 'Закупки', icon: 'cart' },
-  { id: 'supplier-invoices', label: 'Счета поставщиков', icon: 'receipt' },
-  { id: 'expenses', label: 'Мои траты', icon: 'receipt' },
-  { id: 'finance', label: 'Финансы', icon: 'wallet' },
-  { id: 'payroll', label: 'Зарплата', icon: 'receipt' },
-  { id: 'staffexpenses', label: 'Траты', icon: 'receipt' },
-  { id: 'history', label: 'История', icon: 'history' },
-];
 
 // Unattended big-screen safety net: if a runtime error ever blanks the TV view,
 // show a calm message and reload shortly after so the wall display recovers on
@@ -186,13 +164,18 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
             <span className="app-brand-subtitle">Кузовной ремонт — диспетчерская</span>
           </div>
         </div>
+        {/* Плоский ряд хорош до пяти-шести вкладок, дальше он не влезает в шапку.
+            Приёмщику доступны цех и запчасти целиком, поэтому меню у него тоже
+            сворачивается в группы. Ничего не теряется: вкладки вне групп
+            GroupedTabs рисует отдельными кнопками. */}
         {visibleTabs.length > 1 && (
-          isOwner ? (
+          isOwner || visibleTabs.length > 5 ? (
             <GroupedTabs
               tabs={TABS}
               activeTab={effectiveTab}
               onSelect={setTab}
               allowed={allowed}
+              home={roleHome(role)}
               approvalCount={approvalCount}
             />
           ) : (

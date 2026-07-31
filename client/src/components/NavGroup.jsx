@@ -1,31 +1,21 @@
 import { useEffect, useRef, useState } from 'react';
 import Icon from './Icon';
+import { splitTabs } from '../nav';
 
-// The owner sees ~11 screens; a flat row of that many tabs is a wall. Fold them
-// into a few labelled groups so the header stays scannable. Each group's FIRST
-// listed tab is its "main" screen — clicking the group opens it, the ▾ reveals
-// the rest. A group lists every tab id that could belong to it; only the ids the
-// current role may see actually render, so a group with one visible screen
-// collapses to a plain tab and an all-hidden group disappears. Ids must match the
-// TABS list in App.jsx. Only the owner gets grouping — other roles have few tabs.
-const NAV_GROUPS = [
-  { id: 'shop', label: 'Цех', icon: 'car', tabs: ['gantt', 'approval', 'intake', 'board', 'monitor'] },
-  { id: 'parts', label: 'Запчасти', icon: 'wrench', tabs: ['parts', 'warehouse', 'receiving', 'receiving-history', 'requests', 'purchasing'] },
-  { id: 'money', label: 'Деньги', icon: 'wallet', tabs: ['finance', 'payroll', 'staffexpenses', 'expenses'] },
-  { id: 'archive', label: 'История', icon: 'history', tabs: ['history'] },
-];
+// Списки групп и вся раскладка — в nav.js (там же тесты). Здесь только вёрстка.
+//
+// Группа с одним видимым экраном выглядит как обычная вкладка, пустая исчезает,
+// а экран, не попавший ни в одну группу, рисуется отдельной кнопкой — потеряться
+// он не может.
 
 // Grouped header nav. Resolves each group's visible members from the tab metadata
 // + the role's allowed list, drops empty groups, and coordinates so only one
 // dropdown is open at a time. The «Согласование» badge rides on whichever group
 // contains it (Цех), so a pending count stays visible without opening the menu.
-export function GroupedTabs({ tabs, activeTab, onSelect, allowed, approvalCount = 0 }) {
+export function GroupedTabs({ tabs, activeTab, onSelect, allowed, home = '', approvalCount = 0 }) {
   const [openGroup, setOpenGroup] = useState(null);
   const navRef = useRef(null);
-  const byId = Object.fromEntries(tabs.map((t) => [t.id, t]));
-  const groups = NAV_GROUPS
-    .map((g) => ({ ...g, members: g.tabs.filter((id) => allowed.includes(id)).map((id) => byId[id]).filter(Boolean) }))
-    .filter((g) => g.members.length > 0);
+  const { groups, loose } = splitTabs(tabs, allowed, home);
 
   // Close the open dropdown on an outside click or Esc. A pointerdown INSIDE the
   // nav (another group, the caret, a menu row) is left alone so switching groups
@@ -53,6 +43,15 @@ export function GroupedTabs({ tabs, activeTab, onSelect, allowed, approvalCount 
           onToggle={() => setOpenGroup((o) => (o === g.id ? null : g.id))}
           onClose={() => setOpenGroup(null)}
         />
+      ))}
+      {loose.map((t) => (
+        <button
+          key={t.id}
+          className={activeTab === t.id ? 'active' : ''}
+          onClick={() => { setOpenGroup(null); onSelect(t.id); }}
+        >
+          <Icon name={t.icon} size={16} />{t.label}
+        </button>
       ))}
     </nav>
   );

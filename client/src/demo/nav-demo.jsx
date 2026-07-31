@@ -8,32 +8,19 @@ import { createRoot } from 'react-dom/client';
 import { GroupedTabs } from '../components/NavGroup';
 import Icon from '../components/Icon';
 import Logo from '../components/Logo';
-import { roleTabs } from '../roles';
+import { TABS } from '../nav';
+import { ROLES, ROLE_ORDER, roleHome, roleTabs } from '../roles';
 import '../App.css';
 
 document.documentElement.dataset.theme = 'dark';
 
-// Same metadata as App.jsx's TABS (labels + icons) — only the owner's screens.
-const TABS = [
-  { id: 'approval', label: 'Согласование', icon: 'shield' },
-  { id: 'gantt', label: 'График', icon: 'calendar' },
-  { id: 'board', label: 'Загрузка', icon: 'chart' },
-  { id: 'warehouse', label: 'Склад', icon: 'box' },
-  { id: 'parts', label: 'Запчасти', icon: 'wrench' },
-  { id: 'requests', label: 'Заявки', icon: 'clipboard' },
-  { id: 'purchasing', label: 'Закупки', icon: 'cart' },
-  { id: 'finance', label: 'Финансы', icon: 'wallet' },
-  { id: 'payroll', label: 'Зарплата', icon: 'receipt' },
-  { id: 'staffexpenses', label: 'Траты', icon: 'receipt' },
-  { id: 'history', label: 'История', icon: 'history' },
-];
-
-const allowed = roleTabs('owner');
 const label = (id) => TABS.find((t) => t.id === id)?.label || id;
 
 function Demo() {
+  const [role, setRole] = useState('owner');
   const [tab, setTab] = useState('gantt');
   const [pending, setPending] = useState(3);
+  const allowed = roleTabs(role);
 
   return (
     <div className="app">
@@ -50,13 +37,16 @@ function Demo() {
           activeTab={tab}
           onSelect={setTab}
           allowed={allowed}
+          home={roleHome(role)}
           approvalCount={pending}
         />
         <div className="app-user">
           <button className="icon-btn active" title="Настройки"><Icon name="gear" size={17} /></button>
           <div className="app-user-id">
             <span className="app-user-avatar"><Icon name="user" size={17} /></span>
-            <span className="app-user-email">owner@demo</span>
+            <select value={role} onChange={(e) => { setRole(e.target.value); setTab(roleHome(e.target.value)); }}>
+            {ROLE_ORDER.map((r) => <option key={r} value={r}>{ROLES[r].label}</option>)}
+          </select>
           </div>
         </div>
       </header>
