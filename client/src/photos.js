@@ -104,6 +104,21 @@ export async function uploadPhoto(jobId, file, onProgress) {
   return { url: res.url, path: res.path, size: res.size || blob.size || 0, w: res.w || w, h: res.h || h };
 }
 
+// Отправить УЖЕ сжатый снимок. Нужен очереди отправки (photoQueue.js): она жмёт
+// файл в момент съёмки, чтобы в хранилище телефона не лежали оригиналы по 10 МБ,
+// и хранит готовый Blob до появления связи. Второй раз сжимать нечего.
+export async function uploadBlob(jobId, blob, name = 'photo.jpg', onProgress) {
+  const form = new FormData();
+  form.append('file', blob, name);
+  const res = await xhrUpload(
+    `${PHOTO_API}/upload/${encodeURIComponent(jobId)}`,
+    form,
+    await authHeader(),
+    onProgress,
+  );
+  return { url: res.url, path: res.path, size: res.size || blob.size || 0, w: res.w || 0, h: res.h || 0 };
+}
+
 // Загрузить файл счёта поставщика (PDF / фото / документ) на свой сервер.
 // В отличие от фото машин НЕ сжимаем (счёт нужен как есть) и не привязываем к
 // машине — счёт может охватывать несколько машин. Возвращает { url, name, size }.

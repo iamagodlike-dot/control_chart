@@ -11,7 +11,10 @@ import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import Intake from '../components/Intake';
 import { api } from '../api';
+import { installSender } from '../photoQueue';
+import { photoCategory } from '../intake';
 import '../App.css';
+import '../orderDoc.css';
 
 document.documentElement.dataset.theme = 'dark';
 
@@ -169,11 +172,15 @@ const patchJob = (jobId, fn) => {
   JOBS = JOBS.map((j) => (j.id === jobId ? { ...j, intake: fn(j.intake || {}) } : j));
   emit();
 };
+const patchJobRaw = (jobId, fn) => {
+  JOBS = JOBS.map((j) => (j.id === jobId ? fn(j) : j));
+  emit();
+};
 
-// Повторяет логику настоящей транзакции: журнал, отметки «кто/когда» и сброс
+// Повторяет логику настоящей записи: журнал, отметки «кто/когда» и сброс
 // подтверждения при переносе — чтобы в демо ловились те же огрехи, что на бою.
-api.jobs.setIntakeDate = async (jobId, { at, reason = '', agreed = false }) => {
-  DEMO_WRITES.push({ op: 'setIntakeDate', jobId, at, reason, agreed });
+api.jobs.setIntakeDate = async (jobId, { at, reason = '', agreed = false, prevAt = 0 }) => {
+  DEMO_WRITES.push({ op: 'setIntakeDate', jobId, at, reason, agreed, prevAt });
   await wait(300);
   patchJob(jobId, (prev) => {
     const had = Number(prev.scheduled_at) || 0;
@@ -190,8 +197,8 @@ api.jobs.setIntakeDate = async (jobId, { at, reason = '', agreed = false }) => {
   });
 };
 
-api.jobs.confirmIntakeVisit = async (jobId) => {
-  DEMO_WRITES.push({ op: 'confirmIntakeVisit', jobId });
+api.jobs.confirmIntakeVisit = async (jobId, { at } = {}) => {
+  DEMO_WRITES.push({ op: 'confirmIntakeVisit', jobId, at });
   await wait(250);
   patchJob(jobId, (prev) => ({
     ...prev,
@@ -201,8 +208,65 @@ api.jobs.confirmIntakeVisit = async (jobId) => {
   }));
 };
 
+// ── Дефектовка ────────────────────────────────────────────────────────────
+// Правки полей приходят по одному ключу за раз (так же, как настоящая запись по
+// путям `intake.<поле>`), поэтому просто мержим их в приёмку машины.
+api.jobs.saveInspection = async (jobId, patch) => {
+  DEMO_WRITES.push({ op: 'saveInspection', jobId, patch });
+  await wait(200);
+  patchJob(jobId, (prev) => ({ ...prev, ...patch }));
+};
+api.jobs.startInspection = async (jobId) => {
+  DEMO_WRITES.push({ op: 'startInspection', jobId });
+  patchJob(jobId, (prev) => ({ ...prev, started_at: Date.now() }));
+};
+api.jobs.finishInspection = async (jobId, finished = true) => {
+  DEMO_WRITES.push({ op: 'finishInspection', jobId, finished });
+  await wait(250);
+  patchJob(jobId, (prev) => ({ ...prev, finished_at: finished ? Date.now() : 0 }));
+};
+api.jobs.ensureIntakeActNumber = async (jobId) => {
+  await wait(300);
+  const number = 'ПР-2026-0009';
+  const at = Date.now();
+  patchJob(jobId, (prev) => ({ ...prev, act_number: number, act_date: at }));
+  return { number, at };
+};
+api.jobs.update = async (jobId, patch) => {
+  DEMO_WRITES.push({ op: 'update', jobId, patch });
+  await wait(250);
+  patchJobRaw(jobId, (j) => ({ ...j, ...patch }));
+};
+api.jobs.addPhoto = async (jobId, photo) => {
+  patchJobRaw(jobId, (j) => ({ ...j, photos: [...(j.photos || []), photo] }));
+};
+api.jobs.removePhoto = async (jobId, photoOrId) => {
+  const id = typeof photoOrId === 'object' ? photoOrId.id : photoOrId;
+  patchJobRaw(jobId, (j) => ({ ...j, photos: (j.photos || []).filter((p) => p.id !== id) }));
+};
+api.settings.getCompany = async () => ({
+  name: 'Авто Академия', inn: '246000000000', address: 'г. Красноярск, Северное шоссе, 17Д стр 19',
+  phone: '+7 983 202-18-18', director: 'Герасимов А. В.',
+});
+
+// Отправку снимков в демо изображаем задержкой в 1,5 секунды — за это время видно,
+// как снимок сначала висит «ждёт отправки», а потом становится обычным. Сама
+// очередь настоящая, в IndexedDB браузера: перезагрузите страницу с неотправленным
+// снимком — он останется на месте.
+installSender(async (item) => {
+  await wait(1500);
+  await api.jobs.addPhoto(item.jobId, {
+    id: item.id,
+    category: photoCategory(item.slot),
+    url: URL.createObjectURL(item.blob),
+    path: `demo/${item.id}.jpg`,
+    size: item.size,
+    uploaded_at: item.created_at,
+  });
+});
+
 createRoot(document.getElementById('root')).render(
   <StrictMode>
-    <Intake />
+    <Intake profile={{ name: 'Петров С. (демо)' }} />
   </StrictMode>,
 );

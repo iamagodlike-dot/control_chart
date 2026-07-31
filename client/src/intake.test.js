@@ -13,6 +13,8 @@ import {
   describeLogEntry, emptyIntake, fmtDayTime, fmtRelativeDay, intakeRow, isConfirmed,
   isOnIntake, parseLocalDateTime, readIntake, startOfDay, startOfWeek, toLocalInput,
   validateSchedule, waitingSince,
+  DAMAGE_ZONES, DEFAULT_DAMAGE_KIND, DOC_ITEMS, EQUIPMENT_ITEMS, PHOTO_SLOTS,
+  buildIntakeActSnapshot, groupZones, inspectionStatus, photoCategory,
 } from './intake.js';
 
 // Среда, 12 августа 2026, 10:00 по местному времени.
@@ -164,9 +166,12 @@ test('назначенная дата: сегодня и завтра — «на
   assert.equal(row(at(2026, 8, 11, 9, 0)).severity, 'alert');
 });
 
-test('начатая дефектовка выходит из просрочки', () => {
-  const r = intakeRow(car({ intake: { scheduled_at: at(2026, 8, 11, 9, 0), started_at: at(2026, 8, 11, 9, 30) } }), NOW);
-  assert.equal(r.phase, 'started');
+test('начатая и завершённая дефектовка выходят из просрочки', () => {
+  const started = { scheduled_at: at(2026, 8, 11, 9, 0), started_at: at(2026, 8, 11, 9, 30) };
+  assert.equal(intakeRow(car({ intake: started }), NOW).phase, 'inspecting');
+  assert.equal(intakeRow(car({ intake: { ...started, finished_at: at(2026, 8, 11, 10, 0) } }), NOW).phase, 'inspected');
+  // Машину пригнали без записи, приёмщик просто начал осмотр — тоже не «пригласить».
+  assert.equal(intakeRow(car({ intake: { started_at: NOW } }), NOW).phase, 'inspecting');
 });
 
 // ─── Сетка календаря ─────────────────────────────────────────────────────────
@@ -314,4 +319,114 @@ test('журнал читается человеком', () => {
   assert.equal(describeLogEntry({ kind: 'invite', to }), 'Записан на 15 авг, 10:00');
   assert.equal(describeLogEntry({ kind: 'move', from, to }), 'Перенос 13 авг, 09:00 → 15 авг, 10:00');
   assert.equal(describeLogEntry({ kind: 'confirm', to }), 'Клиент подтвердил 15 авг, 10:00');
+});
+
+// ─── Дефектовка ──────────────────────────────────────────────────────────────
+
+const photo = (slot, i = 0) => ({ id: `${slot}-${i}`, category: photoCategory(slot), url: `u/${slot}` });
+const requiredSlots = () => PHOTO_SLOTS.filter((s) => s.required).map((s) => s.id);
+const allRequiredPhotos = () => requiredSlots().map((id) => photo(id));
+
+test('завершить мешают только пробег и обязательные ракурсы', () => {
+  const empty = inspectionStatus(car());
+  assert.ok(!empty.ready);
+  assert.ok(empty.blockers.includes('Пробег'));
+  assert.equal(empty.photosMissing.length, requiredSlots().length);
+
+  const full = inspectionStatus(car({ intake: { mileage: '124500' }, photos: allRequiredPhotos() }));
+  assert.deepEqual(full.blockers, []);
+  assert.ok(full.ready);
+  // Ни документы, ни комплектность, ни повреждения завершить НЕ мешают.
+  assert.equal(full.intake.docs.length, 0);
+  assert.ok(full.warnNoDamages);
+});
+
+test('пробег из карточки машины снимает блокировку', () => {
+  const st = inspectionStatus(car({ mileage: '98000', photos: allRequiredPhotos() }));
+  assert.equal(st.intake.mileage, '98000');
+  assert.ok(st.ready);
+  // Вписанное в дефектовке сильнее того, что лежит в карточке.
+  const own = inspectionStatus(car({ mileage: '98000', intake: { mileage: '124500' } }));
+  assert.equal(own.intake.mileage, '124500');
+});
+
+test('фото из очереди отправки уже закрывают рубрику', () => {
+  const pending = requiredSlots().map((slot, i) => ({ id: `q${i}`, slot, url: 'blob:local' }));
+  const st = inspectionStatus(car({ intake: { mileage: '1' } }), pending);
+  assert.ok(st.ready, 'снятое, но ещё не отправленное фото не должно требовать пересъёмки');
+  assert.equal(st.photos.waiting, pending.length);
+  assert.ok(st.slots.find((s) => s.id === 'vin').photos[0].pending);
+});
+
+test('повреждения: характер по умолчанию, метка «по случаю» по умолчанию', () => {
+  const st = inspectionStatus(car({
+    intake: {
+      damages: [
+        { zone: 'hood' },
+        { zone: 'door_rear_left', kind: 'dent', scope: 'old', note: 'до аварии' },
+        { zone: '', kind: 'dent' },          // мусор — выбрасывается
+      ],
+    },
+  }));
+  assert.equal(st.damages, 2);
+  assert.equal(st.intake.damages[0].kind, DEFAULT_DAMAGE_KIND);
+  assert.equal(st.intake.damages[0].scope, 'case');
+  assert.deepEqual(st.damagesByScope, { case: 1, old: 1 });
+  assert.ok(!st.warnNoDamages);
+});
+
+test('точки прогресса зажигаются по факту заполнения', () => {
+  const st = inspectionStatus(car({
+    intake: { mileage: '10', damages: [{ zone: 'hood' }], equipment: ['jack'] },
+    photos: allRequiredPhotos(),
+  }));
+  assert.deepEqual(st.steps, { car: true, photos: true, damages: true, handover: true, finish: false });
+});
+
+test('зоны кузова группируются в порядке справочника', () => {
+  const groups = groupZones();
+  assert.deepEqual(groups.map((g) => g.group), ['Перед', 'Левый борт', 'Правый борт', 'Зад', 'Прочее']);
+  assert.equal(groups.reduce((n, g) => n + g.zones.length, 0), DAMAGE_ZONES.length);
+});
+
+test('акт: полные списки с отметками есть/нет и повреждения по справочнику', () => {
+  const snap = buildIntakeActSnapshot(
+    car({
+      vin: 'XW8ZZZ', photos: allRequiredPhotos(),
+      intake: {
+        mileage: '124500', fuel: 'half', keys: '2',
+        docs: ['sts', 'policy'], equipment: ['jack'],
+        damages: [
+          { zone: 'door_rear_left', kind: 'dent', scope: 'old' },
+          { zone: 'hood', kind: 'paint' },
+        ],
+        notes: 'Клиент просил позвонить после 18:00',
+      },
+    }),
+    { name: 'Авто Академия' },
+    { docNumber: 'ПР-2026-0007', docDate: at(2026, 8, 12, 23, 40), acceptedBy: 'Петров С.' },
+  );
+
+  assert.equal(snap.doc_number, 'ПР-2026-0007');
+  // Дата берётся по МЕСТНОМУ времени: поздний вечер не должен печататься завтрашним.
+  assert.equal(snap.doc_date, '2026-08-12');
+  assert.equal(snap.condition.fuel_label, '½');
+  // Печатаем ВЕСЬ справочник — «запаски не было» защищает так же, как «запаска была».
+  assert.equal(snap.docs.length, DOC_ITEMS.length);
+  assert.equal(snap.equipment.length, EQUIPMENT_ITEMS.length);
+  assert.equal(snap.docs.find((d) => d.label === 'СТС').present, true);
+  assert.equal(snap.docs.find((d) => d.label === 'ПТС').present, false);
+  // Капот идёт раньше задней двери — это порядок справочника, а не порядок кликов.
+  assert.deepEqual(snap.damages.map((d) => d.zone), ['Капот', 'Дверь задняя левая']);
+  assert.equal(snap.damages[1].isOld, true);
+  assert.equal(snap.damages[1].scope, 'Было раньше');
+  assert.equal(snap.photos_count, requiredSlots().length);
+});
+
+test('акт у нетронутой машины не падает', () => {
+  const snap = buildIntakeActSnapshot(car(), {});
+  assert.equal(snap.doc_number, '');
+  assert.equal(snap.doc_date, '');
+  assert.deepEqual(snap.damages, []);
+  assert.equal(snap.condition.mileage, '');
 });

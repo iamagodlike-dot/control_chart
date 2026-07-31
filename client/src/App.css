@@ -2925,3 +2925,165 @@ textarea { width: 100%; min-height: 50px; }
   .ink-log-by { display: none; }
   .ink-toast { left: 12px; right: 12px; bottom: 14px; transform: none; text-align: center; }
 }
+
+/* ─── Мастер дефектовки (.ins-*) ───────────────────────────────────────────────
+   Рабочий экран приёмщика у приехавшей машины: пять шагов, один шаг = один экран
+   телефона. Цели касания крупные (от 40px), потому что заполняют это большим
+   пальцем, стоя у крыла. На компьютере тот же мастер живёт в окне 640px — так
+   управленец видит ровно то же, что видит приёмщик. */
+
+.ins-backdrop { align-items: stretch; justify-content: center; padding: 24px 12px; }
+.ins-sheet { display: flex; flex-direction: column; width: min(660px, 100%); max-height: 100%;
+  background: var(--color-surface); border: 1px solid var(--line2); border-radius: 14px;
+  overflow: hidden; box-shadow: var(--shadow-md); }
+
+.ins-head { display: flex; align-items: center; gap: 10px; padding: 11px 12px;
+  border-bottom: 1px solid var(--color-border); background: var(--bg2); }
+.ins-id { display: flex; align-items: center; gap: 9px; min-width: 0; flex: 1; }
+.ins-x { display: grid; place-items: center; width: 34px; height: 34px; flex: none; border: 0;
+  border-radius: 8px; background: none; color: var(--color-text-muted); cursor: pointer; }
+.ins-x:hover { background: var(--color-surface-alt); color: var(--color-text); }
+
+/* Точки прогресса — они же навигация: вернуться и дописать можно на любом шаге. */
+.ins-steps { display: grid; grid-template-columns: repeat(5, 1fr); gap: 1px;
+  background: var(--color-border); border-bottom: 1px solid var(--color-border); }
+.ins-step { display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 9px 4px;
+  border: 0; background: var(--color-surface); color: var(--text3); font-family: inherit;
+  font-size: 10.5px; cursor: pointer; }
+.ins-step-dot { display: grid; place-items: center; width: 22px; height: 22px; border-radius: 999px;
+  border: 1px solid var(--color-border); font-family: var(--font-mono); font-size: 11px; font-weight: 700; }
+.ins-step.is-done { color: var(--color-text-muted); }
+.ins-step.is-done .ins-step-dot { border-color: var(--color-success); color: var(--color-success); }
+.ins-step.is-current { color: var(--color-text); background: color-mix(in srgb, var(--color-primary) 7%, var(--color-surface)); }
+.ins-step.is-current .ins-step-dot { border-color: var(--color-primary); background: var(--color-primary);
+  color: var(--color-on-primary); }
+.ins-step-label { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+
+.ins-savebar { display: flex; align-items: center; gap: 12px; padding: 7px 14px;
+  border-bottom: 1px solid var(--color-border); font-size: 11.5px; color: var(--text3); }
+.ins-hint { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ins-waiting { display: inline-flex; align-items: center; gap: 5px; color: var(--color-warning); white-space: nowrap; }
+.ins-save { white-space: nowrap; }
+.ins-savebar.is-saved .ins-save { color: var(--color-success); }
+.ins-savebar.is-error { background: var(--color-danger-bg); }
+.ins-savebar.is-error .ins-save { color: var(--color-danger-text); }
+.ins-retry { border: 0; background: none; color: var(--color-primary); font: inherit; cursor: pointer; }
+
+.ins-body { flex: 1; overflow: auto; padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+
+.ins-sub { display: flex; align-items: center; gap: 8px; margin-top: 2px; font-size: 10.5px;
+  text-transform: uppercase; letter-spacing: .06em; color: var(--text3); }
+.ins-count { font-family: var(--font-mono); letter-spacing: 0; }
+.ins-note-line { font-size: 12px; color: var(--color-text-muted); margin-top: -4px; }
+
+.ins-fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
+.ins-field { display: flex; flex-direction: column; gap: 5px; }
+.ins-field > span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text3); }
+.ins-field > span i { font-style: normal; color: var(--color-warning); }
+.ins-field input, .ins-field textarea { padding: 10px 12px; border: 1px solid var(--color-border);
+  border-radius: 9px; background: var(--color-surface-alt); color: var(--color-text);
+  font-family: inherit; font-size: 15px; outline: none; }
+.ins-field.is-big input { font-family: var(--font-mono); font-size: 22px; font-weight: 700; letter-spacing: .02em; }
+.ins-field input:focus, .ins-field textarea:focus { border-color: var(--color-primary); }
+.ins-field textarea { font-size: 13.5px; resize: vertical; }
+
+.ins-chips { display: flex; flex-wrap: wrap; gap: 7px; }
+.ins-chip { display: inline-flex; align-items: center; gap: 5px; min-height: 38px; padding: 0 13px;
+  border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface-alt);
+  color: var(--color-text); font-family: inherit; font-size: 13px; cursor: pointer; }
+.ins-chip:hover { border-color: var(--line2); }
+.ins-chip.is-on { border-color: var(--color-primary); background: var(--brand-soft); color: var(--color-text); }
+.ins-chip.is-on.is-damage { border-color: var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 14%, transparent); }
+.ins-zone-group { display: flex; flex-direction: column; gap: 7px; }
+
+/* ── Фото ── */
+.ins-slots { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+.ins-slot { border: 1px solid var(--color-border); border-radius: 10px; padding: 9px 10px 10px;
+  background: var(--color-surface-alt); }
+.ins-slot.is-missing { border-color: color-mix(in srgb, var(--color-warning) 55%, var(--color-border)); }
+.ins-slot.is-filled { border-color: color-mix(in srgb, var(--color-success) 45%, var(--color-border)); }
+.ins-slot-head { display: flex; align-items: center; gap: 6px; margin-bottom: 8px; font-size: 12.5px; font-weight: 600; }
+.ins-slot-head i { font-style: normal; color: var(--color-warning); }
+.ins-slot-n { margin-left: auto; font-family: var(--font-mono); font-size: 11px; color: var(--text3); }
+.ins-slot-body { display: flex; flex-wrap: wrap; gap: 7px; }
+
+.ins-thumb { position: relative; width: 68px; height: 68px; border-radius: 8px; overflow: hidden;
+  border: 1px solid var(--color-border); }
+.ins-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; cursor: zoom-in; }
+.ins-thumb > button { position: absolute; top: 2px; right: 2px; display: grid; place-items: center;
+  width: 20px; height: 20px; border: 0; border-radius: 6px; background: rgba(0, 0, 0, .6);
+  color: #fff; cursor: pointer; }
+/* Снимок ещё в телефоне: рамка и часы, чтобы приёмщик видел — он не потерян. */
+.ins-thumb.is-pending { border-color: var(--color-warning); }
+.ins-thumb-badge { position: absolute; left: 2px; bottom: 2px; display: grid; place-items: center;
+  width: 18px; height: 18px; border-radius: 5px; background: var(--color-warning); color: #1a1206; }
+
+.ins-shoot, .ins-pick { display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; width: 68px; height: 68px; border: 1px dashed var(--color-dashed-border); border-radius: 8px;
+  color: var(--color-text-muted); font-size: 10.5px; cursor: pointer; }
+.ins-shoot { color: var(--color-primary); border-color: color-mix(in srgb, var(--color-primary) 45%, transparent); }
+.ins-shoot:hover, .ins-pick:hover { border-style: solid; }
+.ins-shoot.is-busy { opacity: .5; }
+
+/* ── Повреждения ── */
+.ins-damages { display: flex; flex-direction: column; gap: 8px; }
+.ins-damage { display: flex; flex-direction: column; gap: 7px; padding: 10px 11px;
+  border: 1px solid var(--color-border); border-left: 2px solid var(--color-warning);
+  border-radius: 9px; background: var(--color-surface-alt); }
+.ins-damage-top { display: flex; align-items: center; gap: 8px; }
+.ins-damage-zone { font-weight: 700; font-size: 13.5px; flex: 1; }
+.ins-damage-del { display: grid; place-items: center; width: 30px; height: 30px; border: 0;
+  border-radius: 7px; background: none; color: var(--text3); cursor: pointer; }
+.ins-damage-del:hover { color: var(--color-danger-text); background: var(--color-danger-bg); }
+.ins-damage-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+.ins-damage-row select { min-height: 36px; padding: 0 10px; border: 1px solid var(--color-border);
+  border-radius: 8px; background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 13px; }
+.ins-damage-note { padding: 8px 11px; border: 1px solid var(--color-border); border-radius: 8px;
+  background: var(--color-surface); color: var(--color-text); font: inherit; font-size: 13px; outline: none; }
+.ins-damage-note:focus { border-color: var(--color-primary); }
+
+/* Отношение к страховому случаю: два состояния, взаимоисключающие. */
+.ins-scope { display: inline-flex; border: 1px solid var(--color-border); border-radius: 8px; overflow: hidden; }
+.ins-scope-btn { min-height: 36px; padding: 0 12px; border: 0; background: var(--color-surface);
+  color: var(--color-text-muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+.ins-scope-btn + .ins-scope-btn { border-left: 1px solid var(--color-border); }
+.ins-scope-btn.is-on.is-case { background: var(--brand-soft); color: var(--color-text); }
+.ins-scope-btn.is-on.is-old { background: color-mix(in srgb, var(--text3) 22%, transparent); color: var(--color-text); }
+
+/* ── Итог ── */
+.ins-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(96px, 1fr)); gap: 8px; }
+.ins-sum { display: flex; flex-direction: column; gap: 1px; padding: 10px 12px;
+  border: 1px solid var(--color-border); border-radius: 9px; background: var(--color-surface-alt); }
+.ins-sum b { font-family: var(--font-mono); font-size: 20px; font-weight: 700; line-height: 1.1; }
+.ins-sum span { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--text3); }
+.ins-sum.is-bad b { color: var(--color-danger); }
+
+.ink-banner.is-warn { background: var(--color-warning-bg); color: var(--color-warning); }
+
+/* ── Подвал ── */
+.ins-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; padding: 11px 14px;
+  border-top: 1px solid var(--color-border); background: var(--bg2); }
+.ins-foot > .ink-btn.is-big { margin-left: auto; }
+.ins-blockers { width: 100%; font-size: 11.5px; color: var(--color-warning); }
+.ins-ask { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; width: 100%; }
+.ins-ask-text { flex: 1; min-width: 180px; font-size: 13px; }
+.ins-ask-btns { display: flex; gap: 8px; }
+
+@media (max-width: 640px) {
+  /* Лист во весь экран: до кнопок не надо тянуться, а прокрутка одна на весь мастер. */
+  .ins-backdrop { padding: 0; }
+  .ins-sheet { width: 100vw; max-width: 100vw; height: 100%; border: 0; border-radius: 0; }
+  .ins-step-label { display: none; }         /* на телефоне хватает точек */
+  .ins-step { padding: 10px 2px; }
+  .ins-body { padding: 12px; }
+  .ins-slots { grid-template-columns: 1fr; }
+  .ins-fields { grid-template-columns: 1fr; }
+  .ins-damage-row { flex-direction: column; align-items: stretch; }
+  .ins-scope { width: 100%; }
+  .ins-scope-btn { flex: 1; }
+  .ins-foot > .ink-btn { flex: 1; }
+  .ins-foot > .ink-btn.is-big { margin-left: 0; }
+  .ins-ask-btns { width: 100%; }
+  .ins-ask-btns .ink-btn { flex: 1; }
+}

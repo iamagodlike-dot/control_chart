@@ -25,6 +25,7 @@ import Purchasing from './components/Purchasing';
 import SupplierInvoices from './components/SupplierInvoices';
 import Monitor from './components/Monitor';
 import Intake from './components/Intake';
+import PhotoQueueRunner from './components/PhotoQueueRunner';
 import { GroupedTabs } from './components/NavGroup';
 import { roleTabs, roleHome, roleLabel } from './roles';
 import './App.css';
@@ -174,6 +175,9 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
     <div className="app">
       {isOwner && <SeedDefaults />}
       {allowed.includes('approval') && <ApprovalCounter onCount={setApprovalCount} />}
+      {/* Досылка снятых без связи фото — на уровне приложения, а не экрана:
+          приёмщик закрывает дефектовку раньше, чем снимки успевают уйти. */}
+      {allowed.includes('intake') && <PhotoQueueRunner />}
       <header className="app-header">
         <div className="app-brand">
           <Logo size={38} />
@@ -255,7 +259,7 @@ function Dispatcher({ user, signOut, role, profile, theme, setTheme }) {
           />
         )}
         {effectiveTab === 'approval' && <Approval isOwner={isOwner} />}
-        {effectiveTab === 'intake' && <Intake />}
+        {effectiveTab === 'intake' && <Intake profile={profile} />}
         {effectiveTab === 'board' && <PostsBoard />}
         {effectiveTab === 'monitor' && <Monitor isOwner={isOwner} />}
         {effectiveTab === 'warehouse' && <Warehouse onOpenJob={openJobDetail} />}

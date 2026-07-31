@@ -175,6 +175,8 @@ export function pluralDays(n) {
 // ─── Данные приёмки в машине ─────────────────────────────────────────────────
 
 // Пустая приёмка — то, с чего начинается машина, которую ещё не трогали.
+// Поля делятся на две части: запись на дефектовку (сверху) и сама дефектовка,
+// то есть осмотр приехавшей машины (снизу, см. раздел «Дефектовка»).
 export function emptyIntake() {
   return {
     scheduled_at: 0,      // согласованные дата и время дефектовки
@@ -182,15 +184,30 @@ export function emptyIntake() {
     invited_by: '',
     confirmed_at: 0,      // накануне позвонили, клиент подтвердил
     confirmed_for: 0,     // ДЛЯ КАКОЙ даты подтверждено (см. ниже)
-    started_at: 0,        // дефектовка начата — задел под следующий шаг
     log: [],              // журнал приглашений и переносов
+
+    started_at: 0,        // осмотр начат
+    finished_at: 0,       // осмотр завершён
+    finished_by: '',
+    mileage: '',
+    fuel: '',
+    keys: '',
+    docs: [],             // id переданных документов
+    equipment: [],        // id принятой комплектности
+    damages: [],          // [{ id, zone, kind, scope, note }]
+    notes: '',
+    act_number: '',
+    act_date: 0,
   };
 }
 
 // Приёмка машины в нормальном виде. У старых машин поля нет вовсе → пустая.
 export function readIntake(job) {
   const raw = job && typeof job.intake === 'object' && job.intake ? job.intake : null;
-  const base = emptyIntake();
+  // Пробег из карточки подставляем и в пустую приёмку тоже: у машины, которую
+  // приёмщик ещё не открывал, он всё равно уже может быть известен (Audatex,
+  // документ), и требовать вписать его заново незачем.
+  const base = { ...emptyIntake(), mileage: str(job?.mileage) };
   if (!raw) return base;
   return {
     ...base,
@@ -200,6 +217,28 @@ export function readIntake(job) {
     confirmed_at: num(raw.confirmed_at),
     confirmed_for: num(raw.confirmed_for),
     started_at: num(raw.started_at),
+    finished_at: num(raw.finished_at),
+    finished_by: str(raw.finished_by),
+    // Пробег у машины один. Пока приёмщик не вписал свой, показываем тот, что уже
+    // есть в карточке (мог прийти из Audatex или из документа), — иначе экран
+    // дефектовки и акт расходились бы с заказ-нарядом.
+    mileage: str(raw.mileage) || str(job?.mileage),
+    fuel: str(raw.fuel),
+    keys: str(raw.keys),
+    docs: arr(raw.docs).map(str),
+    equipment: arr(raw.equipment).map(str),
+    notes: str(raw.notes),
+    act_number: str(raw.act_number),
+    act_date: num(raw.act_date),
+    damages: arr(raw.damages)
+      .filter((d) => d && typeof d === 'object' && str(d.zone).trim())
+      .map((d) => ({
+        id: str(d.id) || str(d.zone),
+        zone: str(d.zone),
+        kind: str(d.kind) || DEFAULT_DAMAGE_KIND,
+        scope: str(d.scope) === 'old' ? 'old' : DEFAULT_DAMAGE_SCOPE,
+        note: str(d.note),
+      })),
     log: arr(raw.log)
       .filter((e) => e && typeof e === 'object')
       .map((e) => ({
@@ -251,8 +290,11 @@ export function intakeRow(job, nowMs = 0) {
   const scheduled = intake.scheduled_at;
   const dueDiff = scheduled ? dayDiff(nowMs, scheduled) : null;
 
+  // Порядок важен: начатая дефектовка перебивает и «просрочено», и «не назначено».
+  // Машину могли пригнать без записи — приёмщик просто начал осмотр.
   let phase;
-  if (intake.started_at) phase = 'started';
+  if (intake.finished_at) phase = 'inspected';
+  else if (intake.started_at) phase = 'inspecting';
   else if (!scheduled) phase = 'invite';
   else if (dueDiff < 0) phase = 'overdue';       // день прошёл, машины не было
   else phase = 'scheduled';
@@ -449,4 +491,325 @@ export function describeLogEntry(entry) {
   if (e.kind === 'confirm') return `Клиент подтвердил ${fmtDayTime(e.to)}`;
   const from = e.from ? fmtDayTime(e.from) : '—';
   return `Перенос ${from} → ${fmtDayTime(e.to)}`;
+}
+
+// ═══ ДЕФЕКТОВКА ══════════════════════════════════════════════════════════════
+// Машина приехала. Приёмщик обходит её с телефоном и фиксирует состояние: что
+// на одометре, что передали вместе с машиной, что уже повреждено и как это
+// выглядит на снимках. Результат — акт, которым сервис закрывается от претензий
+// «этой царапины не было» и «где мой домкрат».
+//
+// Смету здесь НЕ считаем — это отдельная работа калькулятора (решение владельца).
+//
+// Справочники держим константами в коде, а не в настройках: их правят раз в год,
+// а отдельный экран настроек — это ещё один экран, который надо поддерживать.
+
+// Обязательные ракурсы съёмки. `required: true` → без снимка дефектовку не закрыть.
+// «Повреждения крупно» обязателен всегда: именно эти кадры потом решают спор.
+export const PHOTO_SLOTS = [
+  { id: 'front_left', label: 'Перед ¾ слева', required: true },
+  { id: 'rear_right', label: 'Зад ¾ справа', required: true },
+  { id: 'side_left', label: 'Левый борт', required: true },
+  { id: 'side_right', label: 'Правый борт', required: true },
+  { id: 'vin', label: 'VIN-табличка', required: true },
+  { id: 'odometer', label: 'Панель приборов (пробег)', required: true },
+  { id: 'interior', label: 'Салон', required: false },
+  { id: 'damage', label: 'Повреждения крупно', required: true },
+];
+
+// Уровень топлива — как на приборной панели, восемь делений слишком мелко.
+export const FUEL_LEVELS = [
+  { id: 'empty', label: 'Пусто' },
+  { id: 'quarter', label: '¼' },
+  { id: 'half', label: '½' },
+  { id: 'three_quarters', label: '¾' },
+  { id: 'full', label: 'Полный' },
+];
+
+// Документы, которые клиент передаёт вместе с машиной.
+export const DOC_ITEMS = [
+  { id: 'sts', label: 'СТС' },
+  { id: 'pts', label: 'ПТС' },
+  { id: 'policy', label: 'Полис (ОСАГО/КАСКО)' },
+  { id: 'referral', label: 'Направление страховой' },
+  { id: 'passport', label: 'Паспорт собственника (копия)' },
+  { id: 'power_of_attorney', label: 'Доверенность' },
+];
+
+// Комплектность — то, из-за чего чаще всего возникают претензии при выдаче.
+export const EQUIPMENT_ITEMS = [
+  { id: 'jack', label: 'Домкрат' },
+  { id: 'spare', label: 'Запасное колесо' },
+  { id: 'wheel_wrench', label: 'Баллонный ключ' },
+  { id: 'tools', label: 'Набор инструмента' },
+  { id: 'first_aid', label: 'Аптечка' },
+  { id: 'extinguisher', label: 'Огнетушитель' },
+  { id: 'warning_triangle', label: 'Знак аварийной остановки' },
+  { id: 'radio', label: 'Магнитола / мультимедиа' },
+  { id: 'mats', label: 'Коврики' },
+  { id: 'wheel_lock_key', label: 'Секретка на колёса' },
+];
+
+// Зоны кузова. Плоский список, а не кликабельная схема: приёмщик работает с
+// телефона одной рукой, галочки быстрее и надёжнее рисунка.
+export const DAMAGE_ZONES = [
+  { id: 'bumper_front', label: 'Бампер передний', group: 'Перед' },
+  { id: 'hood', label: 'Капот', group: 'Перед' },
+  { id: 'grille', label: 'Решётка радиатора', group: 'Перед' },
+  { id: 'headlight_left', label: 'Фара левая', group: 'Перед' },
+  { id: 'headlight_right', label: 'Фара правая', group: 'Перед' },
+  { id: 'windshield', label: 'Лобовое стекло', group: 'Перед' },
+
+  { id: 'fender_front_left', label: 'Крыло переднее левое', group: 'Левый борт' },
+  { id: 'door_front_left', label: 'Дверь передняя левая', group: 'Левый борт' },
+  { id: 'door_rear_left', label: 'Дверь задняя левая', group: 'Левый борт' },
+  { id: 'sill_left', label: 'Порог левый', group: 'Левый борт' },
+  { id: 'fender_rear_left', label: 'Крыло заднее левое', group: 'Левый борт' },
+  { id: 'mirror_left', label: 'Зеркало левое', group: 'Левый борт' },
+
+  { id: 'fender_front_right', label: 'Крыло переднее правое', group: 'Правый борт' },
+  { id: 'door_front_right', label: 'Дверь передняя правая', group: 'Правый борт' },
+  { id: 'door_rear_right', label: 'Дверь задняя правая', group: 'Правый борт' },
+  { id: 'sill_right', label: 'Порог правый', group: 'Правый борт' },
+  { id: 'fender_rear_right', label: 'Крыло заднее правое', group: 'Правый борт' },
+  { id: 'mirror_right', label: 'Зеркало правое', group: 'Правый борт' },
+
+  { id: 'bumper_rear', label: 'Бампер задний', group: 'Зад' },
+  { id: 'trunk', label: 'Крышка багажника', group: 'Зад' },
+  { id: 'taillight_left', label: 'Фонарь левый', group: 'Зад' },
+  { id: 'taillight_right', label: 'Фонарь правый', group: 'Зад' },
+  { id: 'rear_window', label: 'Заднее стекло', group: 'Зад' },
+
+  { id: 'roof', label: 'Крыша', group: 'Прочее' },
+  { id: 'wheel_front_left', label: 'Диск переднего левого', group: 'Прочее' },
+  { id: 'wheel_front_right', label: 'Диск переднего правого', group: 'Прочее' },
+  { id: 'wheel_rear_left', label: 'Диск заднего левого', group: 'Прочее' },
+  { id: 'wheel_rear_right', label: 'Диск заднего правого', group: 'Прочее' },
+  { id: 'interior', label: 'Салон', group: 'Прочее' },
+];
+
+// Характер повреждения. Порядок = по возрастанию тяжести.
+export const DAMAGE_KINDS = [
+  { id: 'scratch', label: 'Царапина' },
+  { id: 'chip', label: 'Скол' },
+  { id: 'dent', label: 'Вмятина' },
+  { id: 'crack', label: 'Излом / трещина' },
+  { id: 'tear', label: 'Разрыв' },
+  { id: 'missing', label: 'Отсутствует' },
+  { id: 'paint', label: 'Требует окраски' },
+  { id: 'replace', label: 'Требует замены' },
+];
+export const DEFAULT_DAMAGE_KIND = 'scratch';
+
+// Отношение повреждения к страховому случаю. Требование владельца: страховая
+// платит только за свой случай, и если доаварийные царапины смешать с аварийными,
+// на калькуляции их разбирают заново — уже без машины перед глазами.
+export const DAMAGE_SCOPES = [
+  { id: 'case', label: 'По случаю', short: 'случай' },
+  { id: 'old', label: 'Было раньше', short: 'ранее' },
+];
+export const DEFAULT_DAMAGE_SCOPE = 'case';
+
+// Фото дефектовки лежат в общем job.photos с этим префиксом категории. Зона
+// «Фото — до ремонта» в карточке машины их НЕ подхватывает (она смотрит на
+// category === 'before').
+export const INTAKE_PHOTO_PREFIX = 'intake:';
+export const photoCategory = (slotId) => `${INTAKE_PHOTO_PREFIX}${slotId}`;
+export const photoSlotId = (category) => (
+  typeof category === 'string' && category.startsWith(INTAKE_PHOTO_PREFIX)
+    ? category.slice(INTAKE_PHOTO_PREFIX.length)
+    : null
+);
+
+// Юридический блок печатного акта.
+export const ACT_TEXT =
+  'Транспортное средство передано Исполнителю для проведения осмотра (дефектовки) и '
+  + 'последующего ремонта. Настоящий акт фиксирует комплектность и состояние ТС на момент '
+  + 'приёмки. Заказчик подтверждает, что перечень повреждений и комплектность, указанные в '
+  + 'акте, соответствуют фактическому состоянию ТС, и что ценные вещи и документы из салона и '
+  + 'багажника изъяты. Исполнитель не несёт ответственности за оставленные в ТС ценности. '
+  + 'Скрытые повреждения и дефекты, не выявляемые при внешнем осмотре, фиксируются '
+  + 'дополнительно в ходе дефектовки и согласуются с Заказчиком отдельно.';
+
+// ─── Шаги мастера ────────────────────────────────────────────────────────────
+// Порядок повторяет порядок реального осмотра: сначала то, что видно с
+// водительского места, потом обход с камерой, потом повреждения, и в конце —
+// что клиент передал вместе с машиной (это уже разговор с ним).
+export const INSPECTION_STEPS = [
+  { id: 'car', label: 'Машина', hint: 'Пробег, топливо, ключи' },
+  { id: 'photos', label: 'Фото', hint: 'Обход по кругу' },
+  { id: 'damages', label: 'Повреждения', hint: 'Что уже побито' },
+  { id: 'handover', label: 'Передали', hint: 'Документы и комплектность' },
+  { id: 'finish', label: 'Готово', hint: 'Акт и завершение' },
+];
+
+// ─── Готовность ──────────────────────────────────────────────────────────────
+
+// Фото дефектовки по рубрикам. `pending` — снимки из локальной очереди отправки
+// (см. photoQueue.js): для приёмщика они уже сделаны, и рубрику закрывают. Иначе
+// на плохой связи экран требовал бы переснять то, что лежит в телефоне.
+export function intakePhotosBySlot(job, pending = []) {
+  const out = {};
+  const push = (slot, photo) => { (out[slot] || (out[slot] = [])).push(photo); };
+  for (const p of arr(job?.photos)) {
+    const slot = photoSlotId(p?.category);
+    if (slot) push(slot, p);
+  }
+  for (const p of arr(pending)) {
+    if (p && p.slot) push(p.slot, { ...p, pending: true });
+  }
+  return out;
+}
+
+// Полная сводка по машине: что заполнено, чего не хватает, можно ли завершать.
+// ЕДИНСТВЕННОЕ место, где живёт правило «что обязательно», — его читают и точки
+// прогресса, и кнопка «Завершить», поэтому они не могут разойтись.
+export function inspectionStatus(job, pending = []) {
+  const intake = readIntake(job);
+  const bySlot = intakePhotosBySlot(job, pending);
+  const slots = PHOTO_SLOTS.map((slot) => {
+    const list = bySlot[slot.id] || [];
+    return {
+      ...slot,
+      photos: list,
+      count: list.length,
+      waiting: list.filter((p) => p.pending).length,
+    };
+  });
+  const photosMissing = slots.filter((s) => s.required && !s.count);
+  const mileageMissing = !str(intake.mileage).trim();
+
+  // Блокируем завершение только тем, без чего акт бессмысленен: пробег (он идёт
+  // и в акт, и в заказ-наряд) и обязательные ракурсы. Всё остальное — на совести
+  // приёмщика: бывает машина без единого документа и без домкрата.
+  const blockers = [
+    ...(mileageMissing ? ['Пробег'] : []),
+    ...photosMissing.map((s) => `Фото: ${s.label}`),
+  ];
+
+  const damagesByScope = {
+    case: intake.damages.filter((d) => d.scope !== 'old').length,
+    old: intake.damages.filter((d) => d.scope === 'old').length,
+  };
+
+  // Готовность шага для точек прогресса. Это НЕ блокировка: серый шаг просто
+  // означает «здесь пусто», перейти на него и уйти обратно можно всегда.
+  const steps = {
+    car: !mileageMissing,
+    photos: photosMissing.length === 0,
+    damages: intake.damages.length > 0,
+    handover: intake.docs.length > 0 || intake.equipment.length > 0,
+    finish: intake.finished_at > 0,
+  };
+
+  return {
+    intake,
+    slots,
+    photos: { done: slots.filter((s) => s.count).length, total: slots.length, waiting: slots.reduce((n, s) => n + s.waiting, 0) },
+    damages: intake.damages.length,
+    damagesByScope,
+    mileageMissing,
+    photosMissing,
+    blockers,
+    steps,
+    ready: blockers.length === 0,
+    started: intake.started_at > 0,
+    done: intake.finished_at > 0,
+    // Повреждений не отмечено вовсе — не запрещаем (бывает скрытый ущерб), но на
+    // последнем шаге предупреждаем: чаще это забывчивость, чем целая машина.
+    warnNoDamages: intake.damages.length === 0,
+  };
+}
+
+// ─── Подписи и акт ───────────────────────────────────────────────────────────
+
+const labelFrom = (list, id, fallback = '') => {
+  const found = arr(list).find((x) => x && x.id === id);
+  return found ? found.label : fallback;
+};
+
+export const fuelLabel = (id) => labelFrom(FUEL_LEVELS, id, '—');
+export const damageKindLabel = (id) => labelFrom(DAMAGE_KINDS, id, '—');
+export const damageScopeLabel = (id) => labelFrom(DAMAGE_SCOPES, id, 'По случаю');
+export const zoneLabel = (id) => labelFrom(DAMAGE_ZONES, id, id || '—');
+
+// Зоны, сгруппированные для колонок интерфейса: [{ group, zones: [...] }].
+export function groupZones(zones = DAMAGE_ZONES) {
+  const order = [];
+  const map = new Map();
+  for (const z of arr(zones)) {
+    const g = str(z.group) || 'Прочее';
+    if (!map.has(g)) { map.set(g, []); order.push(g); }
+    map.get(g).push(z);
+  }
+  return order.map((g) => ({ group: g, zones: map.get(g) }));
+}
+
+// Строки таблицы повреждений для акта — уже с подписями и в порядке справочника
+// зон (а не в порядке кликов приёмщика).
+export function damageRows(intake) {
+  const index = new Map(DAMAGE_ZONES.map((z, i) => [z.id, i]));
+  return arr(intake?.damages)
+    .slice()
+    .sort((a, b) => (index.get(a.zone) ?? 999) - (index.get(b.zone) ?? 999))
+    .map((d) => ({
+      zone: zoneLabel(d.zone),
+      kind: damageKindLabel(d.kind),
+      scope: damageScopeLabel(d.scope),
+      isOld: d.scope === 'old',
+      note: str(d.note),
+    }));
+}
+
+// ms → 'ГГГГ-ММ-ДД' в МЕСТНОМ времени (формат, который ждёт formatDocDate).
+function isoDay(ms) {
+  const t = num(ms);
+  if (!t) return '';
+  const d = new Date(t);
+  const p = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// Снимок для печатного акта. Как и остальные документы проекта — «замороженные»
+// данные: компонент листа ничего не дочитывает сам.
+export function buildIntakeActSnapshot(job, company, { docNumber = '', docDate = 0, acceptedBy = '' } = {}) {
+  const intake = readIntake(job);
+  const docSet = new Set(intake.docs);
+  const eqSet = new Set(intake.equipment);
+  return {
+    doc_number: str(docNumber) || str(intake.act_number),
+    doc_date: isoDay(num(docDate) || num(intake.act_date) || 0),
+    accepted_by: str(acceptedBy),
+    company: company || {},
+    customer: {
+      name: str(job?.client_name),
+      phone: str(job?.client_phone),
+    },
+    vehicle: {
+      car_model: str(job?.car_model),
+      plate_number: str(job?.plate_number),
+      vin: str(job?.vin),
+      year: str(job?.year),
+      color: str(job?.color),
+    },
+    insurance: {
+      payment_type: str(job?.payment_type) || 'cash',
+      insurer_name: str(job?.insurer_name),
+      claim_number: str(job?.claim_number),
+      policy_type: str(job?.policy_type),
+      order_number: str(job?.order_number),
+    },
+    condition: {
+      mileage: str(intake.mileage),
+      fuel: str(intake.fuel),
+      fuel_label: fuelLabel(intake.fuel),
+      keys: str(intake.keys),
+    },
+    docs: DOC_ITEMS.map((d) => ({ label: d.label, present: docSet.has(d.id) })),
+    equipment: EQUIPMENT_ITEMS.map((e) => ({ label: e.label, present: eqSet.has(e.id) })),
+    damages: damageRows(intake),
+    notes: str(intake.notes),
+    act_text: ACT_TEXT,
+    photos_count: arr(job?.photos).filter((p) => photoSlotId(p?.category)).length,
+  };
 }
