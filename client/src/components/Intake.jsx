@@ -15,8 +15,10 @@ import InspectionWizard from './InspectionWizard';
 // при бесплатной квоте. Отбор по под-статусу делает buildIntakeBoard.
 
 export default function Intake({ profile = null }) {
-  // Имя приёмщика печатается в акте в строке «ТС принял».
-  const userName = profile?.name || '';
+  // Имя приёмщика печатается в акте в строке «ТС принял». Если управленец завёл
+  // логин без имени — подставляем почту: прочерк в подписанном клиентом акте
+  // хуже, чем невзрачное «priem@…».
+  const userName = profile?.name || profile?.email || '';
 
   const [jobs, setJobs] = useState(null);        // null → ещё грузим
   const [company, setCompany] = useState({});
