@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import Icon from './Icon';
 
 // Автопроверка обновлений приложения. Проблема: SPA грузится один раз, и после
 // деплоя открытые вкладки продолжают крутить СТАРЫЙ код, пока их не перезагрузят
@@ -24,7 +25,8 @@ function runningBundle() {
 
 export default function UpdateNotice({ auto = false }) {
   const [fresh, setFresh] = useState(null);     // имя нового бандла, если вышло обновление
-  const [dismissed, setDismissed] = useState(null); // «скрыть» — до следующего обновления
+  const [dismissed, setDismissed] = useState(null); // «позже» — до следующего обновления
+  const [busy, setBusy] = useState(false);      // нажали «Обновить» — ждём перезагрузку
 
   useEffect(() => {
     const mine = runningBundle();
@@ -62,11 +64,34 @@ export default function UpdateNotice({ auto = false }) {
   }, [auto, fresh]);
 
   if (auto || !fresh || fresh === dismissed) return null;
+  return <UpdateCard busy={busy} onUpdate={() => { setBusy(true); window.location.reload(); }} onLater={() => setDismissed(fresh)} />;
+}
+
+// Сама плашка — отдельным компонентом, чтобы её можно было показать на демо-странице
+// без деплоя и без ожидания реального обновления.
+export function UpdateCard({ busy = false, onUpdate, onLater }) {
   return (
-    <div className="update-notice" role="status">
-      <span className="update-notice-text">Вышло обновление приложения</span>
-      <button className="primary small" onClick={() => window.location.reload()}>Обновить</button>
-      <button className="small update-notice-x" aria-label="Скрыть до следующего обновления" title="Скрыть" onClick={() => setDismissed(fresh)}>×</button>
+    <div className={`update-notice${busy ? ' is-busy' : ''}`} role="status" aria-live="polite">
+      <p className="update-notice-eyebrow"><i className="update-notice-dot" aria-hidden="true" />Обновление</p>
+      <button
+        className="update-notice-close"
+        onClick={onLater}
+        disabled={busy}
+        title="Скрыть до следующего обновления"
+        aria-label="Скрыть до следующего обновления"
+      >
+        ×
+      </button>
+      <div className="update-notice-copy">
+        <p className="update-notice-title">Вышла новая версия</p>
+        <p className="update-notice-sub">
+          {busy ? 'Загружаем свежую версию…' : 'Перезагрузка займёт секунду'}
+        </p>
+      </div>
+      <button className="update-notice-go" onClick={onUpdate} disabled={busy}>
+        <Icon name="refresh" size={14} strokeWidth={2.2} />
+        {busy ? 'Обновляем…' : 'Обновить'}
+      </button>
     </div>
   );
 }

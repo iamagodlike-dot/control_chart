@@ -835,18 +835,100 @@ textarea { width: 100%; min-height: 50px; }
 .gantt-toast-btn:hover { background: rgba(255, 255, 255, .26); }
 
 /* Плашка «Вышло обновление» — внизу справа, поверх всего (включая модалки), но
-   в углу, чтобы не перекрывать кнопки действий. На телефоне — во всю ширину. */
+   в углу, чтобы не перекрывать кнопки действий. На телефоне — во всю ширину.
+   Композиция компактная: слева надзаголовок капителью и две строки текста,
+   справа — кнопка и неприметный крестик. Внимание притягивают только два
+   спокойных приёма: мягкое фирменное свечение под карточкой и медленно
+   пульсирующая точка-индикатор. Ничего не мигает и не бегает. */
 .update-notice {
-  position: fixed; right: 18px; bottom: 18px; z-index: 300;
-  display: flex; align-items: center; gap: 10px;
-  background: var(--color-surface); border: 1px solid var(--color-primary);
-  border-radius: var(--radius-lg); padding: 10px 10px 10px 16px;
-  font-size: 13px; font-weight: 600; color: var(--color-text);
-  box-shadow: var(--shadow-md);
+  position: fixed; right: 22px; bottom: 22px; z-index: 300;
+  width: min(360px, calc(100vw - 44px));
+  display: grid; grid-template-columns: 1fr auto; align-items: center;
+  column-gap: 14px; row-gap: 8px;
+  padding: 13px 15px 14px 17px;
+  background: linear-gradient(165deg, var(--color-surface-alt), var(--color-surface));
+  border: 1px solid var(--color-border);
+  border-left: 3px solid var(--color-primary);
+  border-radius: 10px;
+  color: var(--color-text);
+  box-shadow:
+    var(--shadow-md),
+    0 16px 42px -20px color-mix(in srgb, var(--color-primary) 55%, transparent);
+  animation: un-in .38s cubic-bezier(.2, .9, .32, 1.08) both;
 }
-.update-notice-x { padding: 3px 9px; font-size: 15px; line-height: 1; }
+
+.update-notice-eyebrow {
+  display: flex; align-items: center; gap: 8px; margin: 0;
+  font-family: var(--font-mono); font-size: 10px; font-weight: 700;
+  letter-spacing: .18em; text-transform: uppercase; line-height: 1;
+  color: var(--color-primary);
+}
+.update-notice-dot {
+  width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0;
+  background: currentColor;
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--color-primary) 20%, transparent);
+  animation: un-pulse 2.4s ease-in-out infinite;
+}
+.update-notice-copy { min-width: 0; }
+.update-notice-title {
+  margin: 0 0 3px;
+  font-family: var(--font-display); font-size: 15.5px; font-weight: 700;
+  letter-spacing: -.2px; line-height: 1.2;
+}
+.update-notice-sub {
+  margin: 0; font-size: 12px; font-weight: 500; line-height: 1.35;
+  color: var(--color-text-muted);
+}
+/* На белой панели фирменный циан не читается — берём тёмный вариант бренда. */
+[data-theme="light"] .update-notice { border-left-color: var(--color-primary-dark); }
+[data-theme="light"] .update-notice-eyebrow { color: var(--color-primary-dark); }
+
+.update-notice-go {
+  display: inline-flex; align-items: center; gap: 7px; white-space: nowrap;
+  padding: 9px 15px; border: none; border-radius: 7px; cursor: pointer;
+  background: var(--color-primary); color: var(--color-on-primary);
+  font-family: var(--font-body); font-size: 12.5px; font-weight: 700;
+  box-shadow: 0 6px 16px -8px color-mix(in srgb, var(--color-primary) 90%, transparent);
+  transition: background .14s ease, transform .12s ease, box-shadow .16s ease;
+}
+.update-notice-go:hover:not(:disabled) {
+  background: var(--color-primary-dark); transform: translateY(-1px);
+  box-shadow: 0 10px 20px -8px color-mix(in srgb, var(--color-primary) 95%, transparent);
+}
+.update-notice-go:active:not(:disabled) { transform: none; }
+/* Закрыть — неприметный крестик в углу: отказаться от обновления можно, но
+   это не равноправное действие рядом с «Обновить». */
+.update-notice-close {
+  justify-self: end; margin: -3px -4px 0 0;
+  width: 22px; height: 22px; padding: 0; border: none; background: none;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 6px; cursor: pointer;
+  font-family: var(--font-body); font-size: 16px; line-height: 1;
+  color: var(--text3);
+  transition: color .14s ease, background .14s ease;
+}
+.update-notice-close:hover { color: var(--color-text); background: var(--color-surface-alt); }
+/* Нажали «Обновить» — кнопка гаснет, иконка крутится: видно, что клик сработал. */
+.update-notice.is-busy .update-notice-go { opacity: .55; cursor: default; box-shadow: none; }
+.update-notice.is-busy .update-notice-go svg { animation: un-turn 1s linear infinite; }
+
+@keyframes un-in {
+  from { opacity: 0; transform: translateY(14px); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes un-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .35; }
+}
+@keyframes un-turn { to { transform: rotate(360deg); } }
+
 @media (max-width: 640px) {
-  .update-notice { left: 12px; right: 12px; bottom: 12px; justify-content: space-between; }
+  .update-notice { left: 12px; right: 12px; bottom: 12px; width: auto; }
+  .update-notice-go { padding: 10px 15px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .update-notice, .update-notice-dot, .update-notice-go svg { animation: none; }
 }
 
 /* One-tap status advance — bar button (график) + row pill (карточка) */
