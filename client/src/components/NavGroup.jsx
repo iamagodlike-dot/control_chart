@@ -9,7 +9,7 @@ import Icon from './Icon';
 // collapses to a plain tab and an all-hidden group disappears. Ids must match the
 // TABS list in App.jsx. Only the owner gets grouping — other roles have few tabs.
 const NAV_GROUPS = [
-  { id: 'shop', label: 'Цех', icon: 'car', tabs: ['gantt', 'approval', 'board', 'monitor'] },
+  { id: 'shop', label: 'Цех', icon: 'car', tabs: ['gantt', 'approval', 'intake', 'board', 'monitor'] },
   { id: 'parts', label: 'Запчасти', icon: 'wrench', tabs: ['parts', 'warehouse', 'receiving', 'receiving-history', 'requests', 'purchasing'] },
   { id: 'money', label: 'Деньги', icon: 'wallet', tabs: ['finance', 'payroll', 'staffexpenses', 'expenses'] },
   { id: 'archive', label: 'История', icon: 'history', tabs: ['history'] },
