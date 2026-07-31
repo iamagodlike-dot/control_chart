@@ -15,6 +15,7 @@ import {
   buildPartsConsentText, orderMatchesRecipient, DEFAULT_WARRANTY, DEFAULT_CONSENT,
 } from '../orderDoc';
 import { applyDocToCar } from '../docToCar';
+import { downloadDocExcel } from '../docExcel';
 import '../orderDoc.css';
 
 function seedSnapshot(job, company, existingDoc, recipient) {
@@ -400,6 +401,9 @@ export default function OrderDocumentEditor({ job, company, existingDoc = null, 
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
           <button onClick={saveToCar} title="Перенести данные ТС, клиента, а также услуги и запчасти из документа в карточку машины (новые добавит, совпадающие обновит, ничего не удалит)">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
+          {/* Заказ-наряд печатается под номером машины, поэтому сохранять перед
+              выгрузкой не нужно (в отличие от акта/счёта — см. DocEditor). */}
+          <button onClick={() => downloadDocExcel(snapshot)} title="Скачать этот заказ-наряд таблицей Excel (.xlsx) — позиции и суммы числами, можно править и считать">⤓ Excel</button>
           <button className="primary" onClick={() => printFitted()}>🖨 Печать</button>
         </div>
       </div>
