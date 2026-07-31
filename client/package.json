@@ -12,6 +12,7 @@
   "dependencies": {
     "dayjs": "^1.11.21",
     "firebase": "^12.15.0",
+    "heic-to": "^1.5.2",
     "jspdf": "^4.2.1",
     "jspdf-autotable": "^5.0.8",
     "pdfjs-dist": "^6.0.227",

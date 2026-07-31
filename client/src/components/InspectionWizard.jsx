@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal, flushSync } from 'react-dom';
 import { api } from '../api';
-import { compressImage, deletePhotoFile } from '../photos';
+import {
+  canDecodeHeicNatively, compressImage, deletePhotoFile, preloadHeicDecoder,
+} from '../photos';
 import { dequeue, enqueue, subscribeQueue } from '../photoQueue';
 import { printFitted } from '../printDoc';
 import Icon from './Icon';
@@ -148,6 +150,19 @@ export default function InspectionWizard({
   useEffect(() => {
     const cache = urlsRef.current;
     return () => { for (const url of cache.values()) URL.revokeObjectURL(url); cache.clear(); };
+  }, []);
+
+  // Айфоны снимают в HEIC, а его не понимает никто, кроме Safari. Конвертер
+  // весит около мегабайта, поэтому тянем его заранее и ТОЛЬКО туда, где он
+  // понадобится: пока приёмщик заполняет первый шаг, связь обычно ещё есть, а на
+  // площадке её может не стать — и докачивать будет неоткуда.
+  useEffect(() => {
+    let alive = true;
+    canDecodeHeicNatively().then((native) => {
+      if (!alive || native || navigator.onLine === false) return;
+      preloadHeicDecoder().catch(() => {});
+    });
+    return () => { alive = false; };
   }, []);
 
   // Загруженные снимки НЕ копируем в состояние: job приходит из живой подписки, а

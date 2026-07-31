@@ -3,6 +3,9 @@
 // /api/photos с токеном входа Firebase → сервер проверяет токен и сохраняет
 // файл, возвращает ссылку → ссылку кладём в job.photos (см. api.jobs.addPhoto).
 import { auth } from './firebase';
+import { isHeic, looksLikeHeif } from './heic';
+
+export { isHeic, looksLikeHeif };
 
 // База адреса приёмника. В проде nginx проксирует /api/photos на программу-приёмник
 // (та же машина, тот же домен). Для локальной разработки можно задать VITE_PHOTO_API.
@@ -29,17 +32,92 @@ function encodeScaled(bitmap, maxDim, quality) {
   return new Promise((res) => canvas.toBlob((b) => res({ blob: b, w, h }), 'image/jpeg', quality));
 }
 
+// ─── HEIC с айфонов ──────────────────────────────────────────────────────────
+// Съёмка на iPhone по умолчанию даёт HEIC. Safari его понимает (системный кодек),
+// а Chrome, Firefox и весь Android — НЕТ: createImageBitmap падает, и <img> такой
+// файл не рисует. Раньше он уезжал на сервер как есть и потом не открывался ни у
+// кого, кроме владельца айфона. Теперь такие снимки перекодируем в обычный JPEG
+// прямо в браузере.
+//
+// Декодер (libheif в wasm) весит около мегабайта, поэтому подключается ЛЕНИВО —
+// отдельным файлом и только тем, кому он реально нужен.
+
+// Двухпиксельный HEIC (509 байт) — им проверяем, умеет ли браузер такие файлы
+// сам. Пробу гоняем один раз за сеанс: на айфоне она пройдёт, и мегабайтный
+// декодер качать незачем.
+const HEIC_PROBE = 'data:image/heic;base64,AAAAJGZ0eXBoZWljAAAAAG1pZjFNaVBybWlhZk1pSEJoZWljAAABh21ldGEAAAAAAAAAIWhkbHIAAAAAAAAAAHBpY3QAAAAAAAAAAAAAAAAAAAAAJGRpbmYAAAAcZHJlZgAAAAAAAAABAAAADHVybCAAAAABAAAADnBpdG0AAAAAAAEAAAAjaWluZgAAAAAAAQAAABVpbmZlAgAAAAABAABodmMxAAAAAOdpcHJwAAAAxmlwY28AAAATY29scm5jbHgAAgACAAaAAAAADGNsbGkAywBAAAAAFGlzcGUAAAAAAAAAAgAAAAIAAAAJaXJvdAAAAAAQcGl4aQAAAAADCAgIAAAAcmh2Y0MBA3AAAACwAAAAAAAe8AD8/fj4AAALA6AAAQAXQAEMAf//A3AAAAMAsAAAAwAAAwAecCShAAEAJEIBAQNwAAADALAAAAMAAAMAHqAUIEHAoQQYh7kWVTcCAgYAgKIAAQAJRAHAYXLIQFMkAAAAGWlwbWEAAAAAAAAAAQABBoECAwWGhAAAAB5pbG9jAAAAAEQAAAEAAQAAAAEAAAG7AAAAQgAAAAFtZGF0AAAAAAAAAFIAAAA+KAGvo2MNKx0Fv5S4rHtKpukoU54tX//6sBACgWPNlCOH/46XADeBQI9UNeNR/5eAZrOh8r+8oDRlXqPxRoA=';
+
+let nativeHeicPromise = null;
+export function canDecodeHeicNatively() {
+  if (!nativeHeicPromise) {
+    nativeHeicPromise = fetch(HEIC_PROBE)
+      .then((r) => r.blob())
+      .then((b) => createImageBitmap(b))
+      .then((bmp) => { bmp.close?.(); return true; })
+      .catch(() => false);
+  }
+  return nativeHeicPromise;
+}
+
+let decoderPromise = null;
+// Заранее подтянуть декодер — зовём при открытии дефектовки, пока связь ещё есть:
+// на площадке её может не стать, а докачать мегабайт офлайн неоткуда.
+export function preloadHeicDecoder() {
+  if (!decoderPromise) {
+    decoderPromise = import('heic-to').catch((e) => { decoderPromise = null; throw e; });
+  }
+  return decoderPromise;
+}
+
+async function heicToJpeg(file, quality) {
+  let mod;
+  try {
+    mod = await preloadHeicDecoder();
+  } catch {
+    throw new Error('Не удалось загрузить конвертер HEIC — нужна связь. Снимок не сохранён.');
+  }
+  try {
+    // Промежуточный JPEG берём качеством повыше: его ещё раз пережмёт наш
+    // собственный проход, и двойная потеря качества ни к чему.
+    return await mod.heicTo({ blob: file, type: 'image/jpeg', quality: Math.min(0.95, quality + 0.1) });
+  } catch {
+    throw new Error('Не удалось прочитать HEIC-снимок. Снимите ещё раз или переключите камеру на JPEG.');
+  }
+}
+
 // Сжатие в браузере через <canvas>. imageOrientation:'from-image' разворачивает
-// снимок по EXIF, иначе фото с телефона висят боком. Если формат не по зубам
-// (напр. HEIC на не-Safari) — отдаём оригинал как есть, пусть сервер сохранит.
+// снимок по EXIF, иначе фото с телефона висят боком. HEIC сначала перекодируется
+// в JPEG (см. выше). Если формат не по зубам вовсе — отдаём оригинал как есть,
+// пусть сервер сохранит: потерять снимок хуже, чем сохранить неудобный.
 export async function compressImage(file, { maxDim = MAX_DIM, quality = QUALITY, targetBytes = TARGET_MAX_BYTES } = {}) {
-  if (!file || !file.type?.startsWith('image/')) throw new Error('Это не изображение');
-  let bitmap;
+  if (!file) throw new Error('Файл не выбран');
+  let heic = isHeic(file);
+  if (!heic && !file.type?.startsWith('image/')) {
+    // Ни тип, ни имя на картинку не похожи — прежде чем отказать, заглянем в байты:
+    // так спасаются снимки из галерей, которые отдают файл без всего.
+    heic = await looksLikeHeif(file);
+    if (!heic) throw new Error('Это не изображение');
+  }
+
+  let source = file;
+  let bitmap = null;
   try {
     bitmap = await createImageBitmap(file, { imageOrientation: 'from-image' });
   } catch {
-    return { blob: file, w: 0, h: 0 }; // не смогли декодировать — шлём оригинал
+    // Формат не по зубам этому браузеру — bitmap остаётся null, разбираемся ниже.
   }
+  // Сюда попадают Chrome/Android с айфоновским снимком: сам файл браузер не
+  // осилил, но это HEIC — значит, дело поправимое.
+  if (!bitmap && heic) {
+    source = await heicToJpeg(file, quality);
+    try {
+      bitmap = await createImageBitmap(source, { imageOrientation: 'from-image' });
+    } catch {
+      // Перекодировали, но уменьшить не смогли — уже победа: это обычный JPEG.
+      return { blob: source, w: 0, h: 0 };
+    }
+  }
+  if (!bitmap) return { blob: file, w: 0, h: 0 };
   let dim = maxDim;
   let q = quality;
   let out = await encodeScaled(bitmap, dim, q);
@@ -51,7 +129,9 @@ export async function compressImage(file, { maxDim = MAX_DIM, quality = QUALITY,
     out = await encodeScaled(bitmap, dim, q);
   }
   bitmap.close?.();
-  return { blob: out.blob || file, w: out.w, h: out.h };
+  // Запасной вариант — `source`, а не исходный файл: у перекодированного HEIC это
+  // уже JPEG, и откатываться к нечитаемому оригиналу было бы шагом назад.
+  return { blob: out.blob || source, w: out.w, h: out.h };
 }
 
 // Заголовок с токеном входа — сервер по нему убеждается, что человек залогинен
