@@ -431,8 +431,13 @@ export default function InspectionWizard({
                           </button>
                         </div>
                       ))}
+                      {/* Пока снимок готовится, плитка честно говорит об этом:
+                          HEIC с айфона перекодируется несколько секунд, и молчащая
+                          кнопка выглядела бы зависшей. */}
                       <label className={`ins-shoot${busySlot === slot.id ? ' is-busy' : ''}`}>
-                        <Icon name="camera" size={20} /><span>Снять</span>
+                        {busySlot === slot.id
+                          ? <><span className="ins-spin" /><span>Готовим…</span></>
+                          : <><Icon name="camera" size={20} /><span>Снять</span></>}
                         <input
                           type="file" accept="image/*" capture="environment" multiple hidden
                           disabled={busySlot != null}

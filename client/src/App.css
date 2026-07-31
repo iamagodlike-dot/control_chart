@@ -3087,3 +3087,8 @@ textarea { width: 100%; min-height: 50px; }
   .ins-ask-btns { width: 100%; }
   .ins-ask-btns .ink-btn { flex: 1; }
 }
+
+/* Кружок ожидания в плитке съёмки: HEIC перекодируется несколько секунд. */
+.ins-spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--color-border);
+  border-top-color: var(--color-primary); animation: ins-spin .8s linear infinite; }
+@keyframes ins-spin { to { transform: rotate(360deg); } }
