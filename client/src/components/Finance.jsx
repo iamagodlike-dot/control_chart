@@ -7,6 +7,7 @@ import {
   PERIODS, computeFinance, computeCashFlow, buildFinanceCsv,
   periodRange, inRange, jobDate,
 } from '../finance';
+import { countedInvoices } from '../invoices';
 import { PAYMENT_SHORT, isInsurance } from '../insurance';
 import { salaryExpenseTx } from '../salary';
 import { isRepair } from '../phase';
@@ -82,9 +83,13 @@ export default function Finance() {
   useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/set-state-in-effect
 
   const invoices = useMemo(() => docs.filter((d) => d.type === 'invoice'), [docs]);
+  // По каждому ремонту в деньгах участвует ОДИН счёт: перевыставленный заменяет
+  // предыдущий (см. invoices.js). Здесь фильтруем один раз — и суммы по машинам, и
+  // отметка оплаты ниже работают уже по учитываемым счетам. computeFinance /
+  // computeCashFlow фильтруют у себя сами, им отдаём полный список.
   const invByJob = useMemo(() => {
     const m = {};
-    for (const inv of invoices) (m[inv.job_id] ||= []).push(inv);
+    for (const inv of countedInvoices(invoices)) (m[inv.job_id] ||= []).push(inv);
     return m;
   }, [invoices]);
 

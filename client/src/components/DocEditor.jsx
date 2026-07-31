@@ -16,7 +16,24 @@ import {
   formatDocDate, buildPartsConsentText, orderMatchesRecipient, DEFAULT_ACT_TEXT, DEFAULT_WARRANTY, DEFAULT_INVOICE_NOTE, DEFAULT_HANDOVER_TEXT, DEFAULT_INTAKE_TEXT,
 } from '../orderDoc';
 import { applyDocToCar } from '../docToCar';
+import { downloadDocExcel } from '../docExcel';
+import {
+  countedInvoiceIds, invoiceRole, invoiceStatus,
+  ROLE_AUTO, ROLE_EXTRA, ROLE_VOID, INVOICE_STATUS_HINT,
+} from '../invoices';
 import '../orderDoc.css';
+
+// Короткая метка счёта в списке «Ранее выданные».
+const INVOICE_TAG = { main: 'считается', extra: 'доп.', replaced: 'версия', void: 'не учит.' };
+
+// Как счёт участвует в деньгах. Правило по умолчанию — «считается последний
+// выставленный» — снимает главную беду: перевыставленный счёт больше не удваивает
+// сумму ремонта. Две ручные пометки закрывают случаи, где правило не подходит.
+const ROLES = [
+  { id: ROLE_AUTO, label: 'Обычный счёт', hint: 'По каждому убытку в деньгах участвует последний выставленный счёт. Если перевыставите — этот станет предыдущей версией и считаться перестанет.' },
+  { id: ROLE_EXTRA, label: 'Доп. счёт (часть суммы)', hint: 'Счёт на часть суммы — аванс или доплата. Считается всегда и складывается с основным счётом.' },
+  { id: ROLE_VOID, label: 'Не учитывать', hint: 'Дубль или аннулированный счёт: в сумме по машине, в долге и в денежной ленте не участвует.' },
+];
 
 function buildInitial(type, job, company, recipient, direction = 'intake') {
   if (type === 'act') return buildActSnapshot(job, company, null, recipient);
@@ -27,6 +44,17 @@ function buildInitial(type, job, company, recipient, direction = 'intake') {
 function seedFromExisting(existingDoc) {
   const { id, created_at, updated_at, created_by, ...rest } = existingDoc; // eslint-disable-line no-unused-vars
   return rest;
+}
+
+// Пробег в акте приёма-передачи один (см. patchMileage). У ранее сохранённых актов
+// одна из двух клеток обычно пустая — её нечем было заполнить; подставляем соседнюю,
+// чтобы в акте не печаталось «—». Два разных вписанных вручную числа не трогаем:
+// это уже выданный документ.
+function withSyncedMileage(snap) {
+  const cond = snap.condition || {};
+  const one = String(cond.mileage_in || '').trim() || String(cond.mileage_out || '').trim();
+  if (!one) return snap;
+  return { ...snap, condition: { ...cond, mileage_in: cond.mileage_in || one, mileage_out: cond.mileage_out || one } };
 }
 
 export default function DocEditor({ type, job, company, recipient = 'all', onClose, onJobUpdated }) {
@@ -40,6 +68,10 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
   const [savedToCar, setSavedToCar] = useState(false);
   const [showPreview, setShowPreview] = useState(true);
   const [history, setHistory] = useState([]);
+  // id счетов машины, участвующих в деньгах. Считаем по ВСЕМ её счетам (а не по
+  // отфильтрованной истории), чтобы метка «считается» не зависела от того, какая
+  // вкладка получателя сейчас открыта.
+  const [countedIds, setCountedIds] = useState(() => new Set());
   const [qrDataUrl, setQrDataUrl] = useState('');
   const touchedRef = useRef(false);
 
@@ -57,9 +89,11 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
       // Ранее выданные — только этого типа И этого получателя (страховой/клиент),
       // чтобы страховые и клиентские документы не смешивались.
       setHistory(all.filter((d) => d.type === type && (recipient === 'all' || orderMatchesRecipient(d, recipient))));
+      setCountedIds(countedInvoiceIds(all.filter((d) => d.type === 'invoice')));
       return all;
     } catch {
       setHistory([]);
+      setCountedIds(new Set());
       return [];
     }
   }
@@ -91,6 +125,21 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
   function patch(fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, ...fields })); setSaved(false); }
   function patchGroup(group, fields) { touchedRef.current = true; setSnapshot((s) => ({ ...s, [group]: { ...s[group], ...fields } })); setSaved(false); setSavedToCar(false); }
 
+  // Пробег в акте приёма-передачи ОДИН на оба блока: между приёмом и выдачей машина
+  // не ездит, а раздельные поля расходились и печатались разными числами. Правка в
+  // любом из них меняет оба и шапку ТС — чтобы «↩ Обновить карточку машины» унесла
+  // исправленный пробег в карточку.
+  function patchMileage(v) {
+    touchedRef.current = true;
+    setSnapshot((s) => ({
+      ...s,
+      condition: { ...s.condition, mileage_in: v, mileage_out: v },
+      vehicle: { ...s.vehicle, mileage: v },
+    }));
+    setSaved(false);
+    setSavedToCar(false);
+  }
+
   // Opt-in: push the document's vehicle + client data AND услуги/запчасти back onto
   // the car card. Услуги/запчасти — «добавить и обновить, не удалять» по получателю;
   // совпадающие запчасти сохраняют закупку/приёмку. Общий путь с заказ-нарядом —
@@ -114,7 +163,7 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
   function updatePart(id, f) { patch({ parts: snapshot.parts.map((p) => (p.id === id ? { ...p, ...f } : p)) }); }
   function removePart(id) { patch({ parts: snapshot.parts.filter((p) => p.id !== id) }); }
 
-  function openExisting(d) { touchedRef.current = true; setSnapshot(seedFromExisting(d)); setDocId(d.id); setSaved(true); if (isHandover) setDirection(d.direction || 'issue'); }
+  function openExisting(d) { touchedRef.current = true; const seed = seedFromExisting(d); setSnapshot(isHandover ? withSyncedMileage(seed) : seed); setDocId(d.id); setSaved(true); if (isHandover) setDirection(d.direction || 'issue'); }
   function newDoc() { touchedRef.current = true; setSnapshot(buildInitial(type, job, company, recipient, direction)); setDocId(null); setSaved(false); }
 
   // Смена направления акта: заголовок, подписи и стандартный текст берутся из направления.
@@ -129,9 +178,13 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
     });
   }
 
+  // Возвращает АКТУАЛЬНЫЙ снапшот — с номером, который счётчик присвоил при создании.
+  // Это нужно выгрузке в Excel: она берёт данные из переменной, а не из DOM, и на
+  // свежесозданном документе видела бы ещё пустой номер (setSnapshot асинхронен).
   async function save() {
     setSaving(true);
     setSaveError('');
+    let fresh = snapshot;
     try {
       const n = (v) => Number(v) || 0;
       const payload = { ...snapshot };
@@ -150,11 +203,16 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
       if (isInvoice) {
         payload.paid = !!snapshot.paid;
         payload.paid_at = payload.paid ? (snapshot.paid_at || Date.now()) : null;
+        // Как счёт участвует в деньгах (см. invoices.js). Пишем всегда — иначе у
+        // счёта, которому сняли пометку, осталось бы старое значение.
+        payload.billing_role = invoiceRole(snapshot);
       }
+      fresh = payload;
       if (docId) await api.orderDocuments.update(docId, payload);
       else {
         const created = await api.orderDocuments.create(payload);
         setDocId(created.id);
+        if (created.doc_number) fresh = { ...payload, doc_number: created.doc_number };
         // Показать присвоенный счётчиком номер в редакторе и на печатном листе.
         // flushSync — чтобы номер попал в DOM до печати, когда сохранение вызвано
         // кнопкой «Печать» для нового документа (см. printDoc).
@@ -169,6 +227,7 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
     } finally {
       setSaving(false);
     }
+    return fresh;
   }
 
   // Печать: у нового документа номер присваивается при сохранении, поэтому сначала
@@ -179,7 +238,17 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
     printFitted();
   }
 
+  // Excel-версия документа. Сохраняем по той же причине, что и перед печатью:
+  // у нового документа номер присваивается при сохранении, а файл уезжает
+  // бухгалтеру/страховой — с пустым номером он бесполезен. Не сохранилось
+  // (например, не обновлены правила доступа) — файл всё равно отдаём.
+  async function exportExcel() {
+    const fresh = docId ? snapshot : await save();
+    downloadDocExcel(fresh || snapshot);
+  }
+
   const totals = hasItems ? computeDocTotals(snapshot) : null;
+  const role = invoiceRole(snapshot);
   const cust = snapshot.customer;
   const veh = snapshot.vehicle;
   const c = snapshot.company;
@@ -191,11 +260,23 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
       {history.length > 0 && (
         <div className="oe-history">
           <span className="oe-history-label">Ранее выданные:</span>
-          {history.map((d) => (
-            <button key={d.id} className={d.id === docId ? 'active' : ''} onClick={() => openExisting(d)}>
-              {d.doc_number} · {formatDocDate(d.doc_date)}
-            </button>
-          ))}
+          {history.map((d) => {
+            // У счетов подписываем, какой из них идёт в деньги. Пока счёт один,
+            // объяснять нечего — метку не показываем.
+            const st = isInvoice && history.length > 1 ? invoiceStatus(d, countedIds) : null;
+            const off = st === 'replaced' || st === 'void';
+            return (
+              <button
+                key={d.id}
+                className={`${d.id === docId ? 'active' : ''}${off ? ' is-off' : ''}`}
+                onClick={() => openExisting(d)}
+                title={st ? INVOICE_STATUS_HINT[st] : ''}
+              >
+                {d.doc_number} · {formatDocDate(d.doc_date)}
+                {st && <span className="oe-history-tag">{INVOICE_TAG[st]}</span>}
+              </button>
+            );
+          })}
           <button className="oe-history-new" onClick={newDoc}>+ Новый</button>
         </div>
       )}
@@ -327,6 +408,25 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
                 <div className="oe-hint">Оплаченные счета попадают в «Оплачено» на борде аналитики (вкладка «История»).</div>
               </div>
 
+              <div className="oe-section">
+                <h4>Учёт в деньгах</h4>
+                <div className="doc-recipient" style={{ marginTop: 0 }}>
+                  {ROLES.map((r) => (
+                    <button key={r.id} className={role === r.id ? 'active' : ''} onClick={() => patch({ billing_role: r.id })}>{r.label}</button>
+                  ))}
+                </div>
+                <div className="oe-hint">{ROLES.find((r) => r.id === role)?.hint}</div>
+                {/* Прямой ответ на «а этот счёт вообще считается?» — по сохранённому
+                    документу, а не по правилу вообще. */}
+                {docId && role === ROLE_AUTO && (
+                  <div className="oe-hint">
+                    {countedIds.has(docId)
+                      ? 'Сейчас этот счёт учитывается в деньгах по машине.'
+                      : 'Сейчас этот счёт НЕ учитывается: по этому убытку есть более поздний счёт.'}
+                  </div>
+                )}
+              </div>
+
               <div className="oe-group-label"><span>Дополнительно · реквизиты и тексты</span></div>
 
               <CollapsibleSection title="Банковские реквизиты (для этого счёта)" hint="По умолчанию из «Реквизиты компании». Правки здесь остаются только в этом счёте." defaultOpen={!(bank.bank_name || bank.account)}>
@@ -411,7 +511,7 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
                 </label>
                 <div className="oe-grid" style={{ opacity: snapshot.show_intake ? 1 : 0.45 }}>
                   <label className="oe-field oe-full">Пробег при приёме, км
-                    <input value={cond.mileage_in} disabled={!snapshot.show_intake} onChange={(e) => patchGroup('condition', { mileage_in: e.target.value })} />
+                    <input value={cond.mileage_in} disabled={!snapshot.show_intake} onChange={(e) => patchMileage(e.target.value)} />
                   </label>
                   <label className="oe-field oe-full">Комплектация
                     <input value={cond.equipment} disabled={!snapshot.show_intake} onChange={(e) => patchGroup('condition', { equipment: e.target.value })} />
@@ -425,8 +525,9 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
                   При выдаче ТС
                 </label>
                 <label className="oe-field oe-full" style={{ opacity: snapshot.show_issue ? 1 : 0.45 }}>Пробег при выдаче, км
-                  <input value={cond.mileage_out} disabled={!snapshot.show_issue} onChange={(e) => patchGroup('condition', { mileage_out: e.target.value })} />
+                  <input value={cond.mileage_out} disabled={!snapshot.show_issue} onChange={(e) => patchMileage(e.target.value)} />
                 </label>
+                <div className="oe-hint">Всегда совпадает с пробегом при приёме — правьте в любом из двух полей.</div>
                 <textarea className="oe-textarea" value={cond.condition_out} disabled={!snapshot.show_issue} onChange={(e) => patchGroup('condition', { condition_out: e.target.value })} placeholder="Состояние при выдаче" />
               </div>
               <div className="oe-section">
@@ -476,6 +577,7 @@ export default function DocEditor({ type, job, company, recipient = 'all', onClo
           {saved && !saveError && <span className="oe-saved">Сохранено ✓</span>}
           <button onClick={saveToCar} title="Перенести данные ТС, клиента, а также услуги и запчасти из документа в карточку машины (новые добавит, совпадающие обновит, ничего не удалит)">↩ Обновить карточку машины</button>
           <button disabled={saving} onClick={save}>{saving ? 'Сохраняем…' : (docId ? 'Сохранить изменения' : 'Сохранить документ')}</button>
+          <button onClick={exportExcel} title="Скачать этот документ таблицей Excel (.xlsx) — позиции и суммы числами, можно править и считать">⤓ Excel</button>
           <button className="primary" onClick={printDoc}>🖨 Печать</button>
         </div>
       </div>

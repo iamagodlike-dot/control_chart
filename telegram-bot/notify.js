@@ -189,6 +189,9 @@ function startNotifier(bot) {
       const wasPaid = invoicePaid.get(id) || false;
       const isPaid = !!d.paid;
       invoicePaid.set(id, isPaid);
+      // Счёт, помеченный «не учитывать» (дубль/аннулированный), деньгами не является —
+      // о его «оплате» не сообщаем, иначе пуш противоречил бы суммам в сводке.
+      if (d.billing_role === 'void') continue;
       if (docsPrimed && isPaid && !wasPaid) {
         notify('payment', managers(), `<b>Поступила оплата</b>\n${label(d.job_id)} — ${money(invoiceAmount(d))}`);
       }

@@ -1,7 +1,10 @@
 import dayjs from 'dayjs';
-import { computeCosting } from './costing';
-import { computeDocTotals } from './orderDoc';
-import { PAYMENT_SHORT } from './insurance';
+// Расширения .js обязательны: по ним модуль запускается в `node --test` (finance.test.js)
+// без сборщика — как billing/costing/orderDoc.
+import { computeCosting } from './costing.js';
+import { computeDocTotals } from './orderDoc.js';
+import { countedInvoices } from './invoices.js';
+import { PAYMENT_SHORT } from './insurance.js';
 
 // Pure finance/bookkeeping helpers — no React, no Firestore. Everything the
 // «Финансы» screen shows is derived here so it can be unit-tested and reused.
@@ -78,6 +81,10 @@ export function computeFinance({ jobs = [], invoices = [], transactions = [], co
   // resurrect a phantom «Долг клиентов». Standalone invoices (no job_id) are kept.
   const jobIdSet = new Set(jobs.map((j) => j.id));
   invoices = invoices.filter((i) => !i.job_id || jobIdSet.has(i.job_id));
+  // Из нескольких счетов одного ремонта в деньгах участвует один — перевыставленные
+  // считаются предыдущими версиями (см. invoices.js). Иначе дубль счёта задваивал
+  // и выручку кассы, и долг клиентов.
+  invoices = countedInvoices(invoices);
 
   // ---- Прибыль от ремонтов (по машинам с заполненной себестоимостью) ----
   const jobsWithCosting = jobs.filter((j) => j.costing);
@@ -200,6 +207,9 @@ export function computeCashFlow({ jobs = [], invoices = [], transactions = [], s
   // Drop invoices whose car was deleted (see computeFinance) — keeps the лента and
   // «Долг» free of phantom rows for cars that no longer exist.
   invoices = invoices.filter((i) => !i.job_id || jobsById.has(i.job_id));
+  // Один счёт на поток (см. computeFinance выше): перевыставленный счёт не должен
+  // ни давать вторую строку «Оплата по счёту» в ленте, ни удваивать долг.
+  invoices = countedInvoices(invoices);
   const carLabel = (j) => [j?.car_model, j?.plate_number].filter(Boolean).join(' · ') || 'Машина';
   const events = [];
 

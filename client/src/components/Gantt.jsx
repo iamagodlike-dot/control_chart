@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
 import { isInsurance, PAYMENT_SHORT } from '../insurance';
+import { countedInvoices } from '../invoices';
 import { PHASE, DEFAULT_APPROVAL_STATUS } from '../phase';
 import DocumentsModal from './DocumentsModal';
 import CarCard from './CarCard';
@@ -452,7 +453,7 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false, isOwner
     // Warn before archiving a car that still has an unpaid счёт — otherwise its debt
     // lingers in Финансы with no car to open on the active screens.
     try {
-      const invs = await api.orderDocuments.listByJob(job.job_id, 'invoice');
+      const invs = countedInvoices(await api.orderDocuments.listByJob(job.job_id, 'invoice'));
       const unpaid = invs.filter((i) => !i.paid);
       if (unpaid.length) {
         const sum = unpaid.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
@@ -796,7 +797,9 @@ export default function Gantt({ openJobId, onOpenJobHandled, tv = false, isOwner
             const dlState = deadlineState(j, now);
             const overall = jobOverallStatus(j, now);
             const isQueued = j.stages.length === 0;
-            const jobInvoices = invoices.filter((i) => i.job_id === j.job_id);
+            // Только учитываемые счета: перевыставленный не должен ни удваивать
+            // сумму в плашке, ни держать машину «не оплаченной» (см. invoices.js).
+            const jobInvoices = countedInvoices(invoices.filter((i) => i.job_id === j.job_id));
             const hasPay = jobInvoices.length > 0;
             const payTotal = jobInvoices.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
             const payAllPaid = hasPay && jobInvoices.every((i) => i.paid);

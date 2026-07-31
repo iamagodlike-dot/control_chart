@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import dayjs from 'dayjs';
 import { api } from '../api';
 import { money, computeDocTotals } from '../orderDoc';
+import { countedInvoices } from '../invoices';
 import { isInsurance } from '../insurance';
 import { STATUS_COLORS, STATUS_LABELS } from './Gantt';
 import DocumentsModal from './DocumentsModal';
@@ -52,9 +53,12 @@ export default function History() {
   }, []);
 
   const invoices = useMemo(() => docs.filter((d) => d.type === 'invoice'), [docs]);
+  // Только учитываемые счета: перевыставленный счёт — предыдущая версия того же
+  // ремонта, а не вторая сумма (см. invoices.js). Иначе закрытый заказ показывал
+  // двойную сумму и не гасился отметкой оплаты.
   const invByJob = useMemo(() => {
     const m = {};
-    for (const inv of invoices) (m[inv.job_id] ||= []).push(inv);
+    for (const inv of countedInvoices(invoices)) (m[inv.job_id] ||= []).push(inv);
     return m;
   }, [invoices]);
 

@@ -11,6 +11,7 @@ import {
   STREAM_INSURANCE, STREAM_CLIENT, STREAM_ALL,
   claimsOf, streamsOf, itemsForStream, defaultStream, claimLabel, streamOf, orderMatchesStream,
 } from '../billing';
+import { countedInvoiceIds, invoiceStatus, countedSummary, INVOICE_STATUS_LABEL, INVOICE_STATUS_HINT } from '../invoices';
 import { PHASE, DEFAULT_APPROVAL_STATUS, isRepair } from '../phase';
 import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadlineState, nextStatusAction } from './Gantt';
 import { CellPickerModal } from './Warehouse';
@@ -387,6 +388,10 @@ export default function CarCard({
     job?.client_name, job?.client_phone, job?.order_number, job?.cell_ids, job?.cell_id,
     job?.expected_at, job?.deadline, job?.notes, job?.payment_type,
     job?.insurer_id, job?.insurer_name, job?.claim_number, job?.policy_type, job?.franchise,
+    // discount — близнец franchise: обе цифры правятся не только в карточке (скидку
+    // теперь несёт «Обновить карточку машины» из документа), и без неё в подписи
+    // открытая карточка показывала бы прежнее значение.
+    job?.discount,
     // 'claims' ОБЯЗАТЕЛЕН в подписи: без него карточка не увидит правку убытка с
     // другого устройства — ровно тот баг «не вижу изменений в карточке авто».
     job?.claims,
@@ -1083,16 +1088,22 @@ export default function CarCard({
   const partsSum = createParts.reduce((a, p) => a + (Number(p.price) || 0) * (Number(p.qty) || 1), 0);
   const createServicesSum = createServices.reduce((a, s) => a + (Number(s.price) || 0) * (Number(s.qty) || 1), 0);
 
-  // Payment status across this car's invoices.
-  const invAmount = invoices.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
-  const hasInvoice = invoices.length > 0;
-  const allPaid = hasInvoice && invoices.every((i) => i.paid);
+  // Payment status across this car's invoices. Считаем и отмечаем оплату ТОЛЬКО по
+  // учитываемым счетам: перевыставленный счёт — предыдущая версия того же ремонта, а
+  // не вторые деньги (см. invoices.js). Раньше отметка ставилась разом на все счета
+  // машины и «Оплачено» подтверждало сумму, которой не было.
+  const countedIds = useMemo(() => countedInvoiceIds(invoices), [invoices]);
+  const payInvoices = useMemo(() => invoices.filter((i) => countedIds.has(i.id)), [invoices, countedIds]);
+  const invAmount = payInvoices.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);
+  const hasInvoice = payInvoices.length > 0;
+  const allPaid = hasInvoice && payInvoices.every((i) => i.paid);
+  const payNote = useMemo(() => countedSummary(invoices), [invoices]);
   async function togglePaid() {
     const id = job?.id || job?.job_id;
     if (!hasInvoice || !id) return;
     const makePaid = !allPaid;
     setPayBusy(true);
-    try { await Promise.all(invoices.map((i) => api.orderDocuments.setPaid(i.id, makePaid))); } catch { alert('Не удалось сохранить отметку оплаты. Проверьте соединение и попробуйте ещё раз.'); }
+    try { await Promise.all(payInvoices.map((i) => api.orderDocuments.setPaid(i.id, makePaid))); } catch { alert('Не удалось сохранить отметку оплаты. Проверьте соединение и попробуйте ещё раз.'); }
     try { setInvoices(await api.orderDocuments.listByJob(id, 'invoice')); } catch { /* ignore */ }
     setPayBusy(false);
   }
@@ -1298,17 +1309,26 @@ export default function CarCard({
                 className={`cc-pay-chip${allPaid ? ' is-paid' : ''}`}
                 disabled={payBusy}
                 onClick={togglePaid}
-                title={allPaid ? 'Счёт оплачен — нажмите, чтобы отменить отметку' : 'Отметить счёт оплаченным'}
+                title={[allPaid ? 'Счёт оплачен — нажмите, чтобы отменить отметку' : 'Отметить счёт оплаченным', payNote].filter(Boolean).join('\n')}
               >
                 <Icon name={allPaid ? 'check' : 'wallet'} size={13} strokeWidth={allPaid ? 2 : 1.7} />
                 <span>{allPaid ? 'Оплачено' : 'Не оплачено'}</span>
                 {!allPaid && <span className="cc-pay-chip-amt">· {fmtMoney(invAmount)}</span>}
               </button>
             )}
+            {/* Счёта в деньгах нет. Обычно его просто не выставляли, но бывает и так,
+                что все выпущенные помечены «не учитывать» — тогда врать «не выставлен»
+                нельзя, иначе непонятно, куда делась сумма. */}
             {isEdit && !hasInvoice && (
-              <button className="cc-pay-chip is-none" onClick={openDocs} title="Счёт ещё не выставлен — оформить в «Документы»">
+              <button
+                className="cc-pay-chip is-none"
+                onClick={openDocs}
+                title={invoices.length
+                  ? 'Все выставленные счета помечены «не учитывать» — открыть «Документы»'
+                  : 'Счёт ещё не выставлен — оформить в «Документы»'}
+              >
                 <Icon name="file" size={13} />
-                <span>Счёт не выставлен</span>
+                <span>{invoices.length ? 'Счёт не учитывается' : 'Счёт не выставлен'}</span>
               </button>
             )}
             {isEdit && <span className="cc-status-pill" style={{ '--badge-color': STATUS_COLORS[overall] }}>{STATUS_LABELS[overall]}</span>}
@@ -1435,6 +1455,9 @@ export default function CarCard({
                         {allPaid ? 'Оплачено' : 'Не оплачено'}
                         {!onExtrasTab && Number(form.franchise) > 0 ? ` · франшиза ${fmtMoney(form.franchise)}` : ''}
                       </div>
+                      {/* По ремонту выпущено несколько счетов — прямо говорим, какой из них
+                          в этой сумме, чтобы «почему не сходится» не приходилось выяснять. */}
+                      {payNote && <div className="cc-ov-note">{payNote}</div>}
                     </>
                   ) : (
                     <div className="cc-ov-empty">Счёт не выставлен</div>
@@ -2185,13 +2208,26 @@ export default function CarCard({
                   <div className="cc-section-subhead">Документы</div>
                   {invoices.length ? (
                     <div className="cc-sum-list">
-                      {invoices.map((inv) => (
-                        <div className="cc-sum-row" key={inv.id} style={{ cursor: 'pointer' }} onClick={openDocs}>
-                          <span className="cc-sum-ico"><Icon name="file" size={15} /></span>
-                          <span className="cc-sum-name">Счёт{inv.number ? ` №${inv.number}` : ''}</span>
-                          <span className="cc-doc-pill" style={{ background: `color-mix(in srgb, var(${inv.paid ? '--color-success' : '--color-warning'}) 16%, transparent)`, color: `var(${inv.paid ? '--color-success' : '--color-warning'})` }}>{inv.paid ? 'Оплачен' : 'Не оплачен'}</span>
-                        </div>
-                      ))}
+                      {invoices.map((inv) => {
+                        // Учитывается ли счёт в деньгах. Заменённые не прячем — по ним
+                        // печатали бумагу, и они должны находиться, — но гасим и
+                        // подписываем, чтобы их не приняли за вторую сумму.
+                        const st = invoiceStatus(inv, countedIds);
+                        const off = st === 'replaced' || st === 'void';
+                        const c = inv.paid ? '--color-success' : '--color-warning';
+                        return (
+                          <div className="cc-sum-row" key={inv.id} style={{ cursor: 'pointer', opacity: off ? 0.5 : 1 }} onClick={openDocs} title={INVOICE_STATUS_HINT[st]}>
+                            <span className="cc-sum-ico"><Icon name="file" size={15} /></span>
+                            <span className="cc-sum-name">
+                              Счёт{inv.doc_number ? ` №${inv.doc_number}` : ''}
+                              {st !== 'main' && <span className="cc-doc-note"> · {INVOICE_STATUS_LABEL[st]}</span>}
+                            </span>
+                            {!off && (
+                              <span className="cc-doc-pill" style={{ background: `color-mix(in srgb, var(${c}) 16%, transparent)`, color: `var(${c})` }}>{inv.paid ? 'Оплачен' : 'Не оплачен'}</span>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                   ) : <div className="cc-hint" style={{ marginTop: 0 }}>Счёт не выставлен</div>}
                 </div>

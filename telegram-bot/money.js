@@ -61,6 +61,50 @@ function invoiceTs(inv = {}) {
   return num(inv.paid_at, 0) || num(inv.created_at, 0);
 }
 
+// ─── Какие счета участвуют в деньгах ───
+// Зеркало client/src/invoices.js (там же подробное объяснение). По одному потоку
+// биллинга — убыток или допродажи клиента — считается ОДИН счёт, последний
+// выставленный; более ранние это его предыдущие версии. Поле billing_role:
+// 'extra' — счёт на часть суммы (считается всегда), 'void' — не считать вовсе.
+function invoiceRole(inv) {
+  const r = inv && inv.billing_role;
+  return r === 'extra' || r === 'void' ? r : 'auto';
+}
+
+// Легаси-счета сохранялись без recipient, у обычной машины он 'all' — и то, и другое
+// означает основной комплект документов, то есть тот же поток, что 'insurance'.
+function invoiceStream(inv) {
+  const r = inv && inv.recipient;
+  return !r || r === 'all' ? 'insurance' : String(r);
+}
+
+// Момент выставления; у счёта без created_at берём дату документа.
+function issuedAt(inv) {
+  const t = num(inv && inv.created_at, 0);
+  if (t > 0) return t;
+  const d = Date.parse((inv && inv.doc_date) || '');
+  return Number.isFinite(d) ? d : 0;
+}
+
+function countedInvoices(invoices = []) {
+  const main = new Map(); // job_id|поток -> самый свежий обычный счёт
+  const ids = new Set();
+  for (const inv of invoices || []) {
+    if (!inv) continue;
+    const role = invoiceRole(inv);
+    if (role === 'void') continue;
+    if (role === 'extra' || !inv.job_id) { ids.add(inv.id); continue; }
+    const k = `${inv.job_id}|${invoiceStream(inv)}`;
+    const cur = main.get(k);
+    const later = !cur || (issuedAt(inv) === issuedAt(cur)
+      ? String(inv.id) > String(cur.id)
+      : issuedAt(inv) > issuedAt(cur));
+    if (later) main.set(k, inv);
+  }
+  for (const inv of main.values()) ids.add(inv.id);
+  return (invoices || []).filter((i) => i && ids.has(i.id));
+}
+
 // Подтверждённая предоплата по машине (только если отмечена как полученная).
 function confirmedPrepayment(job = {}) {
   return job.prepayment_paid ? num(job.prepayment_paid_amount, 0) : 0;
@@ -70,6 +114,7 @@ function confirmedPrepayment(job = {}) {
 // Предоплата сначала «съедается» оплаченными счетами (старые первыми),
 // остаток гасит долг по неоплаченным.
 function computeDebt(jobs, invoices) {
+  invoices = countedInvoices(invoices);
   const prepayLeft = new Map(jobs.map((j) => [j.id, confirmedPrepayment(j)]));
   const take = (jobId, total) => {
     const left = prepayLeft.get(jobId) || 0;
@@ -98,7 +143,7 @@ function computeDebt(jobs, invoices) {
 // Касса за период — как computeFinance.cash.
 function computeCashPeriod(invoices, period, now = dayjs()) {
   const range = periodRange(period, now);
-  const inP = invoices.filter((i) => inRange(invoiceTs(i), range));
+  const inP = countedInvoices(invoices).filter((i) => inRange(invoiceTs(i), range));
   const paidInP = inP.filter((i) => i.paid);
   return {
     billed: inP.reduce((s, i) => s + invoiceAmount(i), 0),
@@ -108,4 +153,4 @@ function computeCashPeriod(invoices, period, now = dayjs()) {
   };
 }
 
-module.exports = { periodRange, invoiceAmount, confirmedPrepayment, computeDebt, computeCashPeriod };
+module.exports = { periodRange, invoiceAmount, confirmedPrepayment, computeDebt, computeCashPeriod, countedInvoices };

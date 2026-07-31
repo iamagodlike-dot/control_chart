@@ -4,6 +4,7 @@ import { api } from '../api';
 import CarCard from './CarCard';
 import DocumentsModal from './DocumentsModal';
 import { jobOverallStatus } from './Gantt';
+import { countedInvoices } from '../invoices';
 import { PHASE, DEFAULT_APPROVAL_STATUS } from '../phase';
 
 // Self-contained «карточка автомобиля». Given only a jobId it loads the job (with
@@ -87,7 +88,7 @@ export default function CarDetailModal({ jobId, onClose, onChanged, now, isOwner
           // Warn before archiving a car that still has an unpaid счёт — otherwise
           // its debt lingers in Финансы with no car to open on the active screens.
           try {
-            const invs = await api.orderDocuments.listByJob(job.job_id, 'invoice');
+            const invs = countedInvoices(await api.orderDocuments.listByJob(job.job_id, 'invoice'));
             const unpaid = invs.filter((i) => !i.paid);
             if (unpaid.length) {
               const sum = unpaid.reduce((s, i) => s + (Number(i.totals?.total) || 0), 0);

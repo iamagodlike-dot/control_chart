@@ -19,7 +19,7 @@ function mainPhotoUrl(job) {
   const u = photos[photos.length - 1].url;
   return /^https?:\/\//i.test(u) ? u : `${config.photosBaseUrl}${u}`;
 }
-const { invoiceAmount, confirmedPrepayment, computeDebt, computeCashPeriod } = require('./money');
+const { invoiceAmount, confirmedPrepayment, computeDebt, computeCashPeriod, countedInvoices } = require('./money');
 const { computeCosting } = require('./costing');
 
 const MAX_LIST = 40; // ограничение, чтобы не упереться в лимит длины сообщения Telegram
@@ -36,7 +36,9 @@ function masterNameFor(stage, g) {
 }
 
 function paymentInfo(job) {
-  const invs = (job.documents || []).filter((d) => d.type === 'invoice');
+  // Только учитываемые счета: перевыставленный счёт — предыдущая версия того же
+  // ремонта, а не вторые деньги (см. money.countedInvoices).
+  const invs = countedInvoices((job.documents || []).filter((d) => d.type === 'invoice'));
   const prepay = confirmedPrepayment(job);
   if (!invs.length) return { hasInvoice: false, prepay };
   const billed = invs.reduce((s, i) => s + invoiceAmount(i), 0);
