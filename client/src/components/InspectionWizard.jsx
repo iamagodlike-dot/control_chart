@@ -318,6 +318,23 @@ export default function InspectionWizard({
     onClose();
   }
 
+  // Мастер НЕ закрывается кликом мимо окна — сознательно. Нативный выпадающий
+  // список (вид повреждения) рисует система поверх страницы, и закрытие этого
+  // списка на телефоне отдаёт странице «сквозной» клик по тому месту, где стоял
+  // палец: он приходился на подложку, дефектовка схлопывалась и открывалась
+  // заново с первого шага. Выйти можно крестиком или Escape — оба действия
+  // осознанные. Escape пропускаем, пока открыт просмотр фото: закрывать надо
+  // сначала его.
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Escape' || viewer) return;
+      flush();
+      onClose();
+    };
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  }, [flush, onClose, viewer]);
+
   // ─── Шаги ──────────────────────────────────────────────────────────────────
 
   const step = INSPECTION_STEPS[stepIdx];
@@ -329,8 +346,8 @@ export default function InspectionWizard({
   }[saveState];
 
   return (
-    <div className="modal-backdrop ins-backdrop" onClick={close}>
-      <div className="ins-sheet" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop ins-backdrop">
+      <div className="ins-sheet">
 
         <header className="ins-head">
           <button type="button" className="ins-x" onClick={close} aria-label="Закрыть">
