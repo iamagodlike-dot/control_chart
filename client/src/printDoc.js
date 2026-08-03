@@ -41,17 +41,23 @@ function computeScale(sheet) {
 }
 
 // Подгоняет масштаб под одну страницу и запускает печать.
+//
+// Листов в монтаже может быть НЕСКОЛЬКО (наряд-задание печатается по листу на
+// мастера) — меряем и масштабируем каждый отдельно: zoom наследуется только внутрь
+// своего элемента, поэтому одна общая переменная ужала бы лишь первый лист.
 export function printFitted(mountId = 'zn-print-mount') {
   const mount = document.getElementById(mountId);
-  const sheet = mount && mount.querySelector('.zn-sheet');
-  if (!sheet) { window.print(); return; }
+  const sheets = mount ? [...mount.querySelectorAll('.zn-sheet')] : [];
+  if (!sheets.length) { window.print(); return; }
 
-  let scale;
-  try { scale = computeScale(sheet); } catch { scale = 1; }
-  sheet.style.setProperty('--print-scale', String(scale));
+  for (const sheet of sheets) {
+    let scale;
+    try { scale = computeScale(sheet); } catch { scale = 1; }
+    sheet.style.setProperty('--print-scale', String(scale));
+  }
 
   const cleanup = () => {
-    sheet.style.removeProperty('--print-scale');
+    for (const sheet of sheets) sheet.style.removeProperty('--print-scale');
     window.removeEventListener('afterprint', cleanup);
   };
   window.addEventListener('afterprint', cleanup);

@@ -8,10 +8,13 @@ import { StrictMode, useEffect, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import { api } from '../api';
 import DocumentsModal from '../components/DocumentsModal';
+import { buildInvoiceSnapshot } from '../orderDoc';
 import '../App.css';
 
 // Stub the Firestore-backed calls the editor makes so the demo never needs auth.
-api.orderDocuments.listByJob = async () => [];
+// Тип фильтруем как настоящий api.orderDocuments.listByJob — иначе счета попали бы
+// в «Ранее выданные» у заказ-наряда.
+api.orderDocuments.listByJob = async (_jobId, type) => (type ? DEMO_DOCS.filter((d) => d.type === type) : DEMO_DOCS);
 api.orderDocuments.get = async () => storedDoc;
 api.orderDocuments.create = async (doc) => { storedDoc = { ...doc, id: 'demo-doc', doc_number: doc.doc_number || 'ЗН-0001' }; return storedDoc; };
 api.orderDocuments.update = async (id, data) => { storedDoc = { ...(storedDoc || {}), ...data }; return storedDoc; };
@@ -79,6 +82,16 @@ const COMPANY = {
   },
 };
 
+// Ранее выданные счета: по страховому убытку выпущено два (перевыставили с правкой)
+// плюс отдельный счёт по допродажам клиента. На них видно, какой счёт идёт в деньги,
+// а какой стал предыдущей версией (см. invoices.js). Собираем настоящим снапшотом —
+// иначе редактор откроет документ без реквизитов.
+const DEMO_DOCS = [
+  { id: 'inv-new', doc_number: 'СЧ-0042', doc_date: '2026-07-24', created_at: 2000, recipient: 'insurance' },
+  { id: 'inv-old', doc_number: 'СЧ-0037', doc_date: '2026-07-18', created_at: 1000, recipient: 'insurance', paid: true, paid_at: 1500 },
+  { id: 'inv-client', doc_number: 'СЧ-0041', doc_date: '2026-07-22', created_at: 1800, recipient: 'client' },
+].map((d) => ({ ...buildInvoiceSnapshot(JOB, COMPANY, null, d.recipient), ...d }));
+
 function Demo() {
   // Карточка машины живёт в стейте демо: так видно, ЧТО кнопка «Обновить карточку
   // машины» сделала с позициями (переименовала или добавила вторую).
@@ -88,6 +101,9 @@ function Demo() {
     <>
       <div style={{ position: 'fixed', right: 8, bottom: 8, zIndex: 9999, maxWidth: 360, maxHeight: '42vh', overflow: 'auto', padding: '10px 12px', borderRadius: 10, background: 'var(--panel)', border: '1px solid var(--line2)', font: "11px/1.5 'JetBrains Mono',monospace", color: 'var(--text2)' }}>
         <b style={{ color: 'var(--brand)' }}>Карточка машины (демо)</b>
+        {/* Скидка — реквизит дела, а не строка таблицы; без неё на демо не видно,
+            донесла ли кнопка правку скидки до карточки. */}
+        <div data-testid="card-discount" style={{ marginBottom: 6 }}>скидка · {job.discount || 0}</div>
         <div data-testid="card-parts">
           {(job.parts || []).map((p) => <div key={p.id}>{p.id} · {p.code || '—'} · {p.name} · {p.qty} × {p.price}</div>)}
         </div>

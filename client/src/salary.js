@@ -79,35 +79,10 @@ export function masterPaySummary(m) {
   return `сдельная · ${adv}`;
 }
 
-// Строки редактора «Оплата мастерам за эту машину» (окно с карточки авто).
-// Единый источник суммы «за машину» — job.costing.labor (его же читают финансы и
-// себестоимость). Показываем ОБЪЕДИНЕНИЕ: уже введённые строки оплаты + всех
-// мастеров, назначенных на машину через этапы (чтобы владелец видел, кому платить,
-// и просто вписал суммы). Каждая строка: { id, master_id, name, amount }.
-export function buildPayRows(job = {}, masters = []) {
-  const mById = new Map((masters || []).map((m) => [m.id, m]));
-  const rows = [];
-  const seen = new Set();
-  (job?.costing?.labor || []).forEach((l, i) => {
-    const mid = l.master_id || '';
-    rows.push({ id: l.id || `lab-${i}`, master_id: mid, name: l.name || mById.get(mid)?.name || '', amount: money(l.amount, 0) });
-    if (mid) seen.add(mid);
-  });
-  (job?.stages || []).forEach((s) => {
-    const mid = s?.master_id;
-    if (!mid || seen.has(mid)) return;
-    seen.add(mid);
-    rows.push({ id: `st-${mid}`, master_id: mid, name: mById.get(mid)?.name || '', amount: 0 });
-  });
-  return rows;
-}
-
-// Сумма к выплате мастерам за машину по строкам редактора.
-export const payRowsTotal = (rows = []) => (rows || []).reduce((s, r) => s + money(r?.amount, 0), 0);
-
 // Кабинет мастера «Мой заработок». Считаем из того же живого gantt-фида, что и
-// «Мои машины»: jobs (с costing.labor — суммы за машину) + их этапы (статус работ
-// мастера). В UI показываем ТОЛЬКО деньги этого мастера — маржа/себестоимость не
+// «Мои машины»: jobs (с нарядом costing.works — реальные расценки по работам, или
+// строкой оплаты costing.labor у старых машин) + их этапы (статус работ мастера).
+// В UI показываем ТОЛЬКО деньги этого мастера — маржа/себестоимость не
 // раскрывается. Сумма «за машину» «созревает» (ready), когда мастер закрыл СВОИ
 // этапы по машине (все done) — как договорились.
 //   master — запись из справочника (pay_type/advance/salary; id);
@@ -118,9 +93,23 @@ export function buildMasterEarnings(master, { jobs = [] } = {}) {
   if (masterId) {
     for (const job of (jobs || [])) {
       const hisStages = (job.stages || []).filter((s) => s?.master_id === masterId);
+      // Если по машине расписан наряд мастерам (costing.works), сумма = ЕГО работы,
+      // и мастеру показываем их перечень. Старые машины (наряда нет) считаются
+      // по-прежнему — строкой оплаты costing.labor.
+      const allWorks = Array.isArray(job.costing?.works) ? job.costing.works : null;
+      const hisWorks = (allWorks || []).filter((w) => w?.master_id === masterId);
       const laborRow = (job.costing?.labor || []).find((l) => l?.master_id === masterId);
-      if (!hisStages.length && !laborRow) continue; // машина не этого мастера
-      const amount = money(laborRow?.amount, 0);
+      if (!hisStages.length && !hisWorks.length && !laborRow) continue; // машина не этого мастера
+      // Сумма считается ПОСТРОЧНО и округляется здесь же — ровно как в
+      // masterOrder.workSum, иначе экран мастера разъедется с наряд-заданием,
+      // которое он подписал, и с себестоимостью.
+      const works = hisWorks.map((w) => {
+        const qty = toNum(w.qty, 1);
+        return { name: w.name || '', qty, sum: money(qty * toNum(w.price, 0), 0) };
+      });
+      const amount = allWorks
+        ? works.reduce((s, w) => s + w.sum, 0)
+        : money(laborRow?.amount, 0);
       const ready = hisStages.length > 0 && hisStages.every((s) => s.status === 'done');
       cards.push({
         jobId: job.id || job.job_id,
@@ -131,6 +120,7 @@ export function buildMasterEarnings(master, { jobs = [] } = {}) {
         amount,
         hasAmount: amount > 0,
         ready,
+        works,
       });
     }
   }

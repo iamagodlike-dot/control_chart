@@ -3,14 +3,8 @@ import assert from 'node:assert/strict';
 import {
   DEFAULT_ADVANCE, DEFAULT_PAY_TYPE, payType, isFixed, payTypeLabel, money,
   masterAdvance, masterSalary, normalizeMasterPay, masterPayForm, masterPaySummary,
-  buildPayRows, payRowsTotal, buildMasterEarnings, buildPayroll, payrollWindow, salaryExpenseTx,
+  buildMasterEarnings, buildPayroll, payrollWindow, salaryExpenseTx,
 } from './salary.js';
-
-const MASTERS = [
-  { id: 'm1', name: 'Иванов' },
-  { id: 'm2', name: 'Петров' },
-  { id: 'm3', name: 'Сидоров' },
-];
 
 test('payType: откат на сдельную для старых/битых записей', () => {
   assert.equal(payType({ pay_type: 'fixed' }), 'fixed');
@@ -75,37 +69,6 @@ test('masterPaySummary: человекочитаемая подпись', () => 
   assert.equal(sp(masterPaySummary({ pay_type: 'piece', advance: 40000 })), 'сдельная · аванс 40 000');
   assert.equal(sp(masterPaySummary({ pay_type: 'fixed', advance: 40000, salary: 60000 })), 'оклад 60 000 · аванс 40 000');
   assert.equal(payTypeLabel('fixed'), 'Оклад');
-});
-
-test('buildPayRows: объединяет введённую оплату и назначенных мастеров', () => {
-  const job = {
-    costing: { labor: [{ id: 'l1', master_id: 'm1', name: 'Иванов', amount: 25000 }] },
-    stages: [
-      { master_id: 'm1' },            // уже есть в labor — не дублируем
-      { master_id: 'm2' },            // назначен, оплаты ещё нет → добавить с 0
-      { master_id: 'm2' },            // тот же мастер второй раз → один раз
-      { master_id: '' },              // без мастера — пропустить
-    ],
-  };
-  const rows = buildPayRows(job, MASTERS);
-  assert.equal(rows.length, 2);
-  assert.deepEqual(rows[0], { id: 'l1', master_id: 'm1', name: 'Иванов', amount: 25000 });
-  assert.deepEqual(rows[1], { id: 'st-m2', master_id: 'm2', name: 'Петров', amount: 0 });
-  // Все id уникальны (React keys)
-  assert.equal(new Set(rows.map((r) => r.id)).size, rows.length);
-});
-
-test('buildPayRows: имя подтягивается из справочника, пустой job → []', () => {
-  const rows = buildPayRows({ stages: [{ master_id: 'm3' }] }, MASTERS);
-  assert.deepEqual(rows, [{ id: 'st-m3', master_id: 'm3', name: 'Сидоров', amount: 0 }]);
-  assert.deepEqual(buildPayRows({}, MASTERS), []);
-  assert.deepEqual(buildPayRows(null, null), []);
-});
-
-test('payRowsTotal: сумма, мусор игнорируется', () => {
-  assert.equal(payRowsTotal([{ amount: 25000 }, { amount: '18000' }, { amount: '' }, { amount: -5 }]), 43000);
-  assert.equal(payRowsTotal([]), 0);
-  assert.equal(payRowsTotal(null), 0);
 });
 
 // jobs как из buildGantt: с costing.labor (суммы) и stages (статус работ мастера).
@@ -203,4 +166,53 @@ test('salaryExpenseTx: только оклады → расход P&L, сдел�
   assert.equal(tx[0].date, 111);                     // дата = created_at выплаты
   assert.deepEqual(salaryExpenseTx([]), []);
   assert.deepEqual(salaryExpenseTx(null), []);
+});
+
+// ── Наряд мастерам: сумма мастера из его работ ─────────────────────────────
+const WORK_JOBS = [
+  { // наряд расписан: m1 делает две работы, m2 одну, одна ничья
+    id: 'w1', car_model: 'Kia Rio', plate_number: 'A111AA', order_number: '210', client_name: 'Орлов',
+    costing: {
+      works: [
+        { id: 'a', name: 'Снятие бампера', qty: 1, price: 3000, master_id: 'm1', master_name: 'Иванов' },
+        { id: 'b', name: 'Окраска', qty: 2, price: 2500, master_id: 'm1', master_name: 'Иванов' },
+        { id: 'c', name: 'Полировка', qty: 1, price: 4000, master_id: 'm2', master_name: 'Петров' },
+        { id: 'd', name: 'Сборка', qty: 1, price: 7000, master_id: '', master_name: '' },
+      ],
+      labor: [{ master_id: 'm1', name: 'Иванов', amount: 8000 }, { master_id: 'm2', name: 'Петров', amount: 4000 }],
+    },
+    stages: [{ master_id: 'm1', status: 'done' }, { master_id: 'm2', status: 'in_progress' }],
+  },
+];
+
+test('buildMasterEarnings: сумма мастера = его работы наряда + перечень', () => {
+  const e = buildMasterEarnings({ id: 'm1', name: 'Иванов' }, { jobs: WORK_JOBS });
+  assert.equal(e.cards.length, 1);
+  const c = e.cards[0];
+  assert.equal(c.amount, 8000);                    // 3000 + 2×2500, чужие работы не в счёт
+  assert.equal(c.ready, true);                     // свои этапы закрыты
+  assert.deepEqual(c.works, [
+    { name: 'Снятие бампера', qty: 1, sum: 3000 },
+    { name: 'Окраска', qty: 2, sum: 5000 },
+  ]);
+  assert.equal(e.totals.ready, 8000);
+  // Нераспределённая работа не досталась никому
+  const e2 = buildMasterEarnings({ id: 'm2', name: 'Петров' }, { jobs: WORK_JOBS });
+  assert.equal(e2.cards[0].amount, 4000);
+  assert.equal(e2.cards[0].ready, false);          // этап ещё в работе
+  assert.equal(e2.totals.inProgress, 4000);
+});
+
+test('buildMasterEarnings: старые машины без наряда считаются по строке оплаты', () => {
+  const e = buildMasterEarnings({ id: 'm1', name: 'Иванов' }, { jobs: EARN_JOBS });
+  assert.equal(e.cards.find((c) => c.jobId === 'j1').amount, 25000);
+  assert.deepEqual(e.cards.find((c) => c.jobId === 'j1').works, []);
+});
+
+test('buildPayroll: считает по наряду мастерам', () => {
+  const rows = buildPayroll([{ id: 'm1', name: 'Иванов' }, { id: 'm2', name: 'Петров' }], WORK_JOBS, [], Date.UTC(2026, 7, 3)).rows;
+  const m1 = rows.find((r) => r.masterId === 'm1');
+  assert.equal(m1.earnedReady, 8000);
+  assert.equal(m1.owed, 8000);
+  assert.equal(rows.find((r) => r.masterId === 'm2').inProgress, 4000);
 });

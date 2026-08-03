@@ -1,5 +1,5 @@
 import { numberToWordsRu } from './rubleWords.js';
-import { itemsForStream, orderMatchesStream, claimOf, streamOf } from './billing.js';
+import { itemsForStream, orderMatchesStream, claimOf, streamOf, STREAM_ALL, STREAM_CLIENT, STREAM_INSURANCE } from './billing.js';
 
 // Pure helpers for the заказ-наряд document. No React, no Firestore here.
 // The whole point: buildOrderSnapshot() makes a fully self-contained COPY of
@@ -17,6 +17,15 @@ function num(v, d = 0) {
 
 export function money(v) {
   return `${(Number(v) || 0).toLocaleString('ru-RU')} ₽`;
+}
+
+// Пробег у машины ОДИН — и в заказ-наряде, и в акте при приёме, и при выдаче:
+// между приёмом и выдачей она не ездит. Основное место хранения — карточка
+// (job.mileage); запасные — экран «Приёмка авто» (машина заезжала через него, а в
+// карточку пробег ещё не перенесли) и старое поле «пробег при выдаче».
+export function jobMileage(job = {}) {
+  const intake = job && typeof job.intake === 'object' && job.intake ? job.intake : null;
+  return String(job.mileage || (intake && intake.mileage) || job.mileage_out || '').trim();
 }
 
 export function lineTotal(item) {
@@ -217,6 +226,28 @@ export function planDocItemsToCar(job = {}, snapshot = {}, recipient = 'all', ne
   return { services, partOps, links, summary: { services: svcSummary, parts: partSummary } };
 }
 
+// Скидка документа → в карточку. Отдельно от позиций, потому что скидка — не строка
+// таблицы, а РЕКВИЗИТ УБЫТКА (своя у каждого дела, см. discountFor): писать её надо не
+// в job.services, а в само дело. Раньше «Обновить карточку машины» её вообще не несла —
+// правишь скидку в заказ-наряде, а в карточке (и, значит, в P&L и марже запчастей,
+// которые читают job.discount) остаётся прежняя.
+//
+// Считаем ЭФФЕКТИВНУЮ сумму В РУБЛЯХ (computeOrderTotals): в документе скидку можно
+// задать процентом, а карточка и costing знают только рубли.
+//
+// Возвращает null, когда писать нечего: значение не изменилось ИЛИ это документ
+// допродаж (у клиентского потока скидки нет и не было — иначе кнопка в нём обнуляла бы
+// скидку страхового дела). claimId — В КАКОЕ дело писать, исполняет вызывающий.
+export function planDocDiscountToCar(job = {}, snapshot = {}, recipient = STREAM_ALL) {
+  if (recipient === STREAM_CLIENT) return null;
+  const to = computeOrderTotals(snapshot).discount;
+  const from = discountFor(job, recipient);
+  if (to === from) return null;
+  // 'all' (обычная машина) и 'insurance' — это одно и то же дело: убыток №1 (claimsOf
+  // держит его первым, и его реквизиты зеркалятся в плоские поля машины).
+  return { claimId: recipient === STREAM_ALL ? STREAM_INSURANCE : recipient, from, to };
+}
+
 // Текст подтверждения «Обновить карточку машины»: ЧТО именно произойдёт. Раньше здесь
 // стояло общее «добавятся и обновят совпадающие» — по нему нельзя было понять, почему
 // в карточке стало на позицию больше, и это и была главная путаница. Теперь считаем
@@ -237,6 +268,10 @@ export function describeDocToCarPlan(plan = {}, opts = {}) {
   };
   group('Работы', s);
   group('Запчасти', p);
+  // Скидку показываем «было → станет»: она перезаписывает карточку целиком (в отличие
+  // от позиций, которые только добавляются и обновляются), в том числе обнуляет —
+  // и человек должен увидеть это ДО нажатия «ОК», а не в P&L через неделю.
+  if (opts.discount) lines.push(`• Скидка: ${money(opts.discount.from)} → ${money(opts.discount.to)}.`);
   const leftover = [...s.leftover, ...p.leftover];
   if (leftover.length) {
     lines.push('');
@@ -257,7 +292,9 @@ export function describeDocToCarPlan(plan = {}, opts = {}) {
 // чистое форматирование — чтобы покрыть тестами без обращения к базе.
 // `invoice` (СЧ) — счёт КЛИЕНТУ (доход). `supplier` (СП) — счёт ПОСТАВЩИКА на
 // запчасти, который оплачивает учредитель (расход). Разные документы, не путать.
-export const DOC_PREFIX = { order: 'ЗН', act: 'АКТ', invoice: 'СЧ', handover: 'ПП', purchase: 'ЗАК', supplier: 'СП' };
+// `intake` (ПР) — акт ПРиёмки ТС при заезде (экран «Приёмка авто»); не путать с
+// `handover` (ПП) — актом приёма-передачи при ВЫДАЧЕ машины клиенту.
+export const DOC_PREFIX = { order: 'ЗН', act: 'АКТ', invoice: 'СЧ', handover: 'ПП', purchase: 'ЗАК', supplier: 'СП', intake: 'ПР' };
 
 export function pad4(n) {
   return String(Math.max(0, Math.floor(Number(n) || 0))).padStart(4, '0');
@@ -406,7 +443,7 @@ export function buildOrderSnapshot(job = {}, company = {}, recipient = 'all') {
       plate_number: job.plate_number || '',
       vin: job.vin || '',
       year: job.year || '',
-      mileage: job.mileage || '',
+      mileage: jobMileage(job),
     },
     reason: job.reason || '',
     services: srcServices.map((s) => ({
@@ -530,7 +567,7 @@ function baseHead(job, company, type, recipient = 'all') {
     customer: { name: job.client_name || '', phone: job.client_phone || '' },
     vehicle: {
       car_model: job.car_model || '', plate_number: job.plate_number || '',
-      vin: job.vin || '', year: job.year || '', mileage: job.mileage || '',
+      vin: job.vin || '', year: job.year || '', mileage: jobMileage(job),
     },
   };
 }
@@ -634,12 +671,15 @@ export function buildInvoiceSnapshot(job = {}, company = {}, seed = null, recipi
 // актов поля direction нет — DocSheet трактует их как выдачу (прежнее поведение).
 export function buildHandoverSnapshot(job = {}, company = {}, recipient = 'all', direction = 'intake') {
   const isIntake = direction !== 'issue';
+  // «При приёме» и «при выдаче» — одно и то же число (см. jobMileage). В редакторе
+  // эти два поля тоже связаны: правка любого меняет оба.
+  const mileage = jobMileage(job);
   return {
     ...baseHead(job, company, 'handover', recipient),
     direction: isIntake ? 'intake' : 'issue',
     condition: {
-      mileage_in: job.mileage || '', equipment: job.equipment || '', condition_in: job.condition_in || '',
-      mileage_out: job.mileage_out || '', condition_out: job.condition_out || '',
+      mileage_in: mileage, equipment: job.equipment || '', condition_in: job.condition_in || '',
+      mileage_out: mileage, condition_out: job.condition_out || '',
     },
     handover_text: isIntake ? DEFAULT_INTAKE_TEXT : DEFAULT_HANDOVER_TEXT,
     show_handover_text: true,

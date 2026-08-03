@@ -1,0 +1,102 @@
+/* ===== Наряд мастерам: экран распределения работ + печатный лист ===== */
+
+/* Печать: лист на каждого мастера, каждый со своей страницы. В orderDoc.css
+   разрывов между листами нет (там документ всегда один), поэтому правило своё.
+   Масштаб (--print-scale) printDoc.printFitted ставит каждому листу отдельно. */
+@media print {
+  #zn-print-mount .zn-sheet + .zn-sheet { break-before: page; page-break-before: always; }
+}
+
+.modal.mo-modal { width: min(1040px, calc(100vw - 40px)); max-height: 92vh; padding: 0; gap: 0; overflow: hidden; }
+
+.mo-hint b { color: var(--color-text); }
+
+/* Предупреждение: у машины уже есть оплата мастерам, заданная старым окном. */
+.mo-legacy {
+  margin-bottom: 10px; padding: 10px 14px; border-radius: 10px; font-size: 13px; line-height: 1.5;
+  background: var(--color-warning-bg); border: 1px solid var(--color-warning); color: var(--color-warning-strong);
+}
+.mo-legacy b { white-space: nowrap; }
+
+/* Шапка таблицы работ и строки — общий грид, чтобы колонки совпадали. */
+.mo-items { display: flex; flex-direction: column; gap: 6px; }
+.mo-head,
+.mo-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) 70px 120px minmax(150px, 190px) 96px 34px;
+  gap: 10px;
+  align-items: center;
+}
+.mo-head {
+  font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--color-text-muted); padding: 0 4px 4px;
+}
+.mo-row { padding: 6px 4px; border-radius: var(--radius-md); }
+.mo-row:hover { background: var(--color-surface-alt); }
+.mo-row.is-extra { background: color-mix(in srgb, var(--color-primary) 7%, transparent); }
+
+.mo-in {
+  width: 100%; padding: 6px 8px; font-size: 13px;
+  background: var(--color-surface); border: 1px solid var(--color-border);
+  border-radius: 6px; color: var(--color-text);
+}
+.mo-in.is-num { text-align: right; font-variant-numeric: tabular-nums; }
+.mo-row select.mo-in { padding: 6px 6px; }
+
+/* Цена страховой — справка, не редактируется. */
+.mo-ref { font-size: 12px; color: var(--color-text-muted); text-align: right; font-variant-numeric: tabular-nums; }
+.mo-ref.is-diff { color: var(--color-warning); }
+
+.mo-cell-label { display: none; }
+.mo-del { justify-self: end; }
+
+.mo-add { align-self: flex-start; margin-top: 4px; }
+
+/* Подвал: итог и разбивка по мастерам. */
+.mo-summary {
+  margin-top: 10px; padding: 14px 16px; border-radius: 12px;
+  background: var(--color-surface-alt); border: 1px solid var(--color-border);
+  display: flex; flex-direction: column; gap: 10px;
+}
+.mo-summary-row { display: flex; align-items: baseline; justify-content: space-between; font-size: 15px; }
+.mo-summary-val { font-weight: 700; font-variant-numeric: tabular-nums; }
+.mo-chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.mo-chip {
+  display: inline-flex; align-items: baseline; gap: 6px;
+  padding: 5px 10px; border-radius: 999px; font-size: 12px;
+  background: var(--color-surface); border: 1px solid var(--color-border); color: var(--color-text);
+}
+.mo-chip b { font-variant-numeric: tabular-nums; }
+.mo-chip small { color: var(--color-text-muted); }
+.mo-chip.is-warn { background: var(--color-warning-bg); border-color: var(--color-warning); color: var(--color-warning-strong); }
+.mo-chip.is-warn small { color: inherit; }
+
+/* Предпросмотр листа перед печатью. `flex: 0 0 auto` обязателен: тело окна —
+   flex-колонка, и без него блок схлопывается в полоску, а не листается сам. */
+.mo-preview {
+  flex: 0 0 auto;
+  margin-top: 12px; padding: 12px; border-radius: 12px;
+  background: var(--color-surface-alt); border: 1px solid var(--color-border);
+  overflow: auto; max-height: 60vh;
+}
+
+/* ── Телефон: строки-карточки вместо колонок ─────────────────────────── */
+@media (max-width: 640px) {
+  .modal.mo-modal { width: calc(100vw - 16px); }
+  .mo-head { display: none; }
+  .mo-row {
+    grid-template-columns: 1fr 1fr;
+    gap: 10px 12px;
+    position: relative;
+    padding: 12px 44px 12px 12px;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-alt);
+  }
+  .mo-row .mo-in { background: var(--color-surface); }
+  .mo-cell { display: block; }
+  .mo-cell-name, .mo-cell-master { grid-column: 1 / -1; }
+  .mo-cell-label { display: block; font-size: 11px; font-weight: 600; color: var(--color-text-muted); margin-bottom: 3px; }
+  .mo-ref { text-align: left; }
+  .mo-del { position: absolute; top: 10px; right: 10px; }
+}

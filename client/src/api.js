@@ -817,6 +817,23 @@ export const api = {
       await updateDoc(doc(jobsCol, jobId), { photos: arrayUnion(clean) });
       return clean;
     },
+
+    // Выгрузка для оценщика → в журнал машины (job.export_log): кто, когда и
+    // сколько фото скачал архивом. Нужно для двух вещей: видеть в карточке, что
+    // просчёт уже готовили, и не дёргать оценщика дважды.
+    //
+    // arrayUnion, как у фото: не даёт двум людям затереть журнал друг друга и
+    // переживает офлайн (запись уйдёт из локальной очереди сама).
+    async logExport(jobId, entry) {
+      const clean = stripUndefined({
+        id: `x_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 7)}`,
+        at: Date.now(),
+        by: auth.currentUser?.email || null,
+        ...entry,
+      });
+      await updateDoc(doc(jobsCol, jobId), { export_log: arrayUnion(clean) });
+      return clean;
+    },
     // ─── Дефектовка (job.intake) ────────────────────────────────────────────
     // Экран мастера-приёмщика: запись машины на дефектовку и сам осмотр. Данные
     // живут в самой машине, а не в отдельной коллекции: экран и так подписан на

@@ -4,7 +4,7 @@
 // (used_orig / analog_orig) and «Новое» (new) must produce NO lines.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { buildPartsConsentText, buildOrderSnapshot, buildActSnapshot, computeOrderTotals, formatDocNumber, pad4, DOC_PREFIX, itemsForRecipient, orderMatchesRecipient, pickSeedItems, buildInvoiceSnapshot, planDocItemsToCar, describeDocToCarPlan, buildPaymentQrString } from './orderDoc.js';
+import { buildPartsConsentText, buildOrderSnapshot, buildHandoverSnapshot, jobMileage, buildActSnapshot, computeOrderTotals, formatDocNumber, pad4, DOC_PREFIX, itemsForRecipient, orderMatchesRecipient, pickSeedItems, buildInvoiceSnapshot, planDocItemsToCar, describeDocToCarPlan, planDocDiscountToCar, buildPaymentQrString, money } from './orderDoc.js';
 import { streamOf } from './billing.js';
 
 test('Б/У → строка о согласии на установку Б/У с артикулом', () => {
@@ -175,8 +175,16 @@ test('formatDocNumber — ПРЕФИКС-ГОД-NNNN по типам докум�
 
 // СЧ — счёт КЛИЕНТУ (доход), СП — счёт ПОСТАВЩИКА на запчасти (расход). Разные
 // документы со своими годовыми очередями — не путать.
-test('DOC_PREFIX — шесть типов: заказ-наряд, акт, счёт, приём-передача, заявка на закупку, счёт поставщика', () => {
-  assert.deepEqual(DOC_PREFIX, { order: 'ЗН', act: 'АКТ', invoice: 'СЧ', handover: 'ПП', purchase: 'ЗАК', supplier: 'СП' });
+// ПП — акт приёма-передачи при ВЫДАЧЕ машины, ПР — акт приёмки при ЗАЕЗДЕ
+// (экран «Приёмка авто»). Тоже разные документы с разными очередями.
+test('DOC_PREFIX — семь типов: ЗН, акт, счёт, приём-передача, заявка на закупку, счёт поставщика, приёмка ТС', () => {
+  assert.deepEqual(DOC_PREFIX, {
+    order: 'ЗН', act: 'АКТ', invoice: 'СЧ', handover: 'ПП', purchase: 'ЗАК', supplier: 'СП', intake: 'ПР',
+  });
+});
+
+test('номер акта приёмки нумеруется своей годовой очередью', () => {
+  assert.equal(formatDocNumber('intake', 2026, 7), 'ПР-2026-0007');
 });
 
 // ===== Разделение позиций: страховая ↔ допродажи клиента =====
@@ -623,4 +631,77 @@ test('planDocItemsToCar (all): наличная машина не получае
   const { services, partOps } = planDocItemsToCar(job, snapshot, 'all', seqId);
   assert.equal(services[0].payer, undefined, 'метки нет');
   assert.equal(partOps[0].payer, undefined, 'метки нет');
+});
+
+// ===== planDocDiscountToCar: скидка из документа → в карточку =====
+// Баг: правишь скидку в заказ-наряде, жмёшь «Обновить карточку машины» — позиции
+// переезжают, а скидка в карточке остаётся прежней (и P&L считает по старой).
+const discSnap = (fields) => ({ services: [{ name: 'Окраска', qty: 1, price: 100000 }], parts: [], ...fields });
+
+test('planDocDiscountToCar (all): новая скидка едет в убыток №1', () => {
+  const plan = planDocDiscountToCar({ discount: 5000 }, discSnap({ discount: 8000 }), 'all');
+  assert.deepEqual(plan, { claimId: 'insurance', from: 5000, to: 8000 });
+});
+
+test('planDocDiscountToCar: скидка процентом переводится в рубли', () => {
+  const plan = planDocDiscountToCar({ discount: 0 }, discSnap({ discount_mode: 'pct', discount_pct: 10 }), 'all');
+  assert.equal(plan.to, 10000); // 10% от 100 000
+});
+
+test('planDocDiscountToCar: скидку убрали в документе — обнуляем и в карточке', () => {
+  const plan = planDocDiscountToCar({ discount: 5000 }, discSnap({ discount: 0 }), 'all');
+  assert.deepEqual(plan, { claimId: 'insurance', from: 5000, to: 0 });
+});
+
+test('planDocDiscountToCar: значение не изменилось — писать нечего', () => {
+  assert.equal(planDocDiscountToCar({ discount: 5000 }, discSnap({ discount: 5000 }), 'all'), null);
+});
+
+test('planDocDiscountToCar (client): у допродаж скидки нет — документ клиента её не трогает', () => {
+  assert.equal(planDocDiscountToCar({ discount: 5000 }, discSnap({ discount: 0 }), 'client'), null);
+});
+
+test('planDocDiscountToCar (cl_x7): скидка пишется в СВОЁ дело, не в убыток №1', () => {
+  const job = {
+    claims: [
+      { id: 'insurance', discount: 1000 },
+      { id: 'cl_x7', discount: 500 },
+    ],
+  };
+  const plan = planDocDiscountToCar(job, discSnap({ discount: 700 }), 'cl_x7');
+  assert.deepEqual(plan, { claimId: 'cl_x7', from: 500, to: 700 });
+  // Убыток №1 при этом остаётся при своей скидке.
+  assert.equal(planDocDiscountToCar(job, discSnap({ discount: 1000 }), 'insurance'), null);
+});
+
+test('describeDocToCarPlan: скидка показана «было → станет» ДО подтверждения', () => {
+  // money() зовёт toLocaleString('ru-RU') — разделитель разрядов там неразрывный
+  // пробел, поэтому строку собираем тем же money, а не руками.
+  const txt = describeDocToCarPlan({}, { discount: { from: 5000, to: 8000 } });
+  assert.ok(txt.includes(`• Скидка: ${money(5000)} → ${money(8000)}.`), txt);
+});
+
+// ===== Пробег: одно число на машину =====
+// Между приёмом и выдачей машина не ездит, поэтому в акте приёма-передачи обе
+// клетки — «при приёме» и «при выдаче» — печатают один и тот же пробег.
+test('акт приёма-передачи: пробег при приёме = пробег при выдаче', () => {
+  const snap = buildHandoverSnapshot({ mileage: '84000' }, {}, 'all', 'issue');
+  assert.equal(snap.condition.mileage_in, '84000');
+  assert.equal(snap.condition.mileage_out, '84000');
+});
+
+test('пробег берётся из приёмки, если в карточку его ещё не перенесли', () => {
+  const job = { intake: { mileage: '124500' } };
+  assert.equal(jobMileage(job), '124500');
+  const snap = buildHandoverSnapshot(job, {}, 'all', 'issue');
+  assert.equal(snap.condition.mileage_in, '124500');
+  assert.equal(snap.condition.mileage_out, '124500');
+  // И в заказ-наряд — чтобы во всех документах стояло одно число.
+  assert.equal(buildOrderSnapshot(job).vehicle.mileage, '124500');
+});
+
+test('карточка сильнее приёмки и старого «пробега при выдаче»', () => {
+  assert.equal(jobMileage({ mileage: '90000', intake: { mileage: '84000' }, mileage_out: '91000' }), '90000');
+  assert.equal(jobMileage({ mileage_out: '91000' }), '91000');
+  assert.equal(jobMileage({}), '');
 });

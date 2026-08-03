@@ -40,6 +40,14 @@
   margin:1.6mm 0 .8mm; padding-bottom:.4mm; border-bottom:0.6pt solid var(--ink); }
 .zn-textblock{ font-size:8pt; line-height:1.25; padding:.3mm 0 0; white-space:pre-wrap; }
 
+/* Комплектность / документы в акте приёмки ТС: плотный ряд отметок «есть-нет»
+   вместо таблицы на 10 строк — иначе лист не влезает в одну страницу.
+   Отсутствующие позиции печатаем тоже: «запаски не было» защищает сервис так же,
+   как «запаска была», поэтому вычёркиваем, а не прячем. */
+.zn-checks{ display:flex; flex-wrap:wrap; gap:.5mm 4mm; font-size:8pt; line-height:1.25; padding:.3mm 0 0; }
+.zn-checks > span{ white-space:nowrap; }
+.zn-checks .is-no{ color:#666; text-decoration:line-through; }
+
 .zn-table{ width:100%; border-collapse:collapse; font-size:8pt; }
 .zn-table th, .zn-table td{ border:0.5pt solid var(--hair); padding:0.6mm 1.6mm; vertical-align:top; }
 .zn-table thead th{ background:var(--head); font-weight:700; text-align:left; font-size:7.4pt;
@@ -108,6 +116,11 @@
 .oe-history button { font-size:12px; padding:4px 8px; }
 .oe-history button.active { background:var(--color-primary); color:var(--color-on-primary); border-color:var(--color-primary); }
 .oe-history-new { margin-left:auto; }
+/* Метка счёта в списке «Ранее выданные»: какой из них идёт в деньги, а какой —
+   предыдущая версия. Заменённые гасим, но не прячем: по ним печатали бумагу. */
+.oe-history-tag { margin-left:5px; font-size:10px; text-transform:uppercase; letter-spacing:.04em; opacity:.75; }
+.oe-history button.is-off { opacity:.55; }
+.oe-history button.active .oe-history-tag { opacity:.9; }
 .order-editor { display:flex; gap:16px; flex:1; min-height:0; overflow:hidden; }
 .order-editor-left { flex:1 1 auto; min-width:0; overflow-y:auto; padding-right:10px; display:flex; flex-direction:column; gap:16px; container-type:inline-size; container-name:oeform; }
 /* КРИТИЧНО: дети формы не сжимаются. Без этого flex-колонка ограниченной высоты

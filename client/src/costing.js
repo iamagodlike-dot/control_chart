@@ -160,6 +160,10 @@ export function buildCosting(job = {}, docs = [], masters = [], prev = null) {
     discount: num(src.discount, 0),
     parts,
     labor,
+    // Реальные расценки работ (наряд мастерам) живут своим экраном — здесь их
+    // только проносим, иначе «Обновить из заказ-наряда» молча стёрло бы и цены,
+    // и назначенных мастеров. См. masterOrder.js.
+    works: prev?.works ?? null,
     materials: prev ? (prev.materials ?? null) : null, // null → авто (% от работ)
     overhead: prev ? (prev.overhead ?? null) : null,   // null → авто (% от выручки)
     updated_at: prev?.updated_at || null,
@@ -181,7 +185,22 @@ export function computeCosting(costing = {}, settings = {}) {
   const overhead_pct = num(costing.overhead_pct != null ? costing.overhead_pct : settings.overhead_pct, DEFAULT_OVERHEAD_PCT);
 
   const parts_cost = round2((costing.parts || []).reduce((s, p) => s + num(p.qty, 0) * num(p.cost, 0), 0));
-  const labor_cost = round2((costing.labor || []).reduce((s, l) => s + num(l.amount, 0), 0));
+
+  // Трудозатраты. Если по машине расписан наряд мастерам (costing.works — реальные
+  // расценки по каждой работе), считаем по нему: это честная стоимость труда, даже
+  // если часть работ ещё не роздана мастерам. Нераспределённое показываем отдельно,
+  // чтобы владелец видел, что наряд не дописан. Машины без наряда (и все старые)
+  // считаются по-прежнему — суммой строк оплаты. НЕ забыть: та же формула продублирована
+  // в telegram-bot/costing.js.
+  // Округляем КАЖДУЮ работу (как masterOrder.workSum), а не итог: иначе сумма строк
+  // оплаты + нераспределённое не сойдётся с labor_cost на копейки при дробном кол-ве.
+  const workSum = (w) => Math.round(num(w.qty, 1) * num(w.price, 0));
+  const works = Array.isArray(costing.works) ? costing.works : null;
+  const works_sum = (works || []).reduce((s, w) => s + workSum(w), 0);
+  const works_unassigned = (works || []).filter((w) => !w.master_id).reduce((s, w) => s + workSum(w), 0);
+  const labor_cost = works && works.length
+    ? works_sum
+    : round2((costing.labor || []).reduce((s, l) => s + num(l.amount, 0), 0));
 
   const materials_auto = round2(services_sum * materials_pct / 100);
   const materials_cost = costing.materials != null ? round2(costing.materials) : materials_auto;
@@ -203,6 +222,9 @@ export function computeCosting(costing = {}, settings = {}) {
     materials_auto,
     materials_is_auto: costing.materials == null,
     labor_cost,
+    has_works: !!(works && works.length),
+    works_sum,
+    works_unassigned,
     overhead_cost,
     overhead_auto,
     overhead_is_auto: costing.overhead == null,

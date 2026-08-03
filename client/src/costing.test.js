@@ -131,3 +131,52 @@ test('pickCostingSource — старая страховая машина (без
   assert.deepEqual(src.parts.map((p) => p.name), ['Дверь ЗН']);
   assert.equal(src.source_number, 'ЗН-СТАРЫЙ');
 });
+
+// ── Наряд мастерам: реальные расценки работ (costing.works) ────────────────
+// Правило: есть наряд → трудозатраты считаем по нему (включая ещё не розданные
+// работы); нет наряда (все старые машины) → по-прежнему по строкам оплаты.
+
+test('computeCosting — labor_cost из наряда работ, когда он расписан', () => {
+  const costing = {
+    services_sum: 20000, parts: [], discount: 0,
+    labor: [{ master_id: 'm1', name: 'Иванов', amount: 8000 }],   // производная строка
+    works: [
+      { name: 'A', qty: 1, price: 3000, master_id: 'm1' },
+      { name: 'B', qty: 2, price: 2500, master_id: 'm1' },
+      { name: 'C', qty: 1, price: 5000, master_id: '' },          // ещё не роздана
+    ],
+  };
+  const res = computeCosting(costing, { materials_pct: 0, overhead_pct: 0 });
+  assert.equal(res.labor_cost, 13000, 'считаем ВСЕ работы наряда, включая нераспределённые');
+  assert.equal(res.works_sum, 13000);
+  assert.equal(res.works_unassigned, 5000);
+  assert.equal(res.has_works, true);
+  assert.equal(res.cost_total, 13000);
+});
+
+test('computeCosting — без наряда работает как раньше (сумма строк оплаты)', () => {
+  const costing = {
+    services_sum: 20000, parts: [], discount: 0,
+    labor: [{ master_id: 'm1', amount: 8000 }, { master_id: 'm2', amount: 4000 }],
+  };
+  const res = computeCosting(costing, { materials_pct: 0, overhead_pct: 0 });
+  assert.equal(res.labor_cost, 12000);
+  assert.equal(res.has_works, false);
+  assert.equal(res.works_sum, 0);
+  assert.equal(res.works_unassigned, 0);
+  // Пустой наряд (works: []) — тоже фолбэк на строки оплаты
+  assert.equal(computeCosting({ ...costing, works: [] }, {}).labor_cost, 12000);
+});
+
+test('buildCosting — «Обновить из заказ-наряда» НЕ стирает наряд мастерам', () => {
+  const job = { payment_type: 'cash', services: [{ name: 'Работа', qty: 1, price: 5000 }], parts: [] };
+  const prev = {
+    labor: [], parts: [],
+    works: [{ id: 'w1', name: 'Работа', qty: 1, price: 9000, master_id: 'm1', master_name: 'Иванов', from_order: true, order_price: 5000 }],
+  };
+  const next = buildCosting(job, [], [], prev);
+  assert.deepEqual(next.works, prev.works, 'реальные расценки и мастера переживают пересид');
+  // У машины без наряда поле остаётся null (а не undefined — иначе запись в Firestore упадёт)
+  assert.equal(buildCosting(job, [], [], null).works, null);
+  assert.equal(Object.prototype.hasOwnProperty.call(buildCosting(job, [], []), 'works'), true);
+});

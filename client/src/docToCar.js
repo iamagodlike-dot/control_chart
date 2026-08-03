@@ -7,7 +7,8 @@
 // подтверждение, запись в базу и обратная простановка ссылок src_id.
 
 import { api } from './api';
-import { planDocItemsToCar, describeDocToCarPlan } from './orderDoc';
+import { planDocItemsToCar, describeDocToCarPlan, planDocDiscountToCar } from './orderDoc';
+import { STREAM_INSURANCE } from './billing';
 import { genPartId } from './parts';
 
 const filled = (v) => !!String(v ?? '').trim();
@@ -31,16 +32,24 @@ export async function applyDocToCar({ job, snapshot, recipient = 'all', docId = 
   if (filled(cust.phone)) upd.client_phone = cust.phone;
 
   const plan = planDocItemsToCar(job, snapshot, recipient, genPartId);
+  // Скидка — реквизит дела, а не строка таблицы, поэтому считается своим планом.
+  const disc = planDocDiscountToCar(job, snapshot, recipient);
   const hasServices = (snapshot.services || []).some((s) => filled(s && s.name));
   const hasParts = (snapshot.parts || []).some((p) => filled(p && p.code) || filled(p && p.name));
-  if (!Object.keys(upd).length && !hasServices && !hasParts) return 'empty';
-  if (!window.confirm(describeDocToCarPlan(plan, { head: !!Object.keys(upd).length }))) return 'cancel';
+  if (!Object.keys(upd).length && !hasServices && !hasParts && !disc) return 'empty';
+  if (!window.confirm(describeDocToCarPlan(plan, { head: !!Object.keys(upd).length, discount: disc }))) return 'cancel';
 
   const payload = { ...upd };
   // Услуги пишем целым (слитым) массивом, только если в документе есть работы — иначе
   // карточку не трогаем. Запчасти — пооперационно (сохраняют закупку/склад/приёмку).
   if (hasServices) payload.services = plan.services;
+  // Скидка убытка №1 (и обычной машины) живёт в ПЛОСКОМ job.discount — api.jobs.update
+  // зеркало-осознан и сам допишет её в claims[0]; отдельный saveClaim здесь материализовал
+  // бы claims[] у всех машин прода без нужды (см. billing.legacyClaim).
+  if (disc && disc.claimId === STREAM_INSURANCE) payload.discount = disc.to;
   if (Object.keys(payload).length) await api.jobs.update(jobId, payload);
+  // Убытки 2..N — только точечным saveClaim (мерж по id), иначе затрём чужое дело.
+  if (disc && disc.claimId !== STREAM_INSURANCE) await api.jobs.saveClaim(jobId, { id: disc.claimId, discount: disc.to });
   // Последовательно: транзакции на один job-док не должны конфликтовать.
   for (const p of plan.partOps) await api.jobs.savePart(jobId, p);
 

@@ -200,10 +200,14 @@ export default function CostingModal({ job, onClose, onSaved }) {
               <section className="oe-section">
                 <h4>Оплата мастерам (сдельно)</h4>
                 <p className="cc-hint" style={{ marginTop: 0 }}>
-                  Задаётся на карточке машины — кнопка «Оплата мастерам». Здесь показано для справки
-                  (входит в себестоимость).
+                  Задаётся на карточке машины — кнопка «Наряд мастерам»: там у каждой работы своя
+                  реальная цена и свой исполнитель. Здесь показано для справки (входит в себестоимость).
                 </p>
-                {costing.labor.filter((l) => l.master_id || Number(l.amount)).length === 0 ? (
+                {/* Прячем секцию, только если труда действительно нет. Наряд, где цены
+                    проставлены, а исполнители ещё не выбраны, даёт пустой labor при
+                    ненулевом labor_cost — тогда таблицу надо показать, иначе «− Мастера»
+                    в сводке возьмётся из ниоткуда. */}
+                {costing.labor.filter((l) => l.master_id || Number(l.amount)).length === 0 && !totals.labor_cost ? (
                   <div className="cc-hint">Оплата мастерам ещё не задана.</div>
                 ) : (
                   <table className="items-table costing-table">
@@ -215,6 +219,13 @@ export default function CostingModal({ job, onClose, onSaved }) {
                           <td className="costing-num">{money(l.amount)}</td>
                         </tr>
                       ))}
+                      {/* Работы наряда без исполнителя: в себестоимость входят, в ЗП — нет. */}
+                      {totals.works_unassigned > 0 && (
+                        <tr>
+                          <td>Не распределено по мастерам</td>
+                          <td className="costing-num">{money(totals.works_unassigned)}</td>
+                        </tr>
+                      )}
                     </tbody>
                     <tfoot>
                       <tr><td>Итого оплата мастерам</td><td className="costing-num"><b>{money(totals.labor_cost)}</b></td></tr>

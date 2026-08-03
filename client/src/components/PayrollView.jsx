@@ -43,7 +43,7 @@ export default function PayrollView({ loading, rows, payWindow, totals, payments
         <div className="mw-empty">
           <Icon name="wallet" size={28} />
           <p>Пока некого рассчитывать.</p>
-          <p className="mw-empty-sub">Назначьте мастеров на машины и укажите суммы (кнопка «Оплата мастерам» на карточке машины) — расчёт появится здесь.</p>
+          <p className="mw-empty-sub">Распишите работы по мастерам с реальными ценами (кнопка «Наряд мастерам» на карточке машины) — расчёт появится здесь.</p>
         </div>
       ) : (
         <div>

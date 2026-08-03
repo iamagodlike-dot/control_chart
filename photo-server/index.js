@@ -5,6 +5,12 @@
 // сервере. Nginx раздаёт статику и не умеет принимать загрузки — эта маленькая
 // программа принимает файл, проверяет что человек залогинен, и кладёт его на диск.
 //
+// ОТПРАВКИ ПИСЕМ ЗДЕСЬ НЕТ. Она была написана и работала, но хостинг режет
+// исходящий SMTP (порты 25/465/587/2525 закрыты с этого сервера — проверено), так
+// что письма всё равно отправляют руками из Яндекс.Почты. Приложение вместо этого
+// собирает архив с фото прямо в браузере (client/src/photoZip.js) — сервер в этом
+// не участвует. Если хостер откроет порт, отправку допишем заново.
+//
 // Безопасность: НИКАКИХ секретных ключей на сервере. Токен входа Firebase
 // проверяется по ПУБЛИЧНЫМ сертификатам Google (как проверяют подпись, не зная
 // пароль). Если токен настоящий и выдан нашему проекту — пускаем, иначе 401.
@@ -81,6 +87,20 @@ function extFor(mime) {
     'image/gif': '.gif', 'image/heic': '.heic', 'image/heif': '.heif' }[mime] || '.jpg';
 }
 
+// Адрес вида «/uploads/jobs/<id>/<файл>» → абсолютный путь на диске, или null,
+// если пришло что-то другое. Одна проверка на всех, кто принимает путь снаружи
+// (удаление файла, вложение в письмо): иначе через «../../» можно было бы
+// добраться до чужих файлов на сервере.
+function uploadAbsPath(rel) {
+  const s = String(rel || '');
+  const okJob = /^\/uploads\/jobs\/[A-Za-z0-9_-]{1,64}\/[A-Za-z0-9._-]{1,128}$/.test(s);
+  const okInvoice = /^\/uploads\/invoices\/[A-Za-z0-9._-]{1,160}$/.test(s);
+  if (!okJob && !okInvoice) return null;
+  const abs = path.resolve(UPLOAD_DIR, s.replace(/^\/uploads\//, ''));
+  const root = path.resolve(UPLOAD_DIR) + path.sep;
+  return abs.startsWith(root) ? abs : null;   // страховка от выхода из папки загрузок
+}
+
 // ── Сервер ─────────────────────────────────────────────────────────────────
 const app = express();
 app.use(cors()); // доступ и так закрыт токеном; CORS открыт, чтобы работал и локальный dev
@@ -143,15 +163,8 @@ app.post('/upload-invoice', requireAuth, upload.single('file'), async (req, res)
 // Удаление файла: POST /delete, тело { path: "/uploads/jobs/<id>/<file>" | "/uploads/invoices/<file>" }.
 app.post('/delete', requireAuth, async (req, res) => {
   try {
-    const rel = String(req.body?.path || '');
-    const okJob = /^\/uploads\/jobs\/[A-Za-z0-9_-]{1,64}\/[A-Za-z0-9._-]{1,128}$/.test(rel);
-    const okInvoice = /^\/uploads\/invoices\/[A-Za-z0-9._-]{1,160}$/.test(rel);
-    if (!okJob && !okInvoice) {
-      return res.status(400).json({ error: 'Неверный путь' });
-    }
-    const abs = path.resolve(UPLOAD_DIR, rel.replace(/^\/uploads\//, ''));
-    const uploadsRoot = path.resolve(UPLOAD_DIR) + path.sep;
-    if (!abs.startsWith(uploadsRoot)) return res.status(400).json({ error: 'Неверный путь' }); // страховка от выхода из папки
+    const abs = uploadAbsPath(req.body?.path);
+    if (!abs) return res.status(400).json({ error: 'Неверный путь' });
     await fs.unlink(abs).catch(() => {}); // уже удалён — не беда
     res.json({ ok: true });
   } catch (e) {

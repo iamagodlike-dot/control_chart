@@ -132,6 +132,12 @@ export function computeFinance({ jobs = [], invoices = [], transactions = [], co
       const name = (l.name || '').trim() || 'Без имени';
       payrollMap.set(name, (payrollMap.get(name) || 0) + num(l.amount, 0));
     }
+    // Работы наряда, ещё не розданные мастерам, в себестоимость (repairs.labor)
+    // входят, а в разбивку по именам попасть не могут — показываем их отдельной
+    // строкой, иначе итог и сумма строк не сойдутся.
+    if (t.works_unassigned > 0) {
+      payrollMap.set('Не распределено', (payrollMap.get('Не распределено') || 0) + t.works_unassigned);
+    }
   }
   repairs.profit = repairs.revenue - repairs.cost;
   repairs.margin = repairs.revenue > 0 ? round1((repairs.profit / repairs.revenue) * 100) : 0;

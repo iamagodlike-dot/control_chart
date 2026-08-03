@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import Icon from './Icon';
 
 // Presentational half of the master's «Мой заработок» screen — pure props, no
@@ -7,6 +8,10 @@ import Icon from './Icon';
 const fmt = (n) => `${Math.round(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
 
 export default function MyEarningsView({ loading, hasMaster, isFixed, pay, cards, totals }) {
+  // Раскрытые перечни работ по машинам (у машин с нарядом мастерам).
+  const [openWorks, setOpenWorks] = useState({});
+  const toggleWorks = (jobId) => setOpenWorks((o) => ({ ...o, [jobId]: !o[jobId] }));
+
   if (loading) {
     return (
       <div className="mw">
@@ -66,7 +71,10 @@ export default function MyEarningsView({ loading, hasMaster, isFixed, pay, cards
       ) : (
         <div>
           {cards.map((c) => (
-            <div key={c.jobId} className={`me-card${!isFixed && c.ready ? ' is-ready' : ''}`}>
+            <div
+              key={c.jobId}
+              className={`me-card${!isFixed && c.ready ? ' is-ready' : ''}${!isFixed && c.works?.length ? ' has-works' : ''}`}
+            >
               <div>
                 <div className="me-car-line">
                   <span className="me-model">{c.car}</span>
@@ -90,6 +98,26 @@ export default function MyEarningsView({ loading, hasMaster, isFixed, pay, cards
                   </>
                 )}
               </div>
+
+              {/* Перечень работ — только у машин с нарядом мастерам. Показываем
+                  название и сумму по каждой работе: из чего сложилась оплата. */}
+              {!isFixed && c.works && c.works.length > 0 && (
+                <div className="me-works">
+                  <button className="me-works-toggle" onClick={() => toggleWorks(c.jobId)}>
+                    {openWorks[c.jobId] ? 'Скрыть работы' : `Мои работы (${c.works.length})`}
+                  </button>
+                  {openWorks[c.jobId] && (
+                    <ul className="me-works-list">
+                      {c.works.map((w, i) => (
+                        <li key={i}>
+                          <span>{w.name || 'Без названия'}{w.qty > 1 ? ` × ${w.qty}` : ''}</span>
+                          <b>{fmt(w.sum)}</b>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+              )}
             </div>
           ))}
         </div>

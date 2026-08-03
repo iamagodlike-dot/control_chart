@@ -8,3 +8,6 @@ dist-ssr
 server/data.sqlite
 server/data.sqlite-shm
 server/data.sqlite-wal
+
+# логи инструментов
+firebase-debug.log

@@ -36,7 +36,15 @@ function computeCosting(costing, settings = {}) {
   const overhead_pct = num(costing.overhead_pct != null ? costing.overhead_pct : settings.overhead_pct, DEFAULT_OVERHEAD_PCT);
 
   const parts_cost = round2((costing.parts || []).reduce((s, p) => s + num(p.qty, 0) * num(p.cost, 0), 0));
-  const labor_cost = round2((costing.labor || []).reduce((s, l) => s + num(l.amount, 0), 0));
+
+  // Труд: если по машине расписан наряд мастерам (costing.works — реальные расценки
+  // по каждой работе), считаем по нему, иначе по строкам оплаты. Один в один как
+  // client/src/costing.js — иначе прибыль в боте разойдётся с сайтом.
+  const works = Array.isArray(costing.works) ? costing.works : null;
+  const labor_cost = works && works.length
+    // Округление построчное — так же, как на сайте (masterOrder.workSum).
+    ? works.reduce((s, w) => s + Math.round(num(w.qty, 1) * num(w.price, 0)), 0)
+    : round2((costing.labor || []).reduce((s, l) => s + num(l.amount, 0), 0));
 
   const materials_cost = costing.materials != null ? round2(costing.materials) : round2(services_sum * materials_pct / 100);
   const overhead_cost = costing.overhead != null ? round2(costing.overhead) : round2(revenue * overhead_pct / 100);

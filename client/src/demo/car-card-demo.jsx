@@ -17,7 +17,13 @@ dayjs.locale('ru');
 // Demo-only: feed the card a mock invoice so the payment banner renders (the real
 // one comes from Firestore, which this credential-free harness can't reach). The
 // card's «Отметить оплату» button flips it live between не оплачено / оплачено.
-let DEMO_INVOICES = [{ id: 'inv-1', number: '44', paid: false, totals: { total: 128400 } }];
+// Два счёта по одному убытку: перевыставленный (свежий) и его предыдущая версия.
+// В деньгах участвует только последний — карточка должна показать 128 400 ₽, а не
+// сумму обоих, и подписать, какой счёт считается (см. invoices.js).
+let DEMO_INVOICES = [
+  { id: 'inv-2', job_id: 'demo-job', doc_number: 'СЧ-0044', recipient: 'insurance', created_at: 2000, paid: false, totals: { total: 128400 } },
+  { id: 'inv-1', job_id: 'demo-job', doc_number: 'СЧ-0039', recipient: 'insurance', created_at: 1000, paid: false, totals: { total: 121000 } },
+];
 api.orderDocuments.listByJob = async (_jobId, type) => (type === 'invoice' ? DEMO_INVOICES : []);
 api.orderDocuments.setPaid = async (id, paid) => { DEMO_INVOICES = DEMO_INVOICES.map((i) => (i.id === id ? { ...i, paid } : i)); };
 api.gantt = async () => ({ stages: [] });
@@ -88,6 +94,11 @@ const JOB = {
   ],
   cell_ids: ['A-12', 'B-03'],
   created_at: iso(now.subtract(2, 'day')),
+  // Скачанный архив для оценщика — в журнале машины (вкладка «Журнал»).
+  export_log: [{
+    id: 'x_demo', at: now.subtract(1, 'day').valueOf(), by: 'reception@academyauto.ru',
+    template: 'calc', photos: 9,
+  }],
   photos: [
     { id: 'ph1', category: 'before', url: ph('3a4250') },
     { id: 'ph2', category: 'before', url: ph('44506a') },

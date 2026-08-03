@@ -17,10 +17,13 @@ import { STATUS_COLORS, STATUS_LABELS, effectiveStatus, jobOverallStatus, deadli
 import { CellPickerModal } from './Warehouse';
 import CostingModal from './CostingModal';
 import { computeCosting } from '../costing';
-import MasterPayModal from './MasterPayModal';
+import MasterOrderModal from './MasterOrderModal';
+import MailModal from './MailModal';
+import { exportLogText } from '../mail';
 import Icon from './Icon';
 import DateTimeField from './DateTimeField';
 import PhotoViewer from './PhotoViewer';
+import { useModalEscape } from '../modalEscape';
 
 const FMT = 'YYYY-MM-DDTHH:mm';
 const PREVIEW_HOUR_WIDTH = 16;
@@ -181,6 +184,11 @@ export default function CarCard({
   const [costingOpen, setCostingOpen] = useState(false);
   const [company, setCompany] = useState({});
   const [payOpen, setPayOpen] = useState(false);
+  const [mailOpen, setMailOpen] = useState(false);
+  // Свежие выгрузки этой машины: карточка получает job из подписки, но окно
+  // закрывается раньше, чем прилетит обновление, — поэтому дописываем сами, чтобы
+  // журнал не выглядел «не сработало».
+  const [localExports, setLocalExports] = useState([]);
   const [localCosting, setLocalCosting] = useState(job?.costing || null);
   const [existingStages, setExistingStages] = useState([]);
   const [insurers, setInsurers] = useState([]);
@@ -1274,15 +1282,29 @@ export default function CarCard({
         else if (s.status === 'in_progress') ev.push({ t: s.start_at, text: `${nm} — в работе`, color: STATUS_COLORS.in_progress });
         else ev.push({ t: s.start_at, text: `${nm} — запланирован`, color: STATUS_COLORS.planned, planned: true });
       });
+    // Выгрузки для оценщика (job.export_log) — в тот же журнал: «архив уже
+    // собирали» видно там же, где этапы, и второй раз оценщика не дёрнут.
+    const seenExport = new Set();
+    for (const m of [...(job?.export_log || []), ...localExports]) {
+      if (!m || seenExport.has(m.id)) continue;             // запись уже пришла из базы — не дублируем
+      seenExport.add(m.id);
+      const who = m.by ? ` · ${m.by}` : '';
+      ev.push({ t: m.at, text: `${exportLogText(m)}${who}`, color: 'var(--color-primary)' });
+    }
     return ev.sort((a, b) => dayjs(a.t).valueOf() - dayjs(b.t).valueOf());
-  }, [isEdit, job, posts]);
+  }, [isEdit, job, posts, localExports]);
+
+  // Клик мимо карточки её больше НЕ закрывает: в форме шесть нативных списков
+  // (тип оплаты, страховая, пост, мастер...), а на телефоне закрытие такого списка
+  // отдаёт странице сквозной клик по подложке — заполненная карточка пропадала.
+  // Выход — крестик или Escape (см. modalEscape).
+  const backdropRef = useModalEscape(closeCard);
 
   return (
-    <div className="modal-backdrop cc-backdrop" onClick={closeCard}>
+    <div className="modal-backdrop cc-backdrop" ref={backdropRef}>
       <div
         className="modal cc-modal"
         style={{ '--sc': isEdit ? STATUS_COLORS[overall] : 'var(--color-primary)' }}
-        onClick={(e) => e.stopPropagation()}
       >
         <div className="cc-header">
           <div className="cc-header-main">
@@ -1509,7 +1531,7 @@ export default function CarCard({
               </div>
 
               {/* ЭКОНОМИКА — только управленцу (как кнопки «Себестоимость» и
-                  «Оплата мастерам»): мастер и экспедитор маржу видеть не должны. */}
+                  «Наряд мастерам»): мастер и экспедитор маржу видеть не должны. */}
               {isOwner && (
                 <div className="cc-ov-card cc-ov-fin">
                   <div className="cc-ov-cardhead">
@@ -1524,6 +1546,14 @@ export default function CarCard({
                   </div>
                   {ovTotals ? (
                     <div className="cc-ov-fin-row">
+                      {/* Наряд мастерам расписан не до конца: эти работы в себестоимость
+                          входят, но в зарплату не попадут, пока нет исполнителя. */}
+                      {ovTotals.works_unassigned > 0 && (
+                        <div className="cc-ov-fin-cell cc-ov-fin-warn">
+                          <span className="cc-ov-fin-label">Работы без мастера</span>
+                          <b className="cc-ov-fin-val">{fmtMoney(ovTotals.works_unassigned)}</b>
+                        </div>
+                      )}
                       <div className="cc-ov-fin-cell">
                         <span className="cc-ov-fin-label">Выручка</span>
                         <b className="cc-ov-fin-val">{fmtMoney(ovTotals.revenue)}</b>
@@ -2272,7 +2302,26 @@ export default function CarCard({
                   <button className="cc-btn-ico" onClick={returnToApproval}><Icon name="shield" size={15} />Вернуть в согласование</button>
                 )}
                 <button className="cc-btn-ico" onClick={openDocs}><Icon name="file" size={15} />Документы</button>
-                {isOwner && <button className="cc-btn-ico" onClick={openPay}><Icon name="receipt" size={15} />Оплата мастерам</button>}
+                {/* Фото и текст письма для оценщика. Скачивается архив (zip с
+                    выбранными снимками и файлом «письмо.txt») — его вкладывают в
+                    письмо в Яндекс.Почте. Отправка прямо из системы появится в этом
+                    же окне, когда хостинг откроет исходящую почту. */}
+                <button
+                  className="cc-btn-ico"
+                  onClick={() => setMailOpen(true)}
+                  title="Архив фото + готовый текст письма: данные машины и повреждения подставятся сами"
+                >
+                  <Icon name="download" size={15} />Архив фото
+                </button>
+                {isOwner && (
+                  <button
+                    className="cc-btn-ico"
+                    onClick={openPay}
+                    title="Расписать работы по мастерам с реальными ценами, распечатать наряд-задание"
+                  >
+                    <Icon name="receipt" size={15} />Наряд мастерам
+                  </button>
+                )}
                 {isOwner && <button className="cc-btn-ico" onClick={openCosting}><Icon name="wallet" size={15} />Себестоимость</button>}
                 <button className="cc-btn-ico" onClick={finalize}><Icon name="check" size={15} strokeWidth={2} />Завершить</button>
                 <button className="primary" disabled={savingInfo || !dirtyInfo} onClick={saveInfo}>
@@ -2311,10 +2360,20 @@ export default function CarCard({
       )}
 
       {payOpen && (
-        <MasterPayModal
+        <MasterOrderModal
           job={costingJob}
           onSaved={(c) => setLocalCosting(c)}
           onClose={() => setPayOpen(false)}
+        />
+      )}
+
+      {mailOpen && (
+        <MailModal
+          job={{ ...job, ...form, id: job.id }}
+          company={company}
+          template="calc"
+          onLogged={(entry) => { if (entry) setLocalExports((prev) => [...prev, entry]); }}
+          onClose={() => setMailOpen(false)}
         />
       )}
 
