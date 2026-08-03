@@ -3,6 +3,7 @@ import { api } from '../api';
 import { uid } from '../orderDoc';
 import { buildCosting } from '../costing';
 import { buildPayRows, payRowsTotal, money } from '../salary';
+import { useModalEscape } from '../modalEscape';
 import Icon from './Icon';
 
 // «Оплата мастерам за эту машину» — простой экран, где управляющий вводит, сколько
@@ -73,9 +74,13 @@ export default function MasterPayModal({ job, onSaved, onClose }) {
     }
   }
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик, и наполовину заполненная форма пропадала (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal costing-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" ref={backdropRef}>
+      <div className="modal costing-modal">
         <div className="cc-header">
           <div className="cc-header-main">
             <div className="cc-header-text">

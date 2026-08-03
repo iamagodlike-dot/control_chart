@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { mapSplusOrders } from '../splusImport';
 import Icon from './Icon';
+import { useModalEscape } from '../modalEscape';
 
 // Окно переноса заказов из выгрузки «Заказ-наряды» Splus (CSV) в нашу базу.
 // Безопасно по построению: показывает предпросмотр, пропускает уже existing
@@ -74,9 +75,13 @@ export default function SplusImport({ onClose, onImported }) {
   const ready = fresh.length > 0 && !busy;
   const shortNote = (s) => (s ? s.replace(/\n/g, ' · ').slice(0, 60) + (s.length > 60 ? '…' : '') : '—');
 
+  // Клик мимо окна не закрывает (сквозной клик нативных списков на телефоне,
+  // см. modalEscape), а во время импорта не закрывает и Escape.
+  const backdropRef = useModalEscape(onClose, !busy);
+
   return (
-    <div className="modal-backdrop" onClick={busy ? undefined : onClose}>
-      <div className="modal modal-wide" onClick={(e) => e.stopPropagation()} style={{ maxWidth: 860 }}>
+    <div className="modal-backdrop" ref={backdropRef}>
+      <div className="modal modal-wide" style={{ maxWidth: 860 }}>
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, marginBottom: 12 }}>
           <h3 className="cc-title" style={{ margin: 0 }}>Импорт заказов из Splus</h3>
           <button className="cc-close" onClick={onClose} aria-label="Закрыть" disabled={busy}><Icon name="x" size={18} strokeWidth={2} /></button>

@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import Icon from './Icon';
 import DateTimeField from './DateTimeField';
 import { PAYMENT_SHORT } from '../insurance';
+import { useModalEscape } from '../modalEscape';
 import {
   describeLogEntry, fmtDayTime, fmtRelativeDay, parseLocalDateTime, pluralDays,
   toLocalInput, validateSchedule,
@@ -57,9 +58,13 @@ export default function IntakeCarModal({
   const insured = row.payment_type === 'insurance';
   const phoneHref = `tel:${String(row.client_phone || '').replace(/[^\d+]/g, '')}`;
 
+  // Клик мимо окна не закрывает: приёмщик заполняет его, разговаривая по телефону,
+  // и случайное касание рядом не должно стирать согласованную дату (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div className="modal-backdrop ink-backdrop" onClick={onClose}>
-      <div className="ink-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop ink-backdrop" ref={backdropRef}>
+      <div className="ink-modal">
         <header className="ink-modal-head">
           <div className="ink-modal-id">
             {row.plate_number && <span className="ink-plate">{row.plate_number}</span>}

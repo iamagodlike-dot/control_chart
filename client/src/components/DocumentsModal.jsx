@@ -3,6 +3,7 @@ import OrderDocumentEditor from './OrderDocumentEditor';
 import DocEditor from './DocEditor';
 import { isInsurance } from '../insurance';
 import { streamsOf, defaultStream, claimOf, STREAM_CLIENT } from '../billing';
+import { useModalEscape } from '../modalEscape';
 
 const DOC_TYPES = [
   { id: 'order', label: 'Заказ-наряд' },
@@ -37,9 +38,13 @@ export default function DocumentsModal({ job, company, onClose, onJobUpdated }) 
     return `Только позиции этого дела. ${bits.join(' · ')}`;
   }, [job, recipient]);
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик, и наполовину заполненная форма пропадала (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal modal-wide modal-order" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" ref={backdropRef}>
+      <div className="modal modal-wide modal-order">
         <div className="doc-tabs">
           {DOC_TYPES.map((t) => (
             <button key={t.id} className={docType === t.id ? 'active' : ''} onClick={() => setDocType(t.id)}>{t.label}</button>

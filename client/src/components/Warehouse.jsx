@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import QRCode from 'qrcode';
 import { api } from '../api';
 import Icon from './Icon';
+import { useModalEscape } from '../modalEscape';
 
 const DEFAULT_CONFIG = { zones: [{ id: 'A', label: 'Зона A', rows: 4, cols: 6 }], staleDays: 7 };
 
@@ -196,9 +197,13 @@ export function CellPickerModal({ currentCellIds = [], onSave, onClose }) {
 
   const toggle = (id) => setSelected((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
 
+  // Клик мимо окна не закрывает — иначе набранный выбор ячеек пропадает от
+  // случайного касания рядом (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div onClick={onClose} className="wh-modal" style={{ zIndex: 1050 }}>
-      <div onClick={(e) => e.stopPropagation()} className="wh-modal-card" style={{ maxWidth: 720 }}>
+    <div ref={backdropRef} className="wh-modal" style={{ zIndex: 1050 }}>
+      <div className="wh-modal-card" style={{ maxWidth: 720 }}>
         <div className="wh-modal-head">
           <span style={{ fontWeight: 600 }}>Выбор ячеек склада</span>
           <span style={{ color: 'var(--text3)', fontSize: 12 }}>можно выбрать несколько</span>
@@ -529,9 +534,13 @@ function CellModal({ modal, onSave, onFree, onArchive, onClose, onOpenJob, onLin
   const addPart = () => setForm((f) => ({ ...f, parts: [...f.parts, { name: '', code: '', qty: 1 }] }));
   const removePart = (i) => setForm((f) => ({ ...f, parts: f.parts.filter((_, idx) => idx !== i) }));
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик по подложке, и окно схлопывалось само (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div onClick={onClose} className="wh-modal" style={{ zIndex: 1000 }}>
-      <div onClick={(e) => e.stopPropagation()} className="wh-modal-card" style={{ maxWidth: 640 }}>
+    <div ref={backdropRef} className="wh-modal" style={{ zIndex: 1000 }}>
+      <div className="wh-modal-card" style={{ maxWidth: 640 }}>
         <div className="wh-modal-head">
           <div className="wh-modal-title" style={{ fontSize: 18 }}>{id}</div>
           <div style={{ flex: 1, color: 'var(--color-text-muted)', fontSize: 13 }}>{isOccupied ? `${form.car} · ${form.orderNum}` : 'Свободна'}</div>
@@ -636,9 +645,13 @@ function ArchiveModal({ cellId: id, cells, onFree, onClose }) {
   const data = cells[id];
   const archive = data?._archive || [];
   const isOccupied = data?.orderNum;
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик по подложке, и окно схлопывалось само (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div onClick={onClose} className="wh-modal" style={{ zIndex: 1010 }}>
-      <div onClick={(e) => e.stopPropagation()} className="wh-modal-card" style={{ maxWidth: 560, maxHeight: '80vh' }}>
+    <div ref={backdropRef} className="wh-modal" style={{ zIndex: 1010 }}>
+      <div className="wh-modal-card" style={{ maxWidth: 560, maxHeight: '80vh' }}>
         <div className="wh-modal-head">
           <div className="wh-modal-title" style={{ fontSize: 15 }}>{id}</div>
           <span style={{ color: 'var(--color-text-muted)', fontSize: 13 }}>История движения</span>
@@ -727,9 +740,13 @@ function ConfigModal({ config, setConfig, cells = {}, newZone, setNewZone, onClo
     setEditingId((e) => { const n = { ...e }; delete n[oldId]; return n; });
   };
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик по подложке, и окно схлопывалось само (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div onClick={onClose} className="wh-modal" style={{ zIndex: 1020 }}>
-      <div onClick={(e) => e.stopPropagation()} className="wh-modal-card" style={{ maxWidth: 560, maxHeight: '85vh' }}>
+    <div ref={backdropRef} className="wh-modal" style={{ zIndex: 1020 }}>
+      <div className="wh-modal-card" style={{ maxWidth: 560, maxHeight: '85vh' }}>
         <div className="wh-modal-head">
           <span style={{ fontWeight: 600 }}>Настройки склада</span>
           <div style={{ flex: 1 }} />
@@ -864,9 +881,13 @@ function LabelPrintModal({ zone, onClose }) {
     w.document.close();
   };
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик по подложке, и окно схлопывалось само (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div onClick={onClose} className="wh-modal" style={{ zIndex: 1030 }}>
-      <div onClick={(e) => e.stopPropagation()} className="wh-modal-card" style={{ maxWidth: 420, width: '90%', padding: '2rem', textAlign: 'center' }}>
+    <div ref={backdropRef} className="wh-modal" style={{ zIndex: 1030 }}>
+      <div className="wh-modal-card" style={{ maxWidth: 420, width: '90%', padding: '2rem', textAlign: 'center' }}>
         <div style={{ color: 'var(--color-primary)', marginBottom: 12, display: 'flex', justifyContent: 'center' }}><Icon name="receipt" size={34} /></div>
         <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 8 }}>Печать этикеток</div>
         <div style={{ color: 'var(--color-text-muted)', fontSize: 14, marginBottom: '1.5rem' }}>{zone.label} · {zone.rows * zone.cols} этикеток</div>
@@ -955,9 +976,13 @@ function PrintSheet({ cell, cells, onClose }) {
     w.document.close();
   };
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик по подложке, и окно схлопывалось само (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div onClick={onClose} className="wh-modal" style={{ zIndex: 1040 }}>
-      <div onClick={(e) => e.stopPropagation()} className="wh-modal-card" style={{ maxWidth: 400, width: '90%', padding: '2rem', textAlign: 'center' }}>
+    <div ref={backdropRef} className="wh-modal" style={{ zIndex: 1040 }}>
+      <div className="wh-modal-card" style={{ maxWidth: 400, width: '90%', padding: '2rem', textAlign: 'center' }}>
         <div style={{ color: 'var(--color-primary)', marginBottom: 12, display: 'flex', justifyContent: 'center' }}><Icon name="file" size={34} /></div>
         <div style={{ fontWeight: 600, fontSize: 16, marginBottom: 4 }}>Лист ячейки {id}</div>
         {data.orderNum ? <div style={{ color: 'var(--color-text-muted)', fontSize: 13, marginBottom: '1.5rem' }}>{data.car} · {data.orderNum}</div>

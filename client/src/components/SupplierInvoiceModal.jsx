@@ -3,6 +3,7 @@ import { api } from '../api';
 import { uploadInvoiceFile } from '../photos';
 import { buildInvoiceItems, itemsAmount, money } from '../supplierInvoices';
 import Icon from './Icon';
+import { useModalEscape } from '../modalEscape';
 
 // Модалка «Выставить счёт» для запчастиста. Показывает все позиции в статусе
 // «Требуется» (кандидаты, можно с разных машин), даёт выбрать их галочками, ввести
@@ -88,9 +89,13 @@ export default function SupplierInvoiceModal({ jobs = [], supplierNames = [], pr
 
   const noCost = items.filter((it) => !(Number(it.cost) > 0)).length;
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик, и наполовину заполненная форма пропадала (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div className="si-modal-overlay" onClick={onClose}>
-      <div className="si-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="si-modal-overlay" ref={backdropRef}>
+      <div className="si-modal">
         <div className="si-modal-head">
           <h3>Выставить счёт поставщика</h3>
           <button className="si-modal-x" onClick={onClose} title="Закрыть"><Icon name="x" size={18} /></button>

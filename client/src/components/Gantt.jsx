@@ -10,6 +10,7 @@ import AlertStrip from './AlertStrip';
 import Icon from './Icon';
 import DateTimeField from './DateTimeField';
 import { DocsButton, FinishButton } from './RowActionButtons';
+import { useModalEscape } from '../modalEscape';
 
 const fmtMoney = (n) => `${(Number(n) || 0).toLocaleString('ru-RU')} ₽`;
 const ZOOM_LEVELS = [8, 12, 20, 32, 48]; // px per hour
@@ -1334,9 +1335,13 @@ function StageEditor({ stage, posts, masters, allStages = [], now, onClose, onSa
     };
   }
 
+  // Клик мимо окна не закрывает: внутри нативные списки поста и мастера, а на
+  // телефоне их закрытие отдаёт странице сквозной клик (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal cc-modal is-narrow" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" ref={backdropRef}>
+      <div className="modal cc-modal is-narrow">
         <div className="cc-header">
           <div className="cc-header-main">
             <span className="cc-header-icon">🔧</span>

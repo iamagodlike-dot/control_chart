@@ -6,6 +6,7 @@ import {
 } from '../photos';
 import { dequeue, enqueue, subscribeQueue } from '../photoQueue';
 import { printFitted } from '../printDoc';
+import { useModalEscape } from '../modalEscape';
 import Icon from './Icon';
 import PhotoViewer from './PhotoViewer';
 import IntakeAct from './IntakeAct';
@@ -323,17 +324,8 @@ export default function InspectionWizard({
   // списка на телефоне отдаёт странице «сквозной» клик по тому месту, где стоял
   // палец: он приходился на подложку, дефектовка схлопывалась и открывалась
   // заново с первого шага. Выйти можно крестиком или Escape — оба действия
-  // осознанные. Escape пропускаем, пока открыт просмотр фото: закрывать надо
-  // сначала его.
-  useEffect(() => {
-    const onKey = (e) => {
-      if (e.key !== 'Escape' || viewer) return;
-      flush();
-      onClose();
-    };
-    document.addEventListener('keydown', onKey);
-    return () => document.removeEventListener('keydown', onKey);
-  }, [flush, onClose, viewer]);
+  // осознанные. Escape при открытом фото закроет сначала фото (см. modalEscape).
+  const backdropRef = useModalEscape(close);
 
   // ─── Шаги ──────────────────────────────────────────────────────────────────
 
@@ -346,7 +338,7 @@ export default function InspectionWizard({
   }[saveState];
 
   return (
-    <div className="modal-backdrop ins-backdrop">
+    <div className="modal-backdrop ins-backdrop" ref={backdropRef}>
       <div className="ins-sheet">
 
         <header className="ins-head">

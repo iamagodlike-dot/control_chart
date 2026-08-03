@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import dayjs from 'dayjs';
+import { useModalEscape } from '../modalEscape';
 
 // Themed dropdown date (or date+time) picker used everywhere instead of the
 // native datetime-local — a real calendar popover that matches the dark UI.
@@ -39,17 +40,17 @@ export default function DateTimeField({ value, onChange, mode = 'datetime', plac
 
   // Outside clicks are handled by the full-screen catcher below (so the click
   // never reaches an underlying modal backdrop or a wrapping <label>). Here we
-  // only close on Escape and keep the popover aligned on resize.
+  // only keep the popover aligned on resize.
   useEffect(() => {
     if (!open) return undefined;
-    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
-    document.addEventListener('keydown', onKey);
     window.addEventListener('resize', reposition);
-    return () => {
-      document.removeEventListener('keydown', onKey);
-      window.removeEventListener('resize', reposition);
-    };
+    return () => window.removeEventListener('resize', reposition);
   }, [open, reposition]);
+
+  // Escape закрывает СНАЧАЛА календарь, а не окно, в котором он открыт. Попап
+  // живёт в портале body и по вложенности проигрывает модалке — поэтому level 1
+  // (см. modalEscape).
+  const popRef = useModalEscape(() => setOpen(false), open, 1);
 
   function toggle() {
     if (open) { setOpen(false); return; }
@@ -94,7 +95,7 @@ export default function DateTimeField({ value, onChange, mode = 'datetime', plac
       {open && pos && createPortal(
         <>
           <div className="dtf-catch" onClick={(e) => { e.stopPropagation(); setOpen(false); }} />
-          <div className="dtf-pop" style={{ ...pos, width: POPOVER_W }}>
+          <div className="dtf-pop" ref={popRef} style={{ ...pos, width: POPOVER_W }}>
           <div className="dtf-head">
             <button type="button" className="dtf-nav" onClick={() => setView(view.subtract(1, 'month'))} aria-label="Предыдущий месяц">‹</button>
             <span className="dtf-month">{MONTHS[view.month()]} {view.year()}</span>

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api';
 import { money } from '../orderDoc';
 import { buildCosting, computeCosting } from '../costing';
+import { useModalEscape } from '../modalEscape';
 import Icon from './Icon';
 
 // Internal repair-cost / profit editor for one car. Reads the latest заказ-наряд
@@ -107,9 +108,13 @@ export default function CostingModal({ job, onClose, onSaved }) {
   const materials_pct = Number(costing?.materials_pct ?? settings.materials_pct ?? 15);
   const overhead_pct = Number(costing?.overhead_pct ?? settings.overhead_pct ?? 0);
 
+  // Клик мимо окна не закрывает: нативные списки на телефоне отдают странице
+  // сквозной клик, и наполовину заполненная форма пропадала (см. modalEscape).
+  const backdropRef = useModalEscape(onClose);
+
   return (
-    <div className="modal-backdrop" onClick={onClose}>
-      <div className="modal modal-wide costing-modal" onClick={(e) => e.stopPropagation()}>
+    <div className="modal-backdrop" ref={backdropRef}>
+      <div className="modal modal-wide costing-modal">
         <div className="cc-header">
           <div className="cc-header-main">
             <div className="cc-header-text">
